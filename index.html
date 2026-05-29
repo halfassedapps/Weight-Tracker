@@ -29,6 +29,7 @@
     const LS_GIST_PAT_KEY = 'weight-tracker-gist-pat';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     const GIST_ID         = 'aa6e7ae2259f94c7a91637b447a0cd99';
+    const GIST_USER       = 'miesemer';
 
     /* ─── IndexedDB (directory handle storage) ───────────────────────────────── */
     function openIDB() {
@@ -145,9 +146,11 @@
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
     function parseGistPayload({ meta, entries = [], injections = [] }) {
+      const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
-        .sort((a, b) => b.date.localeCompare(a.date));
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .filter(e => { if (seen.has(e.date)) return false; seen.add(e.date); return true; });
       return {
         logbook:    daily.length ? computeLogbook(daily) : [],
         meta:       meta ?? { metric: 'Weight', source: '' },
@@ -156,14 +159,24 @@
     }
 
     async function fetchGist(gistId, pat) {
-      const res = await fetch(`https://api.github.com/gists/${gistId}`, {
-        headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' },
-      });
-      if (!res.ok) throw new Error(`Gist fetch ${res.status}`);
-      const gist = await res.json();
-      const content = gist.files['weight-data.json']?.content;
-      if (!content) return null; // file not yet in gist
-      return parseGistPayload(JSON.parse(content));
+      if (pat) {
+        // Authenticated: use API (needed for writes + detecting missing file)
+        const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+          headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' },
+        });
+        if (!res.ok) throw new Error(`Gist fetch ${res.status}`);
+        const gist = await res.json();
+        const content = gist.files['weight-data.json']?.content;
+        if (!content) return null;
+        return parseGistPayload(JSON.parse(content));
+      } else {
+        // Unauthenticated: raw URL works for secret gists without auth
+        const res = await fetch(
+          `https://gist.githubusercontent.com/${GIST_USER}/${gistId}/raw/weight-data.json?t=${Date.now()}`
+        );
+        if (!res.ok) throw new Error(`Gist fetch ${res.status}`);
+        return parseGistPayload(await res.json());
+      }
     }
 
     async function patchGist(gistId, pat, rows, meta, injections) {

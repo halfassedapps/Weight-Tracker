@@ -26,9 +26,9 @@
     const LS_KEY          = 'weight-tracker-data';
     const LS_INJ_KEY      = 'weight-tracker-injections';
     const LS_LAST_CSV_KEY = 'weight-tracker-last-csv';
-    const LS_GIST_ID_KEY  = 'weight-tracker-gist-id';
     const LS_GIST_PAT_KEY = 'weight-tracker-gist-pat';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
+    const GIST_ID         = 'aa6e7ae2259f94c7a91637b447a0cd99';
 
     /* ─── IndexedDB (directory handle storage) ───────────────────────────────── */
     function openIDB() {
@@ -162,7 +162,7 @@
       if (!res.ok) throw new Error(`Gist fetch ${res.status}`);
       const gist = await res.json();
       const content = gist.files['weight-data.json']?.content;
-      if (!content) throw new Error('weight-data.json not found in gist');
+      if (!content) return null; // file not yet in gist
       return parseGistPayload(JSON.parse(content));
     }
 
@@ -821,11 +821,9 @@
       );
     }
 
-    function GistPanel({ gistOk, gistMsg, onSave, style }) {
-      const [open,   setOpen]   = React.useState(false);
-      const [id,     setId]     = React.useState(() => localStorage.getItem(LS_GIST_ID_KEY)  ?? '');
-      const [pat,    setPat]    = React.useState(() => localStorage.getItem(LS_GIST_PAT_KEY) ?? '');
-      const configured = !!(localStorage.getItem(LS_GIST_ID_KEY) && localStorage.getItem(LS_GIST_PAT_KEY));
+    function GistPanel({ gistOk, gistMsg, onSave, onLogout, style }) {
+      const [open, setOpen] = React.useState(false);
+      const [pat,  setPat]  = React.useState(() => localStorage.getItem(LS_GIST_PAT_KEY) ?? '');
       return (
         <div style={{ borderRadius: 14, overflow: 'hidden', border: `.5px solid ${gistOk ? '#34c759' : '#d1d1d6'}`,
                       background: '#fff', ...style }}>
@@ -835,10 +833,10 @@
                            justifyContent: 'space-between', textAlign: 'left' }}>
             <div>
               <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
-                {gistOk ? 'Gist sync active' : configured ? 'Gist sync — tap to reconfigure' : 'Set up Gist sync'}
+                {gistOk ? 'Gist sync active' : 'Gist sync — tap to reconfigure'}
               </div>
               <div style={{ fontSize: 12, color: gistMsg ? '#ff3b30' : '#8e8e93', marginTop: 1 }}>
-                {gistMsg || (gistOk ? 'Auto-saves to GitHub Gist on every change' : 'Connect a GitHub Gist to sync across devices')}
+                {gistMsg || (gistOk ? 'Auto-saves to GitHub Gist on every change' : 'Enter token to reconnect')}
               </div>
             </div>
             <div style={{ fontSize: 16, color: gistOk ? '#34c759' : '#8e8e93', marginLeft: 8 }}>
@@ -847,21 +845,66 @@
           </button>
           {open && (
             <div style={{ padding: '0 16px 14px', borderTop: '.5px solid #f2f2f7' }}>
-              <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>Gist ID</div>
-              <input value={id} onChange={e => setId(e.target.value)} placeholder="aa6e7ae2259f94c7a91637b447a0cd99"
-                     style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
-                              border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
               <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>Personal Access Token (gist scope)</div>
-              <input value={pat} onChange={e => setPat(e.target.value)} type="password" placeholder="ghp_..."
+              <input value={pat} onChange={e => setPat(e.target.value)} type="text" placeholder="ghp_..."
                      style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
                               border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
-              <button onClick={() => { onSave(id, pat); setOpen(false); }}
-                      disabled={!id || !pat}
-                      style={{ marginTop: 12, width: '100%', padding: '10px', borderRadius: 10,
-                               fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer',
-                               background: (!id || !pat) ? '#e5e5ea' : '#4a90d9', color: '#fff' }}>
-                Save &amp; Connect
-              </button>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <button onClick={() => { onSave(pat); setOpen(false); }} disabled={!pat}
+                        style={{ flex: 1, padding: '10px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                                 border: 'none', cursor: pat ? 'pointer' : 'default',
+                                 background: !pat ? '#e5e5ea' : '#4a90d9', color: '#fff' }}>
+                  Save &amp; Reconnect
+                </button>
+                <button onClick={onLogout}
+                        style={{ padding: '10px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                                 border: 'none', cursor: 'pointer', background: '#fff1f0', color: '#ff3b30' }}>
+                  Log out
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function AdminLogin({ onLogin, style }) {
+      const [open, setOpen] = React.useState(false);
+      const [pat,  setPat]  = React.useState('');
+      const [msg,  setMsg]  = React.useState('');
+      return (
+        <div style={style}>
+          {!open ? (
+            <button onClick={() => setOpen(true)}
+                    style={{ fontSize: 13, color: '#c7c7cc', background: 'none', border: 'none',
+                             cursor: 'pointer', padding: '8px 0' }}>
+              Admin Login
+            </button>
+          ) : (
+            <div style={{ background: '#fff', borderRadius: 14, padding: '16px',
+                          border: '.5px solid #d1d1d6', textAlign: 'left' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 10 }}>Admin Login</div>
+              <input value={pat} onChange={e => setPat(e.target.value)} type="password"
+                     placeholder="Personal Access Token"
+                     style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
+                              border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+              {msg && (
+                <div style={{ fontSize: 12, marginTop: 6,
+                              color: msg === 'Verifying…' ? '#8e8e93' : '#ff3b30' }}>{msg}</div>
+              )}
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button onClick={() => { setOpen(false); setPat(''); setMsg(''); }}
+                        style={{ flex: 1, padding: '9px', borderRadius: 10, fontSize: 14,
+                                 background: '#e5e5ea', border: 'none', cursor: 'pointer', color: '#1c1c1e' }}>
+                  Cancel
+                </button>
+                <button onClick={() => onLogin(pat, setMsg)} disabled={!pat}
+                        style={{ flex: 1, padding: '9px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                                 background: pat ? '#4a90d9' : '#e5e5ea', border: 'none',
+                                 cursor: pat ? 'pointer' : 'default', color: '#fff' }}>
+                  Log in
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -896,6 +939,8 @@
       const [needsPerm,  setNeedsPerm]  = useState(false);  // permission lapsed
       const [gistOk,  setGistOk]  = useState(false);
       const [gistMsg, setGistMsg] = useState('');
+      const [isAdmin, setIsAdmin] = useState(() => !!localStorage.getItem(LS_GIST_PAT_KEY));
+      const [loading, setLoading] = useState(true);
       const inputRef  = useRef();
       const msgTimer  = useRef();
 
@@ -905,13 +950,12 @@
         msgTimer.current = setTimeout(() => setAutoMsg(''), ms);
       };
 
-      // Always reads PAT/ID from localStorage so closures don't go stale
+      // Always reads PAT from localStorage so closures don't go stale
       const writeToGist = async (newRows, newMeta, newInj) => {
-        const id  = localStorage.getItem(LS_GIST_ID_KEY);
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
-        if (!id || !pat) return;
+        if (!pat) return;
         try {
-          await patchGist(id, pat, newRows, newMeta, newInj);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj);
           setGistOk(true); setGistMsg('');
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
@@ -919,44 +963,82 @@
         }
       };
 
-      // On mount: load from Gist if configured, merge with localStorage
+      // On mount: always load from Gist (no PAT needed for reads)
       useEffect(() => {
-        const id  = localStorage.getItem(LS_GIST_ID_KEY);
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
-        if (!id || !pat) return;
         (async () => {
           try {
-            const { logbook, meta: m, injections: inj } = await fetchGist(id, pat);
-            // Gist is source of truth — merge but let gist win on conflict
-            const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
-            const merged  = { ...lsLoadRaw(), ...gistMap };
-            const daily   = Object.entries(merged)
-              .map(([date, wKg]) => ({ date, wKg }))
-              .sort((a, b) => b.date.localeCompare(a.date));
-            const newLogbook = daily.length ? computeLogbook(daily) : logbook;
-            setRows(newLogbook); setMeta(m); setInjections(inj);
-            lsSave(newLogbook, m); lsSaveInjections(inj);
-            setGistOk(true);
+            const result = await fetchGist(GIST_ID, pat || undefined);
+            if (result === null) {
+              setGistOk(!!pat);
+            } else {
+              const { logbook, meta: m, injections: inj } = result;
+              if (pat) {
+                // Admin: merge gist with local, gist wins
+                const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
+                const merged  = { ...lsLoadRaw(), ...gistMap };
+                const daily   = Object.entries(merged)
+                  .map(([date, wKg]) => ({ date, wKg }))
+                  .sort((a, b) => b.date.localeCompare(a.date));
+                const newLogbook = daily.length ? computeLogbook(daily) : logbook;
+                setRows(newLogbook); setMeta(m); setInjections(inj);
+                lsSave(newLogbook, m); lsSaveInjections(inj);
+              } else {
+                // View-only: show gist data directly
+                setRows(logbook); setMeta(m); setInjections(inj);
+              }
+              setGistOk(!!pat);
+            }
           } catch (e) {
             setGistOk(false); setGistMsg(e.message);
+          } finally {
+            setLoading(false);
           }
         })();
       }, []);
 
-      // Save Gist credentials and immediately load
-      const saveGistConfig = useCallback(async (id, pat) => {
-        localStorage.setItem(LS_GIST_ID_KEY, id);
+      // Save PAT and reconnect (admin already logged in, reconfiguring token)
+      const saveGistConfig = useCallback(async (pat) => {
         localStorage.setItem(LS_GIST_PAT_KEY, pat);
         setGistMsg('Connecting…');
         try {
-          const { logbook, meta: m, injections: inj } = await fetchGist(id, pat);
-          setRows(logbook); setMeta(m); setInjections(inj);
-          lsSave(logbook, m); lsSaveInjections(inj);
-          setGistOk(true); setGistMsg('');
-          showMsg('Gist connected ✓');
+          const result = await fetchGist(GIST_ID, pat);
+          if (result === null) {
+            await patchGist(GIST_ID, pat, rows, meta, injections);
+            setGistOk(true); setGistMsg('');
+            showMsg('Gist initialized ✓');
+          } else {
+            const { logbook, meta: m, injections: inj } = result;
+            setRows(logbook); setMeta(m); setInjections(inj);
+            lsSave(logbook, m); lsSaveInjections(inj);
+            setGistOk(true); setGistMsg('');
+            showMsg('Gist connected ✓');
+          }
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
+      }, [rows, meta, injections]);
+
+      // Admin login (view-only user entering PAT)
+      const adminLogin = useCallback(async (pat, setMsg) => {
+        setMsg('Verifying…');
+        try {
+          const result = await fetchGist(GIST_ID, pat);
+          localStorage.setItem(LS_GIST_PAT_KEY, pat);
+          setIsAdmin(true); setGistOk(true); setGistMsg('');
+          if (result !== null) {
+            const { logbook, meta: m, injections: inj } = result;
+            setRows(logbook); setMeta(m); setInjections(inj);
+            lsSave(logbook, m); lsSaveInjections(inj);
+          }
+          setMsg('');
+        } catch (e) { setMsg(e.message); }
+      }, []);
+
+      // Admin logout
+      const adminLogout = useCallback(() => {
+        localStorage.removeItem(LS_GIST_PAT_KEY);
+        setIsAdmin(false); setGistOk(false); setGistMsg('');
       }, []);
 
       // Apply processed CSV result to state + localStorage + Gist
@@ -1113,14 +1195,14 @@
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {needsPerm && exportDir && (
+                {isAdmin && needsPerm && exportDir && (
                   <button onClick={() => runAutoImport(exportDir)}
                           style={{ fontSize: 14, fontWeight: 600, padding: '5px 12px', borderRadius: 10,
                                    background: '#ff9500', color: '#fff', border: 'none', cursor: 'pointer' }}>
                     Check for new export
                   </button>
                 )}
-                {rows.length > 0 && (
+                {isAdmin && rows.length > 0 && (
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => inputRef.current?.click()}
                             style={{ fontSize: 15, fontWeight: 600, padding: '6px 14px', borderRadius: 10,
@@ -1139,8 +1221,15 @@
             </div>
           </div>
 
-          {/* ── Upload / landing ── */}
-          {rows.length === 0 && (
+          {/* ── Loading ── */}
+          {loading && (
+            <div style={{ padding: '60px 16px', textAlign: 'center', color: '#aeaeb2', fontSize: 15 }}>
+              Loading…
+            </div>
+          )}
+
+          {/* ── Upload / landing (admin only) ── */}
+          {!loading && rows.length === 0 && isAdmin && (
             <div style={{ padding: '16px 16px 24px' }}>
 
               {/* Auto-import prompt if folder set but needs permission */}
@@ -1184,7 +1273,7 @@
                 </label>
               </div>
 
-              <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} style={{ marginTop: 10 }} />
+              <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
 
               {/* Set export folder */}
               {hasFSA && (
@@ -1212,7 +1301,7 @@
           )}
 
           {/* ── Logbook ── */}
-          {rows.length > 0 && (
+          {!loading && rows.length > 0 && (
             <div style={{ padding: '12px 12px 32px' }}>
 
               {/* PK Chart */}
@@ -1267,9 +1356,11 @@
                         <span style={{ fontSize: 13, color: '#8eb8e8' }}>·</span>
                         <span style={{ fontSize: 13, color: '#6a9fd4' }}>{fmtShort(item.date)}</span>
                         <div style={{ flex: 1, height: '.5px', background: 'rgba(74,144,217,.2)' }} />
-                        <button onClick={() => deleteInjection(item.date)}
-                                style={{ fontSize: 13, color: '#aac6e8', background: 'none',
-                                         border: 'none', cursor: 'pointer', padding: '0 2px' }}>✕</button>
+                        {isAdmin && (
+                          <button onClick={() => deleteInjection(item.date)}
+                                  style={{ fontSize: 13, color: '#aac6e8', background: 'none',
+                                           border: 'none', cursor: 'pointer', padding: '0 2px' }}>✕</button>
+                        )}
                       </div>
                     );
                   }
@@ -1292,9 +1383,11 @@
                           <span style={{ fontSize: 12, fontWeight: 700, color: '#4a90d9',
                                          background: '#e8f2fd', padding: '1px 5px', borderRadius: 4 }}>inj</span>
                         )}
-                        <button onClick={() => deleteRow(item.date)}
-                                style={{ marginLeft: 2, fontSize: 12, color: '#c7c7cc', background: 'none',
-                                         border: 'none', cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}>✕</button>
+                        {isAdmin && (
+                          <button onClick={() => deleteRow(item.date)}
+                                  style={{ marginLeft: 2, fontSize: 12, color: '#c7c7cc', background: 'none',
+                                           border: 'none', cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}>✕</button>
+                        )}
                       </div>
                       <div style={{ textAlign: 'right', fontSize: 16, fontWeight: 500,
                                     color: '#1c1c1e', fontVariantNumeric: 'tabular-nums' }}>
@@ -1357,15 +1450,17 @@
                               justifyContent: 'space-between', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#4a90d9',
                                 textTransform: 'uppercase', letterSpacing: .6 }}>Injections</div>
-                  <button onClick={() => setShowInj(v => !v)}
-                          style={{ fontSize: 14, fontWeight: 600, padding: '4px 12px', borderRadius: 8,
-                                   background: showInj ? '#e5e5ea' : '#007aff',
-                                   color: showInj ? '#1c1c1e' : '#fff', border: 'none', cursor: 'pointer' }}>
-                    {showInj ? 'Cancel' : '+ Log injection'}
-                  </button>
+                  {isAdmin && (
+                    <button onClick={() => setShowInj(v => !v)}
+                            style={{ fontSize: 14, fontWeight: 600, padding: '4px 12px', borderRadius: 8,
+                                     background: showInj ? '#e5e5ea' : '#007aff',
+                                     color: showInj ? '#1c1c1e' : '#fff', border: 'none', cursor: 'pointer' }}>
+                      {showInj ? 'Cancel' : '+ Log injection'}
+                    </button>
+                  )}
                 </div>
 
-                {showInj && (
+                {isAdmin && showInj && (
                   <div style={{ padding: '12px 14px', borderBottom: '.5px solid rgba(0,0,0,.06)',
                                 display: 'flex', gap: 8, alignItems: 'flex-end' }}>
                     <div style={{ flex: 1 }}>
@@ -1407,34 +1502,42 @@
                     </div>
                     <div style={{ fontSize: 16, fontWeight: 600, color: '#4a90d9',
                                   fontVariantNumeric: 'tabular-nums' }}>{inj.doseMg} mg</div>
-                    <button onClick={() => deleteInjection(inj.date)}
-                            style={{ marginLeft: 12, fontSize: 15, color: '#c7c7cc', background: 'none',
-                                     border: 'none', cursor: 'pointer', padding: '2px 4px' }}>✕</button>
+                    {isAdmin && (
+                      <button onClick={() => deleteInjection(inj.date)}
+                              style={{ marginLeft: 12, fontSize: 15, color: '#c7c7cc', background: 'none',
+                                       border: 'none', cursor: 'pointer', padding: '2px 4px' }}>✕</button>
+                    )}
                   </div>
                 ))}
               </div>
 
-              <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} style={{ marginTop: 10 }} />
+              {isAdmin ? (
+                <>
+                  <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
 
-              {/* Export folder control */}
-              {hasFSA && (
-                <button onClick={exportDir ? () => runAutoImport(exportDir) : pickExportFolder}
-                        style={{ marginTop: 10, width: '100%', borderRadius: 14, background: '#fff',
-                                 border: '.5px solid #d1d1d6', padding: '12px 16px',
-                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                 cursor: 'pointer', textAlign: 'left' }}>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
-                      {exportDir ? `Auto-import · ${exportDir.name}` : 'Set export folder'}
-                    </div>
-                    <div style={{ fontSize: 13, color: '#8e8e93', marginTop: 1 }}>
-                      {exportDir ? 'Tap to check for a newer export now' : 'Auto-load Automation_Daily_export_*.csv on every open'}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 16, color: exportDir ? '#34c759' : '#8e8e93' }}>
-                    {exportDir ? '↺' : '›'}
-                  </div>
-                </button>
+                  {/* Export folder control */}
+                  {hasFSA && (
+                    <button onClick={exportDir ? () => runAutoImport(exportDir) : pickExportFolder}
+                            style={{ marginTop: 10, width: '100%', borderRadius: 14, background: '#fff',
+                                     border: '.5px solid #d1d1d6', padding: '12px 16px',
+                                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                     cursor: 'pointer', textAlign: 'left' }}>
+                      <div>
+                        <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
+                          {exportDir ? `Auto-import · ${exportDir.name}` : 'Set export folder'}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#8e8e93', marginTop: 1 }}>
+                          {exportDir ? 'Tap to check for a newer export now' : 'Auto-load Automation_Daily_export_*.csv on every open'}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 16, color: exportDir ? '#34c759' : '#8e8e93' }}>
+                        {exportDir ? '↺' : '›'}
+                      </div>
+                    </button>
+                  )}
+                </>
+              ) : (
+                <AdminLogin onLogin={adminLogin} style={{ marginTop: 16, textAlign: 'center' }} />
               )}
 
               {error && <ErrBox msg={error} />}

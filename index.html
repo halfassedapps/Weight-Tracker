@@ -25,9 +25,10 @@
 
     const LS_KEY          = 'weight-tracker-data';
     const LS_INJ_KEY      = 'weight-tracker-injections';
-    const LS_LAST_CSV_KEY    = 'weight-tracker-last-csv';   // last auto-imported filename
-    const EXPORT_RE          = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
-    const IDB_DATA_FILE_KEY  = 'data-file-handle';
+    const LS_LAST_CSV_KEY = 'weight-tracker-last-csv';
+    const LS_GIST_ID_KEY  = 'weight-tracker-gist-id';
+    const LS_GIST_PAT_KEY = 'weight-tracker-gist-pat';
+    const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
 
     /* ─── IndexedDB (directory handle storage) ───────────────────────────────── */
     function openIDB() {
@@ -142,10 +143,8 @@
         .sort((a, b) => b.date.localeCompare(a.date));
     }
 
-    /* ─── Data file (weight-data.json) read / write ─────────────────────────── */
-    async function readDataFile(handle) {
-      const file = await handle.getFile();
-      const { meta, entries = [], injections = [] } = JSON.parse(await file.text());
+    /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
+    function parseGistPayload({ meta, entries = [], injections = [] }) {
       const daily = entries
         .filter(e => e.date && e.wKg != null)
         .sort((a, b) => b.date.localeCompare(a.date));
@@ -156,16 +155,32 @@
       };
     }
 
-    async function writeDataFile(handle, rows, meta, injections) {
-      const writable = await handle.createWritable();
-      await writable.write(JSON.stringify({
-        version:    1,
-        savedAt:    new Date().toISOString(),
-        meta,
+    async function fetchGist(gistId, pat) {
+      const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+        headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' },
+      });
+      if (!res.ok) throw new Error(`Gist fetch ${res.status}`);
+      const gist = await res.json();
+      const content = gist.files['weight-data.json']?.content;
+      if (!content) throw new Error('weight-data.json not found in gist');
+      return parseGistPayload(JSON.parse(content));
+    }
+
+    async function patchGist(gistId, pat, rows, meta, injections) {
+      const content = JSON.stringify({
+        version: 1, savedAt: new Date().toISOString(), meta,
         injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
-      }, null, 2));
-      await writable.close();
+      }, null, 2);
+      const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ files: { 'weight-data.json': { content } } }),
+      });
+      if (!res.ok) throw new Error(`Gist write ${res.status}`);
     }
 
     /* ─── CSV parser ─────────────────────────────────────────────────────────── */
@@ -806,6 +821,53 @@
       );
     }
 
+    function GistPanel({ gistOk, gistMsg, onSave, style }) {
+      const [open,   setOpen]   = React.useState(false);
+      const [id,     setId]     = React.useState(() => localStorage.getItem(LS_GIST_ID_KEY)  ?? '');
+      const [pat,    setPat]    = React.useState(() => localStorage.getItem(LS_GIST_PAT_KEY) ?? '');
+      const configured = !!(localStorage.getItem(LS_GIST_ID_KEY) && localStorage.getItem(LS_GIST_PAT_KEY));
+      return (
+        <div style={{ borderRadius: 14, overflow: 'hidden', border: `.5px solid ${gistOk ? '#34c759' : '#d1d1d6'}`,
+                      background: '#fff', ...style }}>
+          <button onClick={() => setOpen(v => !v)}
+                  style={{ width: '100%', padding: '12px 16px', background: 'none', border: 'none',
+                           cursor: 'pointer', display: 'flex', alignItems: 'center',
+                           justifyContent: 'space-between', textAlign: 'left' }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
+                {gistOk ? 'Gist sync active' : configured ? 'Gist sync — tap to reconfigure' : 'Set up Gist sync'}
+              </div>
+              <div style={{ fontSize: 12, color: gistMsg ? '#ff3b30' : '#8e8e93', marginTop: 1 }}>
+                {gistMsg || (gistOk ? 'Auto-saves to GitHub Gist on every change' : 'Connect a GitHub Gist to sync across devices')}
+              </div>
+            </div>
+            <div style={{ fontSize: 16, color: gistOk ? '#34c759' : '#8e8e93', marginLeft: 8 }}>
+              {gistOk ? '✓' : open ? '▾' : '›'}
+            </div>
+          </button>
+          {open && (
+            <div style={{ padding: '0 16px 14px', borderTop: '.5px solid #f2f2f7' }}>
+              <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>Gist ID</div>
+              <input value={id} onChange={e => setId(e.target.value)} placeholder="aa6e7ae2259f94c7a91637b447a0cd99"
+                     style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
+                              border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+              <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>Personal Access Token (gist scope)</div>
+              <input value={pat} onChange={e => setPat(e.target.value)} type="password" placeholder="ghp_..."
+                     style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
+                              border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+              <button onClick={() => { onSave(id, pat); setOpen(false); }}
+                      disabled={!id || !pat}
+                      style={{ marginTop: 12, width: '100%', padding: '10px', borderRadius: 10,
+                               fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer',
+                               background: (!id || !pat) ? '#e5e5ea' : '#4a90d9', color: '#fff' }}>
+                Save &amp; Connect
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function PkStat({ label, value, note, color }) {
       return (
         <div style={{ flex: 1, textAlign: 'center' }}>
@@ -832,9 +894,10 @@
       const [exportDir,  setExportDir]  = useState(null);   // FileSystemDirectoryHandle
       const [autoMsg,    setAutoMsg]    = useState('');      // transient status line
       const [needsPerm,  setNeedsPerm]  = useState(false);  // permission lapsed
-      const inputRef      = useRef();
-      const msgTimer      = useRef();
-      const dataFileRef   = useRef(null);  // FileSystemFileHandle for weight-data.json
+      const [gistOk,  setGistOk]  = useState(false);
+      const [gistMsg, setGistMsg] = useState('');
+      const inputRef  = useRef();
+      const msgTimer  = useRef();
 
       const showMsg = (msg, ms = 4000) => {
         setAutoMsg(msg);
@@ -842,66 +905,67 @@
         msgTimer.current = setTimeout(() => setAutoMsg(''), ms);
       };
 
-      // Write all state to data file (no-op if no handle)
-      const writeToFile = async (newRows, newMeta, newInj) => {
-        if (!dataFileRef.current) return;
-        try { await writeDataFile(dataFileRef.current, newRows, newMeta, newInj); } catch (_) {}
+      // Always reads PAT/ID from localStorage so closures don't go stale
+      const writeToGist = async (newRows, newMeta, newInj) => {
+        const id  = localStorage.getItem(LS_GIST_ID_KEY);
+        const pat = localStorage.getItem(LS_GIST_PAT_KEY);
+        if (!id || !pat) return;
+        try {
+          await patchGist(id, pat, newRows, newMeta, newInj);
+          setGistOk(true); setGistMsg('');
+        } catch (e) {
+          setGistOk(false); setGistMsg(e.message);
+          console.warn('[Gist] write failed:', e.message);
+        }
       };
 
-      // On mount: restore data file handle from IDB and load from it
+      // On mount: load from Gist if configured, merge with localStorage
       useEffect(() => {
+        const id  = localStorage.getItem(LS_GIST_ID_KEY);
+        const pat = localStorage.getItem(LS_GIST_PAT_KEY);
+        if (!id || !pat) return;
         (async () => {
-          const handle = await idbGet(IDB_DATA_FILE_KEY);
-          if (!handle) return;
           try {
-            const perm = await handle.queryPermission({ mode: 'readwrite' });
-            const granted = perm === 'granted'
-              ? 'granted'
-              : await handle.requestPermission({ mode: 'readwrite' });
-            if (granted !== 'granted') return;
-            dataFileRef.current = handle;
-            const { logbook, meta: m, injections: inj } = await readDataFile(handle);
-            if (logbook.length) { setRows(logbook); setMeta(m); lsSave(logbook, m); }
-            if (inj.length)     { setInjections(inj); lsSaveInjections(inj); }
-          } catch (_) {}
+            const { logbook, meta: m, injections: inj } = await fetchGist(id, pat);
+            // Gist is source of truth — merge but let gist win on conflict
+            const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
+            const merged  = { ...lsLoadRaw(), ...gistMap };
+            const daily   = Object.entries(merged)
+              .map(([date, wKg]) => ({ date, wKg }))
+              .sort((a, b) => b.date.localeCompare(a.date));
+            const newLogbook = daily.length ? computeLogbook(daily) : logbook;
+            setRows(newLogbook); setMeta(m); setInjections(inj);
+            lsSave(newLogbook, m); lsSaveInjections(inj);
+            setGistOk(true);
+          } catch (e) {
+            setGistOk(false); setGistMsg(e.message);
+          }
         })();
       }, []);
 
-      // Connect weight-data.json — merge existing localStorage data in, then write
-      const connectDataFile = useCallback(async () => {
+      // Save Gist credentials and immediately load
+      const saveGistConfig = useCallback(async (id, pat) => {
+        localStorage.setItem(LS_GIST_ID_KEY, id);
+        localStorage.setItem(LS_GIST_PAT_KEY, pat);
+        setGistMsg('Connecting…');
         try {
-          const [handle] = await window.showOpenFilePicker({
-            types: [{ description: 'Weight data JSON', accept: { 'application/json': ['.json'] } }],
-          });
-          const granted = await handle.requestPermission({ mode: 'readwrite' });
-          if (granted !== 'granted') { showMsg('Write permission denied.'); return; }
-          await idbSet(IDB_DATA_FILE_KEY, handle);
-          dataFileRef.current = handle;
+          const { logbook, meta: m, injections: inj } = await fetchGist(id, pat);
+          setRows(logbook); setMeta(m); setInjections(inj);
+          lsSave(logbook, m); lsSaveInjections(inj);
+          setGistOk(true); setGistMsg('');
+          showMsg('Gist connected ✓');
+        } catch (e) {
+          setGistOk(false); setGistMsg(e.message);
+        }
+      }, []);
 
-          // Read file, then merge with any existing localStorage entries (ls wins on conflict)
-          const { logbook: fLog, meta: fMeta, injections: fInj } = await readDataFile(handle);
-          const fileMap = Object.fromEntries(fLog.map(r => [r.date, r.wKg]));
-          const merged  = { ...fileMap, ...lsLoadRaw() };
-          const daily   = Object.entries(merged)
-            .map(([date, wKg]) => ({ date, wKg }))
-            .sort((a, b) => b.date.localeCompare(a.date));
-          const newLogbook = daily.length ? computeLogbook(daily) : fLog;
-          const newMeta    = meta ?? fMeta;
-          const newInj     = injections.length ? injections : fInj;
-          setRows(newLogbook); setMeta(newMeta); setInjections(newInj);
-          lsSave(newLogbook, newMeta); lsSaveInjections(newInj);
-          await writeDataFile(handle, newLogbook, newMeta, newInj);
-          showMsg('Data file connected ✓');
-        } catch (e) { if (e.name !== 'AbortError') showMsg('Could not connect file: ' + e.message); }
-      }, [meta, injections]);
-
-      // Apply processed CSV result to state + localStorage + file
+      // Apply processed CSV result to state + localStorage + Gist
       const applyResult = useCallback(({ logbook, meta: newMeta }) => {
         setRows(logbook);
         setMeta(newMeta);
         setError('');
         lsSave(logbook, newMeta);
-        writeToFile(logbook, newMeta, injections);
+        writeToGist(logbook, newMeta, injections);
       }, [injections]);
 
       // Auto-import: scan export folder for newest matching CSV
@@ -983,7 +1047,7 @@
           .sort((a, b) => b.date.localeCompare(a.date));
         setInjections(next);
         lsSaveInjections(next);
-        writeToFile(rows, meta, next);
+        writeToGist(rows, meta, next);
         setInjDose('');
         setInjDate(today());
         setShowInj(false);
@@ -993,7 +1057,7 @@
         const next = injections.filter(i => i.date !== date);
         setInjections(next);
         lsSaveInjections(next);
-        writeToFile(rows, meta, next);
+        writeToGist(rows, meta, next);
       }, [injections, rows, meta]);
 
       const deleteRow = useCallback((date) => {
@@ -1001,7 +1065,19 @@
         const newLogbook = computeLogbook(daily);
         setRows(newLogbook);
         lsSave(newLogbook, meta);
-        writeToFile(newLogbook, meta, injections);
+        writeToGist(newLogbook, meta, injections);
+      }, [rows, meta, injections]);
+
+      const exportJSON = useCallback(() => {
+        const payload = JSON.stringify({
+          version: 1, savedAt: new Date().toISOString(), meta,
+          injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
+          entries: rows.map(r => ({ date: r.date, wKg: r.wKg })),
+        }, null, 2);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+        a.download = 'weight-data.json';
+        a.click();
       }, [rows, meta, injections]);
 
       const onInput = useCallback(e => loadCSV(e.target.files[0]), [loadCSV]);
@@ -1045,11 +1121,18 @@
                   </button>
                 )}
                 {rows.length > 0 && (
-                  <button onClick={() => inputRef.current?.click()}
-                          style={{ fontSize: 15, fontWeight: 600, padding: '6px 14px', borderRadius: 10,
-                                   background: '#e5e5ea', color: '#1c1c1e', border: 'none', cursor: 'pointer' }}>
-                    Import
-                  </button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => inputRef.current?.click()}
+                            style={{ fontSize: 15, fontWeight: 600, padding: '6px 14px', borderRadius: 10,
+                                     background: '#e5e5ea', color: '#1c1c1e', border: 'none', cursor: 'pointer' }}>
+                      Import
+                    </button>
+                    <button onClick={exportJSON}
+                            style={{ fontSize: 15, fontWeight: 600, padding: '6px 14px', borderRadius: 10,
+                                     background: '#e5e5ea', color: '#1c1c1e', border: 'none', cursor: 'pointer' }}>
+                      Export
+                    </button>
+                  </div>
                 )}
               </div>
               <input ref={inputRef} type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={onInput} />
@@ -1101,29 +1184,7 @@
                 </label>
               </div>
 
-              {/* Connect data file */}
-              {hasFSA && (
-                <button onClick={connectDataFile}
-                        style={{ marginTop: 10, width: '100%', borderRadius: 14, background: '#fff',
-                                 border: `.5px solid ${dataFileRef.current ? '#34c759' : '#d1d1d6'}`,
-                                 padding: '14px 16px',
-                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                 cursor: 'pointer', textAlign: 'left' }}>
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: '#1c1c1e' }}>
-                      {dataFileRef.current ? 'Data file connected' : 'Connect data file'}
-                    </div>
-                    <div style={{ fontSize: 14, color: '#8e8e93', marginTop: 2 }}>
-                      {dataFileRef.current
-                        ? 'weight-data.json — tap to reconnect'
-                        : 'Pick weight-data.json to auto-load and save weight + injections'}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 18, color: dataFileRef.current ? '#34c759' : '#8e8e93' }}>
-                    {dataFileRef.current ? '✓' : '›'}
-                  </div>
-                </button>
-              )}
+              <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} style={{ marginTop: 10 }} />
 
               {/* Set export folder */}
               {hasFSA && (
@@ -1353,29 +1414,7 @@
                 ))}
               </div>
 
-              {/* Data file control */}
-              {hasFSA && (
-                <button onClick={connectDataFile}
-                        style={{ marginTop: 10, width: '100%', borderRadius: 14, background: '#fff',
-                                 border: `.5px solid ${dataFileRef.current ? '#34c759' : '#d1d1d6'}`,
-                                 padding: '12px 16px',
-                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                 cursor: 'pointer', textAlign: 'left' }}>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
-                      {dataFileRef.current ? 'Data file connected' : 'Connect data file'}
-                    </div>
-                    <div style={{ fontSize: 13, color: '#8e8e93', marginTop: 1 }}>
-                      {dataFileRef.current
-                        ? 'weight-data.json — tap to reconnect'
-                        : 'Pick weight-data.json to save weight + injections automatically'}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 16, color: dataFileRef.current ? '#34c759' : '#8e8e93' }}>
-                    {dataFileRef.current ? '✓' : '›'}
-                  </div>
-                </button>
-              )}
+              <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} style={{ marginTop: 10 }} />
 
               {/* Export folder control */}
               {hasFSA && (

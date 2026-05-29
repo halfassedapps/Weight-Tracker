@@ -21,7 +21,152 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useCallback, useRef } = React;
+    const { useState, useCallback, useRef, useEffect } = React;
+
+    const LS_KEY          = 'weight-tracker-data';
+    const LS_INJ_KEY      = 'weight-tracker-injections';
+    const LS_LAST_CSV_KEY    = 'weight-tracker-last-csv';   // last auto-imported filename
+    const EXPORT_RE          = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
+    const IDB_DATA_FILE_KEY  = 'data-file-handle';
+
+    /* ─── IndexedDB (directory handle storage) ───────────────────────────────── */
+    function openIDB() {
+      return new Promise((res, rej) => {
+        const req = indexedDB.open('weight-tracker-fs', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('handles');
+        req.onsuccess  = () => res(req.result);
+        req.onerror    = () => rej(req.error);
+      });
+    }
+    async function idbGet(key) {
+      const db = await openIDB();
+      return new Promise((res, rej) => {
+        const req = db.transaction('handles','readonly').objectStore('handles').get(key);
+        req.onsuccess = () => res(req.result ?? null);
+        req.onerror   = () => rej(req.error);
+      });
+    }
+    async function idbSet(key, val) {
+      const db = await openIDB();
+      return new Promise((res, rej) => {
+        const tx = db.transaction('handles','readwrite');
+        tx.objectStore('handles').put(val, key);
+        tx.oncomplete = res;
+        tx.onerror    = () => rej(tx.error);
+      });
+    }
+
+    /* ─── Export folder helpers ──────────────────────────────────────────────── */
+    // Extract the YYYY-MM-DD_HHMMSS portion so sort is date-based regardless of filename prefix.
+    const exportTs = name => { const m = name.match(/(\d{4}-\d{2}-\d{2}_\d{6})/); return m ? m[1] : ''; };
+
+    async function findLatestExport(dirHandle) {
+      const matches = [];
+      console.log(`[Weight Tracker] Scanning folder: ${dirHandle.name}`);
+      for await (const [name, handle] of dirHandle.entries()) {
+        const matched = EXPORT_RE.test(name);
+        console.log(`  ${matched ? '✓' : '✗'} ${name}${matched ? '  ts=' + exportTs(name) : ''}`);
+        if (matched) matches.push({ name, handle });
+      }
+      if (!matches.length) { console.log('[Weight Tracker] No matching export files found.'); return null; }
+      matches.sort((a, b) => exportTs(b.name).localeCompare(exportTs(a.name)));
+      console.log(`[Weight Tracker] Latest export: ${matches[0].name} (ts=${exportTs(matches[0].name)})`);
+      return matches[0];
+    }
+
+    // getFile() on an iCloud-evicted file triggers a download but may take a few seconds.
+    // Retry up to maxAttempts times with a short delay between each.
+    async function readFileWithRetry(fileHandle, { maxAttempts = 5, delayMs = 1500, onWaiting } = {}) {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          const file = await fileHandle.getFile();
+          return await file.text();
+        } catch (ex) {
+          const isCloudError = ex.name === 'NotReadableError' || ex.message?.includes('cloud');
+          if (!isCloudError || attempt === maxAttempts - 1) throw ex;
+          if (onWaiting) onWaiting(attempt + 1);
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+      }
+    }
+
+    /* ─── Injection localStorage ─────────────────────────────────────────────── */
+    function lsLoadInjections() {
+      try {
+        const raw = localStorage.getItem(LS_INJ_KEY);
+        if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) return p; }
+      } catch (_) {}
+      return [];
+    }
+    function lsSaveInjections(list) {
+      try { localStorage.setItem(LS_INJ_KEY, JSON.stringify(list)); } catch (_) {}
+    }
+
+    /* ─── Weight localStorage ────────────────────────────────────────────────── */
+    function lsSave(rows, meta) {
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify({
+          meta,
+          entries: rows.map(r => ({ date: r.date, wKg: r.wKg })),
+        }));
+      } catch (_) {}
+    }
+    function lsLoad() {
+      try {
+        const raw = localStorage.getItem(LS_KEY);
+        if (!raw) return null;
+        const { meta, entries } = JSON.parse(raw);
+        if (!Array.isArray(entries) || !entries.length) return null;
+        const daily = entries
+          .filter(e => e.date && e.wKg != null)
+          .sort((a, b) => b.date.localeCompare(a.date));
+        return { logbook: computeLogbook(daily), meta: meta ?? { metric: 'Weight', source: '' } };
+      } catch (_) { return null; }
+    }
+    function lsLoadRaw() {
+      try {
+        const raw = localStorage.getItem(LS_KEY);
+        if (!raw) return {};
+        const { entries } = JSON.parse(raw);
+        if (!Array.isArray(entries)) return {};
+        const map = {};
+        entries.forEach(e => { if (e.date && e.wKg != null) map[e.date] = e.wKg; });
+        return map;
+      } catch (_) { return {}; }
+    }
+    function mergeWithStored(newDaily) {
+      const map = lsLoadRaw();
+      newDaily.forEach(e => { map[e.date] = e.wKg; });
+      return Object.entries(map)
+        .map(([date, wKg]) => ({ date, wKg }))
+        .sort((a, b) => b.date.localeCompare(a.date));
+    }
+
+    /* ─── Data file (weight-data.json) read / write ─────────────────────────── */
+    async function readDataFile(handle) {
+      const file = await handle.getFile();
+      const { meta, entries = [], injections = [] } = JSON.parse(await file.text());
+      const daily = entries
+        .filter(e => e.date && e.wKg != null)
+        .sort((a, b) => b.date.localeCompare(a.date));
+      return {
+        logbook:    daily.length ? computeLogbook(daily) : [],
+        meta:       meta ?? { metric: 'Weight', source: '' },
+        injections: injections.filter(i => i.date && i.doseMg),
+      };
+    }
+
+    async function writeDataFile(handle, rows, meta, injections) {
+      const writable = await handle.createWritable();
+      await writable.write(JSON.stringify({
+        version:    1,
+        savedAt:    new Date().toISOString(),
+        meta,
+        injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
+        entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
+      }, null, 2));
+      await writable.close();
+    }
 
     /* ─── CSV parser ─────────────────────────────────────────────────────────── */
     function splitLine(line) {
@@ -35,7 +180,6 @@
       out.push(cur.trim().replace(/^"|"$/g, ''));
       return out;
     }
-
     function parseCSV(text) {
       const lines = text.trim().split(/\r?\n/).filter(Boolean);
       if (lines.length < 2) return [];
@@ -49,18 +193,13 @@
     }
 
     /* ─── Schema detection ───────────────────────────────────────────────────── */
-    // Supports two formats:
-    //   Long/pivot: date, metric, value, unit, source  (Apple Health Shortcuts export)
-    //   Wide:       date, weight/value, unit            (one row per day)
     function detectSchema(headers, rows) {
       const lc  = h => h.toLowerCase().replace(/[\s_\-]/g, '');
       const find = (...keys) => headers.find(h => keys.some(k => lc(h) === k || lc(h).includes(k)));
-
       const dateCol   = find('date', 'startdate', 'datetime', 'timestamp');
       const metricCol = find('metric', 'metricname', 'type', 'category', 'name');
       const valueCol  = find('value', 'qty');
       const unitCol   = find('unit', 'units');
-
       if (metricCol && valueCol && dateCol) {
         const metricValues = [...new Set(rows.map(r => r[metricCol]).filter(Boolean))];
         const weightMetric = metricValues.find(m =>
@@ -69,12 +208,8 @@
         ) ?? metricValues.find(m => m.toLowerCase().includes('weight'));
         return { format: 'long', dateCol, metricCol, valueCol, unitCol, weightMetric, allMetrics: metricValues };
       }
-
       const wideValue = find('weight', 'bodymass', 'body mass', 'mass', 'value');
-      if (dateCol && wideValue) {
-        return { format: 'wide', dateCol, valueCol: wideValue, unitCol };
-      }
-
+      if (dateCol && wideValue) return { format: 'wide', dateCol, valueCol: wideValue, unitCol };
       return { format: 'unknown', dateCol, valueCol, unitCol };
     }
 
@@ -117,22 +252,106 @@
           const prev = data.slice(i + 7, i + 14).map(d => d.wKg);
           if (prev.length) weeklyRateKg = movAvgKg - avg(prev);
         }
-        const hiSlice  = data.slice(i, i + 10).map(d => d.wKg);
-        const tenHiKg  = Math.max(...hiSlice);
+        const hiSlice    = data.slice(i, i + 10).map(d => d.wKg);
+        const tenHiKg    = Math.max(...hiSlice);
+        const prev2wSlice = data.slice(i + 14, i + 21).map(d => d.wKg);
+        const twoWeekLossKg = prev2wSlice.length >= 3 ? avg(prev2wSlice) - movAvgKg : null;
         return {
           ...entry,
-          lbs:     toLbs(entry.wKg),
-          movAvg:  toLbs(movAvgKg),
-          rate:    weeklyRateKg != null ? toLbs(weeklyRateKg) : null,
-          tenHigh: toLbs(tenHiKg),
+          lbs:         toLbs(entry.wKg),
+          movAvg:      toLbs(movAvgKg),
+          rate:        weeklyRateKg != null ? toLbs(weeklyRateKg) : null,
+          tenHigh:     toLbs(tenHiKg),
+          twoWeekLoss: twoWeekLossKg != null ? toLbs(twoWeekLossKg) : null,
         };
       });
+    }
+
+    const TIRZ_SCHEDULE = [1, 1.25, 2, 2.25, 2.5, 3, 3.5, 4, 5, 6, 7.5, 10, 12.5, 15];
+
+    function doseGuidance(twoWeekLbs) {
+      if (twoWeekLbs == null) return null;
+      if (twoWeekLbs > 8)  return { action: 'contact', label: 'Contact prescriber', note: '>8 lbs/2wk', color: '#ff3b30', bg: '#fff1f0' };
+      if (twoWeekLbs >= 5) return { action: 'monitor', label: 'Stay — monitor',     note: '5–8 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
+      if (twoWeekLbs >= 3) return { action: 'stay',    label: 'Stay at dose',       note: '3–4 lbs/2wk', color: '#34c759', bg: '#f0fdf4' };
+      if (twoWeekLbs >= 0) return { action: 'increase', label: 'Consider ↑ dose',   note: '<3 lbs/2wk',  color: '#ff9500', bg: '#fff8ee' };
+      return { action: 'gained', label: 'Gained weight', note: twoWeekLbs.toFixed(1) + ' lbs', color: '#ff3b30', bg: '#fff1f0' };
+    }
+
+    function recommendedDose(currentDoseMg, twoWeekLbs) {
+      const g = doseGuidance(twoWeekLbs);
+      if (!g) return null;
+      const idx = TIRZ_SCHEDULE.findIndex(d => Math.abs(d - currentDoseMg) < 0.01);
+      if (g.action === 'increase') {
+        const nextDose = idx !== -1 && idx < TIRZ_SCHEDULE.length - 1
+          ? TIRZ_SCHEDULE[idx + 1]
+          : null;
+        return { dose: nextDose, g };
+      }
+      return { dose: currentDoseMg, g };
+    }
+
+    // Parses CSV text, merges with stored data, returns { logbook, meta } or throws.
+    function processCSVText(text) {
+      const parsed = parseCSV(text);
+      if (!parsed.length) throw new Error('CSV is empty.');
+      const schema = detectSchema(Object.keys(parsed[0]), parsed);
+      if (schema.format === 'unknown') throw new Error(`Couldn't identify schema. Headers: ${Object.keys(parsed[0]).join(', ')}`);
+      if (schema.format === 'long' && !schema.weightMetric) {
+        const sample = (schema.allMetrics ?? []).slice(0, 8).join(', ');
+        throw new Error(`No weight metric found. Metrics present: ${sample}`);
+      }
+      const newDaily = buildDailyMap(parsed, schema);
+      if (!newDaily.length) throw new Error('No valid weight entries found.');
+      const daily   = mergeWithStored(newDaily);
+      const logbook = computeLogbook(daily);
+      const srcCol  = Object.keys(parsed[0]).find(h => h.toLowerCase() === 'source');
+      const wRows   = schema.format === 'long' ? parsed.filter(r => r[schema.metricCol] === schema.weightMetric) : parsed;
+      const source  = srcCol ? [...new Set(wRows.map(r => r[srcCol]).filter(Boolean))].join(', ') : '';
+      const meta    = { metric: schema.weightMetric ?? 'Weight', source };
+      return { logbook, meta };
+    }
+
+    /* ─── Pharmacokinetics ───────────────────────────────────────────────────── */
+    const TPEAK_D = 1.5;
+    const T_HALF  = 5;
+    const KE      = Math.LN2 / T_HALF;
+
+    function pkContrib(doseMg, dtDays) {
+      if (dtDays < 0)       return 0;
+      if (dtDays < TPEAK_D) return doseMg * (dtDays / TPEAK_D);
+      return doseMg * Math.exp(-KE * (dtDays - TPEAK_D));
+    }
+    function pkTotal(injections, evalMs) {
+      return injections.reduce((sum, inj) => {
+        const injMs = new Date(inj.date + 'T12:00:00').getTime();
+        return sum + pkContrib(inj.doseMg, (evalMs - injMs) / 86400000);
+      }, 0);
+    }
+
+    /* ─── Logbook item builder ───────────────────────────────────────────────── */
+    function buildItems(rows, injections) {
+      const injDesc = [...injections].sort((a, b) => b.date.localeCompare(a.date));
+      const injSet  = new Set(injections.map(i => i.date));
+      const items   = [];
+      let   injIdx  = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        while (injIdx < injDesc.length && injDesc[injIdx].date >= row.date) {
+          items.push({ type: 'injection', ...injDesc[injIdx] });
+          injIdx++;
+        }
+        items.push({ type: 'row', ...row, isInjDay: injSet.has(row.date), isLast: i === rows.length - 1 });
+      }
+      while (injIdx < injDesc.length) items.push({ type: 'injection', ...injDesc[injIdx++] });
+      return items;
     }
 
     /* ─── Formatting ─────────────────────────────────────────────────────────── */
     const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    const fmtDate = s => { const d = new Date(s + 'T12:00:00'); return { mo: MO[d.getMonth()], day: d.getDate(), wd: WD[d.getDay()] }; };
+    const fmtDate  = s => { const d = new Date(s + 'T12:00:00'); return { mo: MO[d.getMonth()], day: d.getDate(), wd: WD[d.getDay()] }; };
+    const fmtShort = s => { const { mo, day } = fmtDate(s); return `${mo} ${day}`; };
     const fw = v => v != null ? v.toFixed(1) : '—';
 
     function rateInfo(v) {
@@ -142,54 +361,655 @@
       if (v >  0.01) return { label: `↑ ${abs}`, cls: 'gain' };
       return { label: `→ ${abs}`, cls: 'flat' };
     }
-
     const BADGE = {
       loss: { background: '#e6f9ef', color: '#1a7f3c' },
       gain: { background: '#fff2f0', color: '#c0392b' },
       flat: { background: '#f2f2f7', color: '#8e8e93' },
     };
+    const today = () => new Date().toLocaleDateString('en-CA');
+
+    /* ─── PK Chart ───────────────────────────────────────────────────────────── */
+    function PkChart({ injections, rows }) {
+      if (!injections.length) return null;
+      const [tip, setTip] = useState(null); // { x, y, level, dateStr, wLbs }
+
+      const sortedInj = [...injections].sort((a, b) => a.date.localeCompare(b.date));
+
+      const startMs = new Date(sortedInj[0].date + 'T12:00:00').getTime();
+      const todayD  = new Date(); todayD.setHours(12, 0, 0, 0);
+      const todayMs = todayD.getTime();
+      const endMs   = todayMs + 21 * 86400000;
+
+      const STEP = 6 * 3600000;
+      const pts  = [];
+      for (let ms = startMs; ms <= endMs; ms += STEP) {
+        pts.push({ ms, v: pkTotal(sortedInj, ms) });
+      }
+      const maxV = Math.max(...pts.map(p => p.v), 0.01);
+
+      const VW = 360, VH = 172;
+      const PAD = { t: 18, r: 40, b: 42, l: 36 };
+      const cW  = VW - PAD.l - PAD.r;
+      const cH  = VH - PAD.t - PAD.b;
+
+      // Weight line: filter rows within chart range, sort ascending
+      const wPts = (rows ?? [])
+        .map(r => ({ ms: new Date(r.date + 'T12:00:00').getTime(), lbs: r.lbs }))
+        .filter(p => p.ms >= startMs && p.ms <= todayMs)
+        .sort((a, b) => a.ms - b.ms);
+      const wVals = wPts.map(p => p.lbs);
+      const wMin  = wVals.length ? Math.min(...wVals) : 0;
+      const wMax  = wVals.length ? Math.max(...wVals) : 1;
+      const wPad  = Math.max((wMax - wMin) * 0.15, 2);
+      const wLo   = wMin - wPad;
+      const wHi   = wMax + wPad;
+      const yOfW  = lbs => PAD.t + cH - ((lbs - wLo) / (wHi - wLo)) * cH;
+
+      // Interpolate weight at any ms for tooltip
+      const interpW = (ms) => {
+        if (!wPts.length) return null;
+        let lo = null, hi = null;
+        for (const p of wPts) {
+          if (p.ms <= ms) lo = p; else if (!hi) hi = p;
+        }
+        if (!lo && !hi) return null;
+        if (!lo) return hi.lbs;
+        if (!hi) return lo.lbs;
+        return lo.lbs + (ms - lo.ms) / (hi.ms - lo.ms) * (hi.lbs - lo.lbs);
+      };
+
+      const xOf = ms => PAD.l + ((ms - startMs) / (endMs - startMs)) * cW;
+      const yOf = v  => PAD.t + cH - Math.min(v / maxV, 1) * cH;
+
+      const line = pts.map((p, i) =>
+        `${i === 0 ? 'M' : 'L'}${xOf(p.ms).toFixed(1)},${yOf(p.v).toFixed(1)}`
+      ).join(' ');
+      const area = `${line} L${xOf(endMs).toFixed(1)},${(PAD.t+cH).toFixed(1)} L${xOf(startMs).toFixed(1)},${(PAD.t+cH).toFixed(1)} Z`;
+
+      const todayX      = xOf(todayMs);
+      const curLevel    = pkTotal(sortedInj, todayMs);
+      const lastInjMs   = new Date(sortedInj[sortedInj.length - 1].date + 'T12:00:00').getTime();
+      const nextInjMs   = lastInjMs + 7 * 86400000;
+      const troughLevel = pkTotal(sortedInj, nextInjMs - 3600000);
+      const yTicks = [maxV * 0.5, maxV];
+      const yDate  = PAD.t + cH + 14;
+      const yDose  = PAD.t + cH + 27;
+
+      const handleMouseMove = (e) => {
+        const rect  = e.currentTarget.getBoundingClientRect();
+        const svgX  = (e.clientX - rect.left) / rect.width * VW;
+        if (svgX < PAD.l || svgX > PAD.l + cW) { setTip(null); return; }
+        const frac    = (svgX - PAD.l) / cW;
+        const ms      = startMs + frac * (endMs - startMs);
+        const level   = pkTotal(sortedInj, ms);
+        const wLbs    = interpW(ms);
+        const dateStr = new Date(ms).toISOString().slice(0, 10);
+        setTip({ x: svgX, y: yOf(level), level, dateStr, wLbs });
+      };
+
+      // Tooltip box dimensions (height expands inside render when weight is available)
+      const TW = 76, TR = 6;
+
+      return (
+        <div>
+          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair' }}
+               onMouseMove={handleMouseMove}
+               onMouseLeave={() => setTip(null)}>
+
+            {yTicks.map((v, i) => (
+              <line key={i} x1={PAD.l} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)}
+                    stroke="rgba(0,0,0,.06)" strokeWidth="1" />
+            ))}
+            <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(endMs) - todayX)} height={cH}
+                  fill="rgba(0,0,0,.025)" />
+            <path d={area} fill="#4a90d9" opacity="0.12" />
+            <path d={line} fill="none" stroke="#4a90d9" strokeWidth="2" strokeLinejoin="round" />
+
+            {/* Weight line (right axis) */}
+            {wPts.length > 1 && (
+              <polyline
+                points={wPts.map(p => `${xOf(p.ms).toFixed(1)},${yOfW(p.lbs).toFixed(1)}`).join(' ')}
+                fill="none" stroke="#34c759" strokeWidth="1.5" strokeLinejoin="round" opacity="0.85" />
+            )}
+            {wPts.length === 1 && (
+              <circle cx={xOf(wPts[0].ms)} cy={yOfW(wPts[0].lbs)} r="2.5" fill="#34c759" />
+            )}
+
+            {/* Right Y axis — weight */}
+            {wPts.length > 0 && (() => {
+              const rx   = PAD.l + cW;
+              const ticks = [wLo + wPad, (wLo + wHi) / 2, wHi - wPad].map(v => Math.round(v * 10) / 10);
+              return (
+                <g>
+                  <line x1={rx} y1={PAD.t} x2={rx} y2={PAD.t + cH} stroke="rgba(52,198,89,.3)" strokeWidth="1" />
+                  {ticks.map((v, i) => (
+                    <g key={i}>
+                      <line x1={rx} y1={yOfW(v)} x2={rx + 4} y2={yOfW(v)} stroke="rgba(52,198,89,.4)" strokeWidth="1" />
+                      <text x={rx + 6} y={yOfW(v) + 3} fontSize="6.5" fill="#34c759" opacity="0.8">{Math.round(v)}</text>
+                    </g>
+                  ))}
+                  <text x={rx + 28} y={PAD.t + cH / 2} fontSize="6" fill="#34c759" opacity="0.6"
+                        textAnchor="middle" transform={`rotate(90, ${rx + 28}, ${PAD.t + cH / 2})`}>lbs</text>
+                </g>
+              );
+            })()}
+
+            {sortedInj.map(inj => {
+              const ms = new Date(inj.date + 'T12:00:00').getTime();
+              const x  = xOf(ms);
+              const y  = yOf(pkTotal(sortedInj, ms));
+              const { mo, day } = fmtDate(inj.date);
+              return (
+                <g key={inj.date}>
+                  <line x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
+                        stroke="#4a90d9" strokeWidth="1" strokeDasharray="3,2" opacity="0.45" />
+                  <circle cx={x} cy={y} r="3" fill="#fff" stroke="#4a90d9" strokeWidth="1.5" />
+                  <text x={x} y={yDate} textAnchor="middle" fontSize="7.5" fill="#6a9fd4">{mo} {day}</text>
+                  <text x={x} y={yDose} textAnchor="middle" fontSize="7" fill="#4a90d9">{inj.doseMg} mg</text>
+                </g>
+              );
+            })}
+
+            {nextInjMs <= endMs && (
+              <g>
+                <line x1={xOf(nextInjMs)} y1={PAD.t} x2={xOf(nextInjMs)} y2={PAD.t + cH}
+                      stroke="#4a90d9" strokeWidth="1" strokeDasharray="2,3" opacity="0.25" />
+                <text x={xOf(nextInjMs)} y={yDate} textAnchor="middle" fontSize="7.5" fill="#4a90d9" opacity="0.45">
+                  {fmtShort(new Date(nextInjMs).toISOString().slice(0,10))}
+                </text>
+                <text x={xOf(nextInjMs)} y={yDose} textAnchor="middle" fontSize="7" fill="#4a90d9" opacity="0.45">next?</text>
+              </g>
+            )}
+
+            <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH} stroke="#ff6b35" strokeWidth="1.5" />
+            <circle cx={todayX} cy={yOf(curLevel)} r="3.5" fill="#ff6b35" stroke="#fff" strokeWidth="1" />
+            <text x={todayX + 4} y={PAD.t + 8} fontSize="7" fill="#ff6b35" fontWeight="600">today</text>
+
+            {yTicks.map((v, i) => (
+              <text key={i} x={PAD.l - 4} y={yOf(v) + 3} textAnchor="end" fontSize="6.5" fill="#aeaeb2">
+                {v.toFixed(1)}
+              </text>
+            ))}
+            <text x={PAD.l - 4} y={PAD.t + cH + 4} textAnchor="end" fontSize="6.5" fill="#aeaeb2">0</text>
+            <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
+            <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
+
+            {/* Hover tooltip */}
+            {tip && (() => {
+              const TH = tip.wLbs != null ? 46 : 32;
+              const flipLeft = tip.x > PAD.l + cW * 0.65;
+              const tx = flipLeft ? tip.x - TW - 8 : tip.x + 8;
+              const ty = Math.max(PAD.t, Math.min(tip.y - TH / 2, PAD.t + cH - TH));
+              const { mo, day } = fmtDate(tip.dateStr);
+              return (
+                <g style={{ pointerEvents: 'none' }}>
+                  {/* Crosshair */}
+                  <line x1={tip.x} y1={PAD.t} x2={tip.x} y2={PAD.t + cH}
+                        stroke="rgba(28,28,30,.25)" strokeWidth="1" />
+                  {/* Dot on curve */}
+                  <circle cx={tip.x} cy={tip.y} r="4" fill="#4a90d9" stroke="#fff" strokeWidth="1.5" />
+                  {/* Box */}
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR}
+                        fill="rgba(28,28,30,.88)" />
+                  <text x={tx + 8} y={ty + 13} fontSize="8" fill="rgba(255,255,255,.65)">{mo} {day}</text>
+                  <text x={tx + 8} y={ty + 26} fontSize="11" fontWeight="700" fill="#fff"
+                        fontVariantNumeric="tabular-nums">{tip.level.toFixed(2)} mg</text>
+                  {tip.wLbs != null && (
+                    <text x={tx + 8} y={ty + 40} fontSize="9" fill="#34c759"
+                          fontVariantNumeric="tabular-nums">{tip.wLbs.toFixed(1)} lbs</text>
+                  )}
+                </g>
+              );
+            })()}
+          </svg>
+
+          <div style={{ display: 'flex', padding: '8px 14px 4px', gap: 12 }}>
+            <PkStat label="On board now" value={curLevel.toFixed(2) + ' mg'} color="#4a90d9" />
+            <PkStat label="Pre-dose trough" value={troughLevel.toFixed(2) + ' mg'}
+                    note={'(' + fmtShort(new Date(nextInjMs).toISOString().slice(0,10)) + ')'} color="#8e8e93" />
+            <PkStat label="Half-life" value="5 days" color="#8e8e93" />
+          </div>
+          {(() => {
+            const recent     = (rows ?? []).find(r => r.twoWeekLoss != null);
+            const currentDose = sortedInj.length ? sortedInj[sortedInj.length - 1].doseMg : null;
+            if (!recent || currentDose == null) return null;
+            const rec = recommendedDose(currentDose, recent.twoWeekLoss);
+            if (!rec) return null;
+            const { dose, g } = rec;
+            const lossSign = recent.twoWeekLoss >= 0 ? '↓' : '↑';
+            const subtext = g.action === 'increase'
+              ? 'Progress below 3 lbs/2wk — advance to next dose'
+              : g.action === 'stay'
+              ? 'Weight loss on track — hold current dose'
+              : g.action === 'monitor'
+              ? 'Strong loss — stay put; drop down if >5 lbs next 2 wks too'
+              : g.action === 'contact'
+              ? 'Unusually rapid loss — consult your prescriber'
+              : 'Weight moving up — hold and reassess';
+            return (
+              <div style={{ margin: '0 14px 12px' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
+                              letterSpacing: .6, marginBottom: 6 }}>Next Dose Recommendation</div>
+                <div style={{ padding: '12px 14px', borderRadius: 10,
+                              background: g.bg, border: `1px solid ${g.color}33`,
+                              display: 'flex', alignItems: 'center', gap: 14 }}>
+                  {/* Dose pill */}
+                  <div style={{ textAlign: 'center', minWidth: 64 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: g.color, textTransform: 'uppercase',
+                                  letterSpacing: .4, marginBottom: 3 }}>
+                      {g.action === 'increase' ? 'Increase to' : g.action === 'contact' ? 'Hold at' : 'Stay at'}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: g.color, lineHeight: 1,
+                                  fontVariantNumeric: 'tabular-nums' }}>
+                      {dose != null ? dose : currentDose} mg
+                    </div>
+                    {g.action === 'increase' && dose == null && (
+                      <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>
+                    )}
+                  </div>
+                  {/* Divider */}
+                  <div style={{ width: 1, alignSelf: 'stretch', background: `${g.color}33` }} />
+                  {/* Detail */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 3 }}>
+                      {g.label}
+                    </div>
+                    <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{subtext}</div>
+                    <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
+                      2-wk loss: {lossSign}{Math.abs(recent.twoWeekLoss).toFixed(1)} lbs &nbsp;·&nbsp;
+                      current: {currentDose} mg
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      );
+    }
+
+    const GOAL_LBS = 155;
+
+    function WeightChart({ rows }) {
+      if (!rows || rows.length < 2) return null;
+
+      const VW = 360, VH = 180;
+      const PAD = { t: 14, r: 14, b: 38, l: 38 };
+      const cW  = VW - PAD.l - PAD.r;
+      const cH  = VH - PAD.t - PAD.b;
+
+      // oldest-first for regression + charting
+      const pts = [...rows].reverse().map(r => ({
+        ms:  new Date(r.date + 'T12:00:00').getTime(),
+        lbs: r.lbs,
+      }));
+
+      const startMs  = pts[0].ms;
+      const todayD   = new Date(); todayD.setHours(12,0,0,0);
+      const todayMs  = todayD.getTime();
+
+      // Linear regression (days from start vs lbs)
+      const n     = pts.length;
+      const rxs   = pts.map(p => (p.ms - startMs) / 86400000);
+      const rys   = pts.map(p => p.lbs);
+      const mX    = rxs.reduce((s,v) => s+v, 0) / n;
+      const mY    = rys.reduce((s,v) => s+v, 0) / n;
+      const slope = rxs.reduce((s,x,i) => s + (x-mX)*(rys[i]-mY), 0)
+                  / rxs.reduce((s,x) => s + (x-mX)**2, 0);
+      const intcp = mY - slope * mX;
+
+      // Projected goal date
+      const goalDays = slope < 0 ? (GOAL_LBS - intcp) / slope : null;
+      const goalMs   = goalDays != null ? startMs + goalDays * 86400000 : null;
+
+      // Chart x range: start → goal + 2wk buffer (cap at 18 months)
+      const endMs = goalMs
+        ? Math.min(goalMs + 14 * 86400000, startMs + 548 * 86400000)
+        : startMs + 180 * 86400000;
+
+      // Y range: goal − 8 → starting weight + 5
+      const maxLbs = Math.max(...rys) + 5;
+      const minLbs = GOAL_LBS - 8;
+
+      const xOf = ms  => PAD.l + (ms - startMs) / (endMs - startMs) * cW;
+      const yOf = lbs => PAD.t + (1 - (lbs - minLbs) / (maxLbs - minLbs)) * cH;
+
+      const todayX  = xOf(todayMs);
+      const goalY   = yOf(GOAL_LBS);
+
+      // Trend line clipped to chart x bounds
+      const tX1 = PAD.l, tY1 = yOf(intcp);
+      const tX2 = PAD.l + cW, tY2 = yOf(intcp + slope * (endMs - startMs) / 86400000);
+
+      // Monthly x-axis ticks
+      const xTicks = [];
+      const td = new Date(startMs); td.setDate(1); td.setMonth(td.getMonth() + 1);
+      while (td.getTime() <= endMs) { xTicks.push(td.getTime()); td.setMonth(td.getMonth() + 1); }
+
+      // Y-axis grid lines every 10 lbs
+      const yTicks = [];
+      for (let v = Math.ceil(minLbs / 10) * 10; v <= maxLbs; v += 10) yTicks.push(v);
+
+      // Stats
+      const startLbs      = pts[0].lbs;
+      const currentLbs    = pts[pts.length - 1].lbs;
+      const totalLost     = startLbs - currentLbs;
+      const pctBodyLost   = (totalLost / startLbs) * 100;
+      const pctGoal       = Math.min((totalLost / (startLbs - GOAL_LBS)) * 100, 100);
+      const goalDateStr   = goalMs ? new Date(goalMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : '—';
+
+      const stats = [
+        { label: 'Starting',    value: startLbs.toFixed(1) + ' lbs' },
+        { label: 'Goal',        value: GOAL_LBS + ' lbs' },
+        { label: '% to Goal',   value: pctGoal.toFixed(1) + '%',   color: '#34c759' },
+        { label: 'Lost',        value: totalLost.toFixed(1) + ' lbs', color: '#34c759' },
+        { label: '% Body Wt',   value: pctBodyLost.toFixed(1) + '%',  color: '#34c759' },
+      ];
+
+      return (
+        <div>
+          {/* Stats header */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)',
+                        borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
+            {stats.map(({ label, value, color }) => (
+              <div key={label} style={{ padding: '10px 4px', textAlign: 'center',
+                                        borderRight: '.5px solid rgba(0,0,0,.05)' }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93',
+                              textTransform: 'uppercase', letterSpacing: .4, marginBottom: 3 }}>{label}</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: color ?? '#1c1c1e',
+                              fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Chart */}
+          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+
+            {/* Y grid lines */}
+            {yTicks.map(v => (
+              <line key={v} x1={PAD.l} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)}
+                    stroke="rgba(0,0,0,.05)" strokeWidth="1" />
+            ))}
+
+            {/* Goal line */}
+            <line x1={PAD.l} y1={goalY} x2={PAD.l + cW} y2={goalY}
+                  stroke="#34c759" strokeWidth="1.5" strokeDasharray="5,3" opacity="0.55" />
+
+            {/* Today shading */}
+            <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(endMs) - todayX)} height={cH}
+                  fill="rgba(0,0,0,.018)" />
+
+            {/* Trend line */}
+            <line x1={tX1} y1={tY1} x2={tX2} y2={tY2}
+                  stroke="#ff9500" strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
+
+            {/* Weight line */}
+            <polyline
+              points={pts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
+              fill="none" stroke="#4a90d9" strokeWidth="2" strokeLinejoin="round" />
+
+            {/* Weight dots */}
+            {pts.map(p => (
+              <circle key={p.ms} cx={xOf(p.ms)} cy={yOf(p.lbs)} r="2.5"
+                      fill="#4a90d9" stroke="#fff" strokeWidth="1" opacity="0.85" />
+            ))}
+
+            {/* Today line */}
+            <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH}
+                  stroke="#ff6b35" strokeWidth="1.5" opacity="0.5" />
+            <text x={todayX + 3} y={PAD.t + 9} fontSize="7" fill="#ff6b35" fontWeight="600">today</text>
+
+            {/* Projected goal marker */}
+            {goalMs && goalMs > todayMs && (
+              <g>
+                <line x1={xOf(goalMs)} y1={PAD.t} x2={xOf(goalMs)} y2={PAD.t + cH}
+                      stroke="#34c759" strokeWidth="1" strokeDasharray="3,2" opacity="0.5" />
+                <circle cx={xOf(goalMs)} cy={goalY} r="4"
+                        fill="#34c759" stroke="#fff" strokeWidth="1.5" />
+                <text x={xOf(goalMs)} y={PAD.t + cH + 16} textAnchor="middle"
+                      fontSize="7" fill="#34c759" fontWeight="600">{goalDateStr}</text>
+              </g>
+            )}
+
+            {/* Axes */}
+            <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
+            <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
+
+            {/* Y axis labels */}
+            {yTicks.map(v => (
+              <text key={v} x={PAD.l - 5} y={yOf(v) + 3} textAnchor="end"
+                    fontSize="6.5" fill="#aeaeb2">{v}</text>
+            ))}
+            <text x={PAD.l - 5} y={goalY + 3} textAnchor="end"
+                  fontSize="6.5" fill="#34c759" fontWeight="600">{GOAL_LBS}</text>
+
+            {/* X axis ticks */}
+            {xTicks.map(ms => (
+              <g key={ms}>
+                <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 3}
+                      stroke="#d1d1d6" strokeWidth="1" />
+                <text x={xOf(ms)} y={PAD.t + cH + 12} textAnchor="middle"
+                      fontSize="7" fill="#aeaeb2">
+                  {new Date(ms).toLocaleDateString('en-US', { month: 'short' })}
+                </text>
+              </g>
+            ))}
+          </svg>
+
+          {/* Projection note */}
+          {goalMs && (
+            <div style={{ padding: '4px 14px 10px', fontSize: 11, color: '#8e8e93', textAlign: 'center' }}>
+              At current trend · goal reached <span style={{ color: '#34c759', fontWeight: 600 }}>{goalDateStr}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function PkStat({ label, value, note, color }) {
+      return (
+        <div style={{ flex: 1, textAlign: 'center' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                        letterSpacing: .4, marginBottom: 2 }}>{label}</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+          {note && <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 1 }}>{note}</div>}
+        </div>
+      );
+    }
 
     /* ─── App ────────────────────────────────────────────────────────────────── */
     function App() {
-      const [rows,     setRows]     = useState([]);
-      const [meta,     setMeta]     = useState(null);
-      const [error,    setError]    = useState('');
-      const [dragging, setDragging] = useState(false);
-      const inputRef = useRef();
+      const saved = lsLoad();
+      const [rows,       setRows]       = useState(saved?.logbook ?? []);
+      const [meta,       setMeta]       = useState(saved?.meta    ?? null);
+      const [injections, setInjections] = useState(lsLoadInjections);
+      const [error,      setError]      = useState('');
+      const [dragging,   setDragging]   = useState(false);
+      const [showInj,    setShowInj]    = useState(false);
+      const [injDate,    setInjDate]    = useState(today);
+      const [injDose,    setInjDose]    = useState('');
+      // Export folder auto-import
+      const [exportDir,  setExportDir]  = useState(null);   // FileSystemDirectoryHandle
+      const [autoMsg,    setAutoMsg]    = useState('');      // transient status line
+      const [needsPerm,  setNeedsPerm]  = useState(false);  // permission lapsed
+      const inputRef      = useRef();
+      const msgTimer      = useRef();
+      const dataFileRef   = useRef(null);  // FileSystemFileHandle for weight-data.json
 
-      const loadFile = useCallback((file) => {
+      const showMsg = (msg, ms = 4000) => {
+        setAutoMsg(msg);
+        clearTimeout(msgTimer.current);
+        msgTimer.current = setTimeout(() => setAutoMsg(''), ms);
+      };
+
+      // Write all state to data file (no-op if no handle)
+      const writeToFile = async (newRows, newMeta, newInj) => {
+        if (!dataFileRef.current) return;
+        try { await writeDataFile(dataFileRef.current, newRows, newMeta, newInj); } catch (_) {}
+      };
+
+      // On mount: restore data file handle from IDB and load from it
+      useEffect(() => {
+        (async () => {
+          const handle = await idbGet(IDB_DATA_FILE_KEY);
+          if (!handle) return;
+          try {
+            const perm = await handle.queryPermission({ mode: 'readwrite' });
+            const granted = perm === 'granted'
+              ? 'granted'
+              : await handle.requestPermission({ mode: 'readwrite' });
+            if (granted !== 'granted') return;
+            dataFileRef.current = handle;
+            const { logbook, meta: m, injections: inj } = await readDataFile(handle);
+            if (logbook.length) { setRows(logbook); setMeta(m); lsSave(logbook, m); }
+            if (inj.length)     { setInjections(inj); lsSaveInjections(inj); }
+          } catch (_) {}
+        })();
+      }, []);
+
+      // Connect weight-data.json — merge existing localStorage data in, then write
+      const connectDataFile = useCallback(async () => {
+        try {
+          const [handle] = await window.showOpenFilePicker({
+            types: [{ description: 'Weight data JSON', accept: { 'application/json': ['.json'] } }],
+          });
+          const granted = await handle.requestPermission({ mode: 'readwrite' });
+          if (granted !== 'granted') { showMsg('Write permission denied.'); return; }
+          await idbSet(IDB_DATA_FILE_KEY, handle);
+          dataFileRef.current = handle;
+
+          // Read file, then merge with any existing localStorage entries (ls wins on conflict)
+          const { logbook: fLog, meta: fMeta, injections: fInj } = await readDataFile(handle);
+          const fileMap = Object.fromEntries(fLog.map(r => [r.date, r.wKg]));
+          const merged  = { ...fileMap, ...lsLoadRaw() };
+          const daily   = Object.entries(merged)
+            .map(([date, wKg]) => ({ date, wKg }))
+            .sort((a, b) => b.date.localeCompare(a.date));
+          const newLogbook = daily.length ? computeLogbook(daily) : fLog;
+          const newMeta    = meta ?? fMeta;
+          const newInj     = injections.length ? injections : fInj;
+          setRows(newLogbook); setMeta(newMeta); setInjections(newInj);
+          lsSave(newLogbook, newMeta); lsSaveInjections(newInj);
+          await writeDataFile(handle, newLogbook, newMeta, newInj);
+          showMsg('Data file connected ✓');
+        } catch (e) { if (e.name !== 'AbortError') showMsg('Could not connect file: ' + e.message); }
+      }, [meta, injections]);
+
+      // Apply processed CSV result to state + localStorage + file
+      const applyResult = useCallback(({ logbook, meta: newMeta }) => {
+        setRows(logbook);
+        setMeta(newMeta);
+        setError('');
+        lsSave(logbook, newMeta);
+        writeToFile(logbook, newMeta, injections);
+      }, [injections]);
+
+      // Auto-import: scan export folder for newest matching CSV
+      const runAutoImport = useCallback(async (dirHandle, { silent = false } = {}) => {
+        try {
+          const perm = await dirHandle.queryPermission({ mode: 'read' });
+          if (perm !== 'granted') {
+            const req = await dirHandle.requestPermission({ mode: 'read' });
+            if (req !== 'granted') { setNeedsPerm(true); return; }
+          }
+          setNeedsPerm(false);
+          const latest = await findLatestExport(dirHandle);
+          if (!latest) { if (!silent) showMsg('No export files found in that folder.'); return; }
+          const lastLoaded = localStorage.getItem(LS_LAST_CSV_KEY);
+          console.log(`[Weight Tracker] Last loaded: ${lastLoaded ?? '(none)'}`);
+          if (latest.name === lastLoaded) {
+            console.log('[Weight Tracker] Already up to date — skipping import.');
+            if (!silent) showMsg('Already up to date — no new export found.');
+            return;
+          }
+          console.log(`[Weight Tracker] Importing: ${latest.name}`);
+          const text = await readFileWithRetry(latest.handle, {
+            onWaiting: attempt => showMsg(`Downloading from iCloud… (attempt ${attempt})`, 10000),
+          });
+          const result = processCSVText(text);
+          applyResult(result);
+          localStorage.setItem(LS_LAST_CSV_KEY, latest.name);
+          console.log(`[Weight Tracker] Import complete.`);
+          showMsg(`Updated from ${latest.name.replace('Automation_Daily_export_', '').replace('.csv', '')}`);
+        } catch (ex) {
+          if (!silent) setError('Auto-import error: ' + ex.message);
+        }
+      }, [applyResult]);
+
+      // On mount: restore dir handle and silently try auto-import
+      useEffect(() => {
+        (async () => {
+          try {
+            const handle = await idbGet('export-dir');
+            if (!handle) return;
+            setExportDir(handle);
+            const perm = await handle.queryPermission({ mode: 'read' });
+            if (perm === 'granted') {
+              await runAutoImport(handle, { silent: true });
+            } else {
+              setNeedsPerm(true);
+            }
+          } catch (_) {}
+        })();
+        return () => clearTimeout(msgTimer.current);
+      }, []);
+
+      const pickExportFolder = useCallback(async () => {
+        try {
+          const handle = await window.showDirectoryPicker({ mode: 'read' });
+          await idbSet('export-dir', handle);
+          setExportDir(handle);
+          await runAutoImport(handle);
+        } catch (ex) {
+          if (ex.name !== 'AbortError') setError('Could not access folder: ' + ex.message);
+        }
+      }, [runAutoImport]);
+
+      const loadCSV = useCallback((file) => {
         if (!file) return;
         const reader = new FileReader();
         reader.onload = (e) => {
           try {
-            const parsed = parseCSV(e.target.result);
-            if (!parsed.length) { setError('CSV is empty.'); return; }
-            const schema = detectSchema(Object.keys(parsed[0]), parsed);
-            if (schema.format === 'unknown') {
-              setError(`Couldn't identify schema. Headers: ${Object.keys(parsed[0]).join(', ')}`);
-              return;
-            }
-            if (schema.format === 'long' && !schema.weightMetric) {
-              const sample = (schema.allMetrics ?? []).slice(0, 8).join(', ');
-              setError(`No weight metric found. Metrics present: ${sample}`);
-              return;
-            }
-            const daily   = buildDailyMap(parsed, schema);
-            if (!daily.length) { setError('No valid weight entries found.'); return; }
-            const logbook = computeLogbook(daily);
-            const srcCol  = Object.keys(parsed[0]).find(h => h.toLowerCase() === 'source');
-            const wRows   = schema.format === 'long' ? parsed.filter(r => r[schema.metricCol] === schema.weightMetric) : parsed;
-            const source  = srcCol ? [...new Set(wRows.map(r => r[srcCol]).filter(Boolean))].join(', ') : '';
-            setRows(logbook);
-            setMeta({ metric: schema.weightMetric ?? 'Weight', source });
-            setError('');
-          } catch (ex) { setError('Parse error: ' + ex.message); }
+            applyResult(processCSVText(e.target.result));
+          } catch (ex) { setError(ex.message); }
         };
         reader.readAsText(file);
-      }, []);
+      }, [applyResult]);
 
-      const onInput = useCallback(e => loadFile(e.target.files[0]), [loadFile]);
-      const onDrop  = useCallback(e => { e.preventDefault(); setDragging(false); loadFile(e.dataTransfer.files[0]); }, [loadFile]);
+      const addInjection = useCallback(() => {
+        const dose = parseFloat(injDose);
+        if (!injDate || isNaN(dose) || dose <= 0) return;
+        const next = [...injections.filter(i => i.date !== injDate), { date: injDate, doseMg: dose }]
+          .sort((a, b) => b.date.localeCompare(a.date));
+        setInjections(next);
+        lsSaveInjections(next);
+        writeToFile(rows, meta, next);
+        setInjDose('');
+        setInjDate(today());
+        setShowInj(false);
+      }, [injections, injDate, injDose, rows, meta]);
+
+      const deleteInjection = useCallback((date) => {
+        const next = injections.filter(i => i.date !== date);
+        setInjections(next);
+        lsSaveInjections(next);
+        writeToFile(rows, meta, next);
+      }, [injections, rows, meta]);
+
+      const deleteRow = useCallback((date) => {
+        const daily = rows.filter(r => r.date !== date).map(r => ({ date: r.date, wKg: r.wKg }));
+        const newLogbook = computeLogbook(daily);
+        setRows(newLogbook);
+        lsSave(newLogbook, meta);
+        writeToFile(newLogbook, meta, injections);
+      }, [rows, meta, injections]);
+
+      const onInput = useCallback(e => loadCSV(e.target.files[0]), [loadCSV]);
+      const onDrop  = useCallback(e => { e.preventDefault(); setDragging(false); loadCSV(e.dataTransfer.files[0]); }, [loadCSV]);
+
+      const hasFSA = typeof window.showDirectoryPicker === 'function';
+      const items       = buildItems(rows, injections);
+      const baselineLbs = rows.length ? rows[rows.length - 1].lbs : null;
 
       return (
         <div style={{ minHeight: '100vh', background: '#f2f2f7' }}>
@@ -203,26 +1023,60 @@
             <div style={{ padding: '12px 16px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
                 <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -.3, color: '#1c1c1e' }}>Weight Tracker</div>
-                {meta && (
-                  <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
-                    {rows.length} entries · lbs{meta.source ? ` · ${meta.source}` : ''}
-                  </div>
+                <div style={{ fontSize: 13, color: '#8e8e93', marginTop: 1, minHeight: 14 }}>
+                  {autoMsg ? (
+                    <span style={{ color: '#34c759' }}>{autoMsg}</span>
+                  ) : meta ? (
+                    <>
+                      {rows.length} entries · lbs{meta.source ? ` · ${meta.source}` : ''}
+                      {exportDir && <span style={{ color: '#4a90d9' }}> · {exportDir.name}</span>}
+                    </>
+                  ) : exportDir ? (
+                    <span style={{ color: '#4a90d9' }}>{exportDir.name}</span>
+                  ) : null}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {needsPerm && exportDir && (
+                  <button onClick={() => runAutoImport(exportDir)}
+                          style={{ fontSize: 14, fontWeight: 600, padding: '5px 12px', borderRadius: 10,
+                                   background: '#ff9500', color: '#fff', border: 'none', cursor: 'pointer' }}>
+                    Check for new export
+                  </button>
+                )}
+                {rows.length > 0 && (
+                  <button onClick={() => inputRef.current?.click()}
+                          style={{ fontSize: 15, fontWeight: 600, padding: '6px 14px', borderRadius: 10,
+                                   background: '#e5e5ea', color: '#1c1c1e', border: 'none', cursor: 'pointer' }}>
+                    Import
+                  </button>
                 )}
               </div>
-              {rows.length > 0 && (
-                <button onClick={() => inputRef.current?.click()}
-                        style={{ fontSize: 13, fontWeight: 600, padding: '6px 14px', borderRadius: 10,
-                                 background: '#e5e5ea', color: '#1c1c1e', border: 'none', cursor: 'pointer' }}>
-                  Import
-                </button>
-              )}
               <input ref={inputRef} type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={onInput} />
             </div>
           </div>
 
-          {/* ── Upload ── */}
+          {/* ── Upload / landing ── */}
           {rows.length === 0 && (
             <div style={{ padding: '16px 16px 24px' }}>
+
+              {/* Auto-import prompt if folder set but needs permission */}
+              {needsPerm && exportDir && (
+                <button onClick={() => runAutoImport(exportDir)}
+                        style={{ marginBottom: 10, width: '100%', borderRadius: 14,
+                                 background: '#4a90d9', border: 'none', padding: '14px 16px',
+                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                 cursor: 'pointer', textAlign: 'left' }}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: '#fff' }}>Load latest export</div>
+                    <div style={{ fontSize: 14, color: 'rgba(255,255,255,.75)', marginTop: 2 }}>
+                      Check {exportDir.name} for Automation_Daily_export_*.csv
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 18, color: 'rgba(255,255,255,.8)' }}>›</div>
+                </button>
+              )}
+
               <div style={{ borderRadius: 18, padding: '32px 24px', textAlign: 'center',
                             background: dragging ? '#e6f9ef' : '#fff',
                             border: `2px dashed ${dragging ? '#34c759' : '#d1d1d6'}`,
@@ -234,8 +1088,8 @@
                 <div style={{ fontSize: 17, fontWeight: 600, color: '#1c1c1e', marginBottom: 6 }}>
                   Upload Apple Health Export
                 </div>
-                <div style={{ fontSize: 14, color: '#8e8e93', marginBottom: 20, lineHeight: 1.5 }}>
-                  Drop your <code style={{ fontSize: 12, background: '#f2f2f7', padding: '1px 5px', borderRadius: 4 }}>Automation_D...</code> CSV here,<br />
+                <div style={{ fontSize: 16, color: '#8e8e93', marginBottom: 20, lineHeight: 1.5 }}>
+                  Drop your <code style={{ fontSize: 14, background: '#f2f2f7', padding: '1px 5px', borderRadius: 4 }}>Automation_Daily_export_...</code> CSV here,<br />
                   or tap below to browse.
                 </div>
                 <label style={{ cursor: 'pointer' }}>
@@ -247,92 +1101,186 @@
                 </label>
               </div>
 
-              <div style={{ marginTop: 10, borderRadius: 14, background: '#fff',
-                            border: '.5px solid #d1d1d6', padding: '12px 14px' }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', marginBottom: 6,
-                              textTransform: 'uppercase', letterSpacing: .5 }}>Expected format</div>
-                <div style={{ fontSize: 12, color: '#3c3c43', lineHeight: 1.6 }}>
-                  Supports Apple Health Shortcuts exports:<br />
-                  <code style={{ fontSize: 11, background: '#f2f2f7', padding: '1px 4px', borderRadius: 3 }}>
-                    date, metric, value, unit, source
-                  </code><br />
-                  Filters for <strong>Body Weight</strong> rows · converts kg → lbs automatically.
-                </div>
-              </div>
+              {/* Connect data file */}
+              {hasFSA && (
+                <button onClick={connectDataFile}
+                        style={{ marginTop: 10, width: '100%', borderRadius: 14, background: '#fff',
+                                 border: `.5px solid ${dataFileRef.current ? '#34c759' : '#d1d1d6'}`,
+                                 padding: '14px 16px',
+                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                 cursor: 'pointer', textAlign: 'left' }}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: '#1c1c1e' }}>
+                      {dataFileRef.current ? 'Data file connected' : 'Connect data file'}
+                    </div>
+                    <div style={{ fontSize: 14, color: '#8e8e93', marginTop: 2 }}>
+                      {dataFileRef.current
+                        ? 'weight-data.json — tap to reconnect'
+                        : 'Pick weight-data.json to auto-load and save weight + injections'}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 18, color: dataFileRef.current ? '#34c759' : '#8e8e93' }}>
+                    {dataFileRef.current ? '✓' : '›'}
+                  </div>
+                </button>
+              )}
+
+              {/* Set export folder */}
+              {hasFSA && (
+                <button onClick={exportDir ? () => runAutoImport(exportDir) : pickExportFolder}
+                        style={{ marginTop: 10, width: '100%', borderRadius: 14, background: '#fff',
+                                 border: '.5px solid #d1d1d6', padding: '14px 16px',
+                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                 cursor: 'pointer', textAlign: 'left' }}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: '#1c1c1e' }}>
+                      {exportDir ? `Auto-import from ${exportDir.name}` : 'Set export folder'}
+                    </div>
+                    <div style={{ fontSize: 14, color: '#8e8e93', marginTop: 2 }}>
+                      {exportDir
+                        ? 'Tap to check for a newer Automation_Daily_export_*.csv'
+                        : 'Point to your iCloud export folder to auto-load on every open'}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 18, color: '#8e8e93' }}>›</div>
+                </button>
+              )}
 
               {error && <ErrBox msg={error} />}
             </div>
           )}
 
-          {/* ── Logbook table ── */}
+          {/* ── Logbook ── */}
           {rows.length > 0 && (
             <div style={{ padding: '12px 12px 32px' }}>
+
+              {/* PK Chart */}
+              <div style={{ borderRadius: 18, background: '#fff', border: '.5px solid rgba(0,0,0,.08)',
+                            marginBottom: 10, overflow: 'hidden' }}>
+                <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)',
+                              display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#4a90d9',
+                                textTransform: 'uppercase', letterSpacing: .6 }}>
+                    Tirzepatide · Drug on Board
+                  </div>
+                  <div style={{ fontSize: 12, color: '#aeaeb2' }}>t½ = 5 d · tpeak = 36 h</div>
+                </div>
+                <PkChart injections={injections} rows={rows} />
+              </div>
+
+              {/* Weight Trend Chart */}
+              <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
+                            border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
+                <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)',
+                              display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Weight Trend</div>
+                  <div style={{ fontSize: 12, color: '#aeaeb2' }}>goal: {GOAL_LBS} lbs</div>
+                </div>
+                <WeightChart rows={rows} />
+              </div>
+
+              {/* Weight logbook */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)' }}>
-
-                {/* Header */}
-                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.1fr 1.1fr 1.5fr 1.2fr',
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.1fr 1.1fr 1.5fr 1.1fr 1fr',
                               padding: '8px 14px', background: '#f2f2f7',
                               borderBottom: '.5px solid rgba(0,0,0,.1)' }}>
-                  {['DATE', "REC'D", '7D AVG', 'RATE/WK', '10D HIGH'].map((h, i) => (
-                    <div key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: .6,
+                  {['DATE', "REC'D", '7D AVG', '2WK LOSS', '10D HIGH', '% LOST'].map((h, i) => (
+                    <div key={h} style={{ fontSize: 12, fontWeight: 700, letterSpacing: .6,
                                           color: '#8e8e93', textAlign: i === 0 ? 'left' : 'right' }}>{h}</div>
                   ))}
                 </div>
 
-                {/* Rows */}
-                {rows.map((row, i) => {
-                  const { mo, day, wd } = fmtDate(row.date);
-                  const rate   = rateInfo(row.rate);
-                  const prevHi = i > 0 ? rows[i - 1].tenHigh : null;
-                  const hiDrop = prevHi != null && row.tenHigh < prevHi - 0.05;
-                  const isLast = i === rows.length - 1;
+                {items.map((item, idx) => {
+                  if (item.type === 'injection') {
+                    const next  = items[idx + 1];
+                    const isEnd = !next || next.type === 'injection';
+                    return (
+                      <div key={'inj-' + item.date}
+                           style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px',
+                                    background: '#f0f6ff',
+                                    borderBottom: isEnd ? 'none' : '.5px solid rgba(0,0,0,.06)' }}>
+                        <span style={{ fontSize: 13, color: '#4a90d9', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                          💉 Tirz {item.doseMg} mg
+                        </span>
+                        <span style={{ fontSize: 13, color: '#8eb8e8' }}>·</span>
+                        <span style={{ fontSize: 13, color: '#6a9fd4' }}>{fmtShort(item.date)}</span>
+                        <div style={{ flex: 1, height: '.5px', background: 'rgba(74,144,217,.2)' }} />
+                        <button onClick={() => deleteInjection(item.date)}
+                                style={{ fontSize: 13, color: '#aac6e8', background: 'none',
+                                         border: 'none', cursor: 'pointer', padding: '0 2px' }}>✕</button>
+                      </div>
+                    );
+                  }
+
+                  const { mo, day, wd } = fmtDate(item.date);
+                  const rate    = rateInfo(item.rate);
+                  const prevRow = items.slice(0, idx).reverse().find(x => x.type === 'row');
+                  const prevHi  = prevRow ? prevRow.tenHigh : null;
+                  const hiDrop  = prevHi != null && item.tenHigh < prevHi - 0.05;
 
                   return (
-                    <div key={row.date} className="row-in"
-                         style={{ display: 'grid', gridTemplateColumns: '2fr 1.1fr 1.1fr 1.5fr 1.2fr',
+                    <div key={item.date} className="row-in"
+                         style={{ display: 'grid', gridTemplateColumns: '2fr 1.1fr 1.1fr 1.5fr 1.1fr 1fr',
                                   padding: '11px 14px', alignItems: 'center',
-                                  borderBottom: isLast ? 'none' : '.5px solid rgba(0,0,0,.06)' }}>
-
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                        <span style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e' }}>{mo} {day}</span>
-                        <span style={{ fontSize: 11, color: '#aeaeb2' }}>{wd}</span>
-                      </div>
-
-                      <div style={{ textAlign: 'right', fontSize: 14, fontWeight: 500,
-                                    color: '#1c1c1e', fontVariantNumeric: 'tabular-nums' }}>
-                        {fw(row.lbs)}
-                      </div>
-
-                      <div style={{ textAlign: 'right', fontSize: 14,
-                                    color: '#3c3c43', fontVariantNumeric: 'tabular-nums' }}>
-                        {fw(row.movAvg)}
-                      </div>
-
-                      <div style={{ textAlign: 'right' }}>
-                        {rate ? (
-                          <span style={{ display: 'inline-block', fontSize: 11, fontWeight: 600,
-                                         fontVariantNumeric: 'tabular-nums', padding: '2px 6px',
-                                         borderRadius: 6, ...BADGE[rate.cls] }}>
-                            {rate.label}
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: 12, color: '#c7c7cc' }}>—</span>
+                                  borderBottom: item.isLast ? 'none' : '.5px solid rgba(0,0,0,.06)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 16, fontWeight: 600, color: '#1c1c1e' }}>{mo} {day}</span>
+                        <span style={{ fontSize: 13, color: '#aeaeb2' }}>{wd}</span>
+                        {item.isInjDay && (
+                          <span style={{ fontSize: 12, fontWeight: 700, color: '#4a90d9',
+                                         background: '#e8f2fd', padding: '1px 5px', borderRadius: 4 }}>inj</span>
                         )}
+                        <button onClick={() => deleteRow(item.date)}
+                                style={{ marginLeft: 2, fontSize: 12, color: '#c7c7cc', background: 'none',
+                                         border: 'none', cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}>✕</button>
                       </div>
-
+                      <div style={{ textAlign: 'right', fontSize: 16, fontWeight: 500,
+                                    color: '#1c1c1e', fontVariantNumeric: 'tabular-nums' }}>
+                        {fw(item.lbs)}
+                      </div>
+                      <div style={{ textAlign: 'right', fontSize: 16, color: '#3c3c43',
+                                    fontVariantNumeric: 'tabular-nums' }}>
+                        {fw(item.movAvg)}
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        {(() => {
+                          const g = doseGuidance(item.twoWeekLoss);
+                          if (!g) return <span style={{ fontSize: 14, color: '#c7c7cc' }}>—</span>;
+                          const sign = item.twoWeekLoss >= 0 ? '↓' : '↑';
+                          return (
+                            <span style={{ display: 'inline-block', fontSize: 13, fontWeight: 600,
+                                           fontVariantNumeric: 'tabular-nums', padding: '2px 6px',
+                                           borderRadius: 6, color: g.color, background: g.bg }}>
+                              {sign}{Math.abs(item.twoWeekLoss).toFixed(1)}
+                            </span>
+                          );
+                        })()}
+                      </div>
                       <div style={{ textAlign: 'right' }}>
                         {hiDrop ? (
-                          <span style={{ display: 'inline-block', fontSize: 11, fontWeight: 600,
+                          <span style={{ display: 'inline-block', fontSize: 13, fontWeight: 600,
                                          fontVariantNumeric: 'tabular-nums', padding: '2px 6px',
                                          borderRadius: 6, ...BADGE.loss }}>
-                            ↓ {fw(row.tenHigh)}
+                            ↓ {fw(item.tenHigh)}
                           </span>
                         ) : (
-                          <span style={{ fontSize: 14, color: '#3c3c43', fontVariantNumeric: 'tabular-nums' }}>
-                            {fw(row.tenHigh)}
+                          <span style={{ fontSize: 16, color: '#3c3c43', fontVariantNumeric: 'tabular-nums' }}>
+                            {fw(item.tenHigh)}
                           </span>
                         )}
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        {baselineLbs != null && (() => {
+                          const pct = (baselineLbs - item.lbs) / baselineLbs * 100;
+                          const pos = pct >= 0;
+                          return (
+                            <span style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+                                           color: pos ? '#34c759' : '#ff3b30' }}>
+                              {pos ? '↓' : '↑'}{Math.abs(pct).toFixed(1)}%
+                            </span>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -340,6 +1288,116 @@
               </div>
 
               <Summary rows={rows} />
+
+              {/* Injection log */}
+              <div style={{ marginTop: 10, borderRadius: 18, background: '#fff',
+                            border: '.5px solid rgba(0,0,0,.08)', overflow: 'hidden' }}>
+                <div style={{ padding: '10px 14px 8px', display: 'flex', alignItems: 'center',
+                              justifyContent: 'space-between', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#4a90d9',
+                                textTransform: 'uppercase', letterSpacing: .6 }}>Injections</div>
+                  <button onClick={() => setShowInj(v => !v)}
+                          style={{ fontSize: 14, fontWeight: 600, padding: '4px 12px', borderRadius: 8,
+                                   background: showInj ? '#e5e5ea' : '#007aff',
+                                   color: showInj ? '#1c1c1e' : '#fff', border: 'none', cursor: 'pointer' }}>
+                    {showInj ? 'Cancel' : '+ Log injection'}
+                  </button>
+                </div>
+
+                {showInj && (
+                  <div style={{ padding: '12px 14px', borderBottom: '.5px solid rgba(0,0,0,.06)',
+                                display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                                    letterSpacing: .4, marginBottom: 4 }}>Date</div>
+                      <input type="date" value={injDate} onChange={e => setInjDate(e.target.value)}
+                             style={{ width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
+                                      border: '1px solid #d1d1d6', background: '#f9f9f9',
+                                      color: '#1c1c1e', outline: 'none' }} />
+                    </div>
+                    <div style={{ width: 90 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                                    letterSpacing: .4, marginBottom: 4 }}>Dose (mg)</div>
+                      <input type="number" step="0.25" min="0.25" placeholder="2.5"
+                             value={injDose} onChange={e => setInjDose(e.target.value)}
+                             style={{ width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
+                                      border: '1px solid #d1d1d6', background: '#f9f9f9',
+                                      color: '#1c1c1e', outline: 'none' }} />
+                    </div>
+                    <button onClick={addInjection} disabled={!injDate || !injDose}
+                            style={{ fontSize: 16, fontWeight: 600, padding: '8px 16px', borderRadius: 10,
+                                     background: (!injDate || !injDose) ? '#e5e5ea' : '#34c759',
+                                     color: (!injDate || !injDose) ? '#aeaeb2' : '#fff',
+                                     border: 'none', cursor: (!injDate || !injDose) ? 'default' : 'pointer' }}>
+                      Add
+                    </button>
+                  </div>
+                )}
+
+                {[...injections].sort((a, b) => b.date.localeCompare(a.date)).map((inj, i, arr) => (
+                  <div key={inj.date}
+                       style={{ display: 'flex', alignItems: 'center', padding: '10px 14px',
+                                borderBottom: i < arr.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
+                    <div style={{ flex: 1, fontSize: 16, fontWeight: 600, color: '#1c1c1e' }}>
+                      {fmtShort(inj.date)}
+                      <span style={{ fontSize: 13, color: '#aeaeb2', marginLeft: 6 }}>
+                        {WD[new Date(inj.date + 'T12:00:00').getDay()]}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: '#4a90d9',
+                                  fontVariantNumeric: 'tabular-nums' }}>{inj.doseMg} mg</div>
+                    <button onClick={() => deleteInjection(inj.date)}
+                            style={{ marginLeft: 12, fontSize: 15, color: '#c7c7cc', background: 'none',
+                                     border: 'none', cursor: 'pointer', padding: '2px 4px' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+
+              {/* Data file control */}
+              {hasFSA && (
+                <button onClick={connectDataFile}
+                        style={{ marginTop: 10, width: '100%', borderRadius: 14, background: '#fff',
+                                 border: `.5px solid ${dataFileRef.current ? '#34c759' : '#d1d1d6'}`,
+                                 padding: '12px 16px',
+                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                 cursor: 'pointer', textAlign: 'left' }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
+                      {dataFileRef.current ? 'Data file connected' : 'Connect data file'}
+                    </div>
+                    <div style={{ fontSize: 13, color: '#8e8e93', marginTop: 1 }}>
+                      {dataFileRef.current
+                        ? 'weight-data.json — tap to reconnect'
+                        : 'Pick weight-data.json to save weight + injections automatically'}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 16, color: dataFileRef.current ? '#34c759' : '#8e8e93' }}>
+                    {dataFileRef.current ? '✓' : '›'}
+                  </div>
+                </button>
+              )}
+
+              {/* Export folder control */}
+              {hasFSA && (
+                <button onClick={exportDir ? () => runAutoImport(exportDir) : pickExportFolder}
+                        style={{ marginTop: 10, width: '100%', borderRadius: 14, background: '#fff',
+                                 border: '.5px solid #d1d1d6', padding: '12px 16px',
+                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                 cursor: 'pointer', textAlign: 'left' }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
+                      {exportDir ? `Auto-import · ${exportDir.name}` : 'Set export folder'}
+                    </div>
+                    <div style={{ fontSize: 13, color: '#8e8e93', marginTop: 1 }}>
+                      {exportDir ? 'Tap to check for a newer export now' : 'Auto-load Automation_Daily_export_*.csv on every open'}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 16, color: exportDir ? '#34c759' : '#8e8e93' }}>
+                    {exportDir ? '↺' : '›'}
+                  </div>
+                </button>
+              )}
+
               {error && <ErrBox msg={error} />}
             </div>
           )}
@@ -369,9 +1427,9 @@
     function Tile({ label, value, accent }) {
       return (
         <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 10, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
                         letterSpacing: .4, marginBottom: 4 }}>{label}</div>
-          <div style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+          <div style={{ fontSize: 16, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
                         color: accent ?? '#1c1c1e' }}>{value}</div>
         </div>
       );
@@ -381,7 +1439,7 @@
       return (
         <div style={{ marginTop: 10, borderRadius: 14, background: '#fff2f2',
                       border: '.5px solid #ffb3b3', padding: '10px 14px',
-                      fontSize: 13, color: '#c0392b' }}>{msg}</div>
+                      fontSize: 15, color: '#c0392b' }}>{msg}</div>
       );
     }
 

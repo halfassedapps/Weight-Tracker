@@ -860,6 +860,7 @@
             <div style={{ padding: '0 16px 14px', borderTop: '.5px solid #f2f2f7' }}>
               <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>Personal Access Token (gist scope)</div>
               <input value={pat} onChange={e => setPat(e.target.value)} type="text" placeholder="ghp_..."
+                     autoCorrect="off" autoCapitalize="none" spellCheck={false} autoComplete="off"
                      style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
                               border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
               <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -899,6 +900,7 @@
               <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 10 }}>Admin Login</div>
               <input value={pat} onChange={e => setPat(e.target.value)} type="password"
                      placeholder="Personal Access Token"
+                     autoCorrect="off" autoCapitalize="none" spellCheck={false} autoComplete="off"
                      style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
                               border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
               {msg && (

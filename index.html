@@ -404,6 +404,8 @@
       const [splitManual, setSplitManual] = useState(
         () => localStorage.getItem(LS_SPLIT_KEY) === 'true'
       );
+      const [showCalc,    setShowCalc]    = useState(false);
+      const [calcInitDose, setCalcInitDose] = useState(2.25);
       const toggleSplit = () => {
         const next = !splitManual;
         setSplitManual(next);
@@ -508,6 +510,7 @@
 
       return (
         <div>
+          {showCalc && <DoseCalculatorModal initialDose={calcInitDose} initialConc={12.5} onClose={() => setShowCalc(false)} />}
           <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair' }}
                onMouseMove={handleMouseMove}
                onMouseLeave={() => setTip(null)}>
@@ -696,11 +699,20 @@
                   </div>{/* end flex row */}
                   {/* Syringe draw-up graphic */}
                   <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${g.color}22` }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: g.color,
-                                  textTransform: 'uppercase', letterSpacing: .4, marginBottom: 4 }}>
-                      {isSplitDose ? 'Draw up per injection' : 'Draw up'} · 12.5 mg/mL vial
+                    <div style={{ display: 'flex', alignItems: 'center',
+                                  justifyContent: 'space-between', marginBottom: 4 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: g.color,
+                                    textTransform: 'uppercase', letterSpacing: .4 }}>
+                        {isSplitDose ? 'Draw up per injection' : 'Draw up'} · 12.5 mg/mL vial
+                      </div>
+                      <button onClick={() => { setCalcInitDose(perInjMg); setShowCalc(true); }}
+                              style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12,
+                                       background: `${g.color}18`, color: g.color,
+                                       border: `1px solid ${g.color}33`, cursor: 'pointer' }}>
+                        Calculator
+                      </button>
                     </div>
-                    <SyringeGraphic doseMg={perInjMg} color={g.color} />
+                    <SyringeGraphic doseMg={perInjMg} concentration={12.5} color={g.color} />
                   </div>
                 </div>
               </div>
@@ -980,86 +992,191 @@
       );
     }
 
-    function SyringeGraphic({ doseMg, color = '#4a90d9' }) {
-      const CONC  = 12.5; // mg/mL
-      const units = Math.round(doseMg / CONC * 100 * 10) / 10;
-      const ml    = (doseMg / CONC).toFixed(2);
+    function SyringeGraphic({ doseMg, concentration = 12.5, color = '#4a90d9' }) {
+      const units = doseMg > 0 ? Math.round(doseMg / concentration * 100 * 10) / 10 : 0;
+      const ml    = doseMg > 0 ? (doseMg / concentration).toFixed(2) : '—';
       const pct   = Math.min(units / 100, 1);
+      const uid   = `syr${Math.round(doseMg*1000)}_${Math.round(concentration*100)}`;
 
-      const VW = 300, VH = 70;
-      const bx = 46, by = 22, bw = 196, bh = 20;
-      const fillW = Math.max(3, pct * bw);
-      const mx    = bx + fillW;
-      const uid   = `syr${Math.round(doseMg * 1000)}`;
-
-      // clamp label so it stays inside barrel
-      const lx = Math.min(Math.max(mx, bx + 16), bx + bw - 16);
+      const VW = 320, VH = 90;
+      const bx = 68, by = 38, bw = 206, bh = 26;
+      const fillW = pct * bw;
+      const gx    = bx + fillW;
+      const lx    = Math.min(Math.max(gx, bx + 24), bx + bw - 24);
 
       return (
         <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
           <defs>
             <clipPath id={uid}>
-              <rect x={bx} y={by} width={bw} height={bh} rx={3} />
+              <rect x={bx} y={by} width={bw} height={bh} rx={4} />
             </clipPath>
+            <linearGradient id={`${uid}g`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stopColor={color} stopOpacity="0.15" />
+              <stop offset="45%"  stopColor={color} stopOpacity="0.30" />
+              <stop offset="100%" stopColor={color} stopOpacity="0.22" />
+            </linearGradient>
           </defs>
 
-          {/* Needle */}
-          <polygon points={`${bx-14},${by+bh/2} ${bx},${by+3} ${bx},${by+bh-3}`} fill="#b0b0b8" />
+          {/* ── Needle ── */}
+          <line x1="13" y1={by+bh/2} x2="57" y2={by+bh/2}
+                stroke="#adadb8" strokeWidth="1.6" strokeLinecap="round" />
+          <line x1="13" y1={by+bh/2} x2="29" y2={by+bh/2-4}
+                stroke="#cacace" strokeWidth="0.9" strokeLinecap="round" />
+          {/* needle hub (trapezoid) */}
+          <path d={`M57,${by+bh/2-9} L${bx},${by+4} L${bx},${by+bh-4} L57,${by+bh/2+9} Z`}
+                fill="#cacacc" stroke="#bbbbc4" strokeWidth="0.5" />
 
-          {/* Barrel background */}
-          <rect x={bx} y={by} width={bw} height={bh} rx={3} fill="#f2f2f7" />
+          {/* ── Left collar ── */}
+          <rect x={bx-3} y={by-4} width={5} height={bh+8} rx={2.5} fill="#d4d4e2" />
 
-          {/* Liquid fill */}
-          <rect x={bx} y={by} width={fillW} height={bh}
-                fill={color} opacity={0.22} clipPath={`url(#${uid})`} />
-          <rect x={bx} y={by} width={fillW} height={bh * 0.45}
-                fill={color} opacity={0.12} clipPath={`url(#${uid})`} />
+          {/* ── Barrel ── */}
+          <rect x={bx} y={by} width={bw} height={bh} rx={4} fill="#f6f6fc" />
 
-          {/* Tick marks (drawn before border so border sits on top) */}
-          {Array.from({ length: 11 }, (_, i) => i * 10).map(u => {
-            const tx     = bx + (u / 100) * bw;
-            const major  = u % 20 === 0;
-            const inFill = u / 100 <= pct;
+          {/* liquid fill */}
+          {fillW > 0 && (
+            <rect x={bx} y={by} width={fillW} height={bh}
+                  fill={`url(#${uid}g)`} clipPath={`url(#${uid})`} />
+          )}
+          {/* glass sheen — top strip */}
+          <rect x={bx} y={by}   width={bw} height={7}  fill="white"            opacity={0.72} clipPath={`url(#${uid})`} />
+          {/* glass shadow — bottom strip */}
+          <rect x={bx} y={by+bh-5} width={bw} height={5} fill="rgba(0,0,0,.04)" clipPath={`url(#${uid})`} />
+
+          {/* tick marks */}
+          {Array.from({ length: 21 }, (_, i) => i * 5).map(u => {
+            const tx = bx + (u/100)*bw;
+            const maj20 = u % 20 === 0, maj10 = u % 10 === 0;
+            const h = maj20 ? 13 : maj10 ? 8 : 4;
             return (
-              <line key={u} x1={tx} y1={by} x2={tx}
-                    y2={by + (major ? bh * 0.58 : bh * 0.34)}
-                    stroke={inFill ? `rgba(255,255,255,0.65)` : '#c7c7cc'}
-                    strokeWidth={major ? 1.5 : 0.9} />
+              <line key={u} x1={tx} y1={by} x2={tx} y2={by+h}
+                    stroke={u/100 < pct ? 'rgba(255,255,255,.72)' : '#b8b8c8'}
+                    strokeWidth={maj20 ? 1.6 : maj10 ? 1.1 : 0.7} />
             );
           })}
 
-          {/* Barrel border */}
-          <rect x={bx} y={by} width={bw} height={bh} rx={3}
-                fill="none" stroke="#c7c7cc" strokeWidth={1} />
+          {/* barrel border */}
+          <rect x={bx} y={by} width={bw} height={bh} rx={4}
+                fill="none" stroke="#c8c8dc" strokeWidth={1} />
 
-          {/* Plunger gasket */}
-          <rect x={mx - 3} y={by + 1} width={5} height={bh - 2} rx={2}
-                fill="#555" opacity={0.65} />
+          {/* ── Right collar ── */}
+          <rect x={bx+bw-2} y={by-4} width={5} height={bh+8} rx={2.5} fill="#d4d4e2" />
 
-          {/* Plunger rod */}
-          <rect x={mx + 2} y={by + bh/2 - 2} width={Math.max(0, bx + bw - mx - 2)} height={4}
-                rx={2} fill="#b0b0b8" />
+          {/* ── Plunger gasket (black rubber) ── */}
+          {pct >= 0 && (
+            <>
+              <rect x={gx-5} y={by+2} width={9} height={bh-4} rx={3.5}
+                    fill="#18182a" opacity={0.84} />
+              {/* gasket reflection */}
+              <line x1={gx-3} y1={by+5} x2={gx-3} y2={by+bh-5}
+                    stroke="rgba(255,255,255,0.18)" strokeWidth={1.5} strokeLinecap="round" />
+            </>
+          )}
 
-          {/* Plunger stop + handle */}
-          <rect x={bx + bw}     y={by + 2}      width={3}  height={bh - 4} rx={1} fill="#888" />
-          <rect x={bx + bw + 3} y={by + bh * .28} width={15} height={bh * .44} rx={3} fill="#8e8e93" />
+          {/* plunger rod */}
+          <rect x={gx+4} y={by+bh/2-2}
+                width={Math.max(0, bx+bw-5-(gx+4))} height={4}
+                rx={2} fill="#c2c2d4" />
 
-          {/* Dose marker dashed line */}
-          <line x1={mx} y1={by - 5} x2={mx} y2={by + bh + 5}
-                stroke={color} strokeWidth={1.5} strokeDasharray="2,1.5" opacity={0.8} />
+          {/* ── Thumb rest ── */}
+          <rect x={bx+bw+3} y={by-4}  width={4} height={bh+8} rx={2} fill="#9898aa" />
+          <rect x={bx+bw+7} y={by-11} width={17} height={12}  rx={5} fill="#8e8e9e" />
+          <rect x={bx+bw+7} y={by+bh-1} width={17} height={12} rx={5} fill="#8e8e9e" />
 
-          {/* Unit axis labels */}
-          {[0, 20, 40, 60, 80, 100].map(u => (
-            <text key={u} x={bx + (u / 100) * bw} y={by + bh + 13}
-                  textAnchor="middle" fontSize={6.5} fill="#aeaeb2">{u}</text>
+          {/* ── Axis numbers ── */}
+          {[0,20,40,60,80,100].map(u => (
+            <text key={u} x={bx+(u/100)*bw} y={by+bh+16}
+                  textAnchor="middle" fontSize={7} fill="#b0b0c0">{u}</text>
           ))}
 
-          {/* Dose callout above */}
-          <text x={lx} y={by - 7} textAnchor="middle"
-                fontSize={9} fontWeight="700" fill={color}>{units} units</text>
-          <text x={lx} y={by - 7 + 10} textAnchor="middle"
-                fontSize={7} fill={color} opacity={0.75}>({ml} mL)</text>
+          {/* ── Dose callout ── */}
+          {doseMg > 0 && (
+            <>
+              <line x1={lx} y1={by-3} x2={lx} y2={by-11}
+                    stroke={color} strokeWidth={1.5} strokeLinecap="round" opacity={0.55} />
+              <text x={lx} y={by-14} textAnchor="middle"
+                    fontSize={10.5} fontWeight="700" fill={color}>{units} units</text>
+              <text x={lx} y={by-2} textAnchor="middle"
+                    fontSize={7.5} fill={color} opacity={0.65}>{ml} mL</text>
+            </>
+          )}
         </svg>
+      );
+    }
+
+    function DoseCalculatorModal({ initialDose = 2.25, initialConc = 12.5, onClose }) {
+      const [dose, setDose] = React.useState(String(initialDose));
+      const [conc, setConc] = React.useState(String(initialConc));
+      const doseMg   = parseFloat(dose)  || 0;
+      const concMgMl = Math.max(parseFloat(conc) || 12.5, 0.1);
+      const units    = doseMg > 0 ? Math.round(doseMg / concMgMl * 100 * 10) / 10 : 0;
+      const ml       = doseMg > 0 ? (doseMg / concMgMl).toFixed(2) : '—';
+
+      return (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+                      zIndex: 1000, display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', padding: 16 }}
+             onClick={onClose}>
+          <div style={{ background: '#fff', borderRadius: 22, padding: '22px 20px 26px',
+                        width: '100%', maxWidth: 400,
+                        boxShadow: '0 24px 64px rgba(0,0,0,.28)' }}
+               onClick={e => e.stopPropagation()}>
+
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between',
+                          alignItems: 'center', marginBottom: 20 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#1c1c1e' }}>
+                💉 Dose Calculator
+              </div>
+              <button onClick={onClose}
+                      style={{ fontSize: 18, color: '#8e8e93', background: '#f2f2f7',
+                               border: 'none', cursor: 'pointer', borderRadius: 50,
+                               width: 32, height: 32, display: 'flex', alignItems: 'center',
+                               justifyContent: 'center', lineHeight: 1 }}>✕</button>
+            </div>
+
+            {/* Inputs */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 22 }}>
+              {[['Dose (mg)', dose, setDose, '0.125', '0'],
+                ['Vial (mg/mL)', conc, setConc, '0.1', '0.1']].map(([label, val, setter, step, min]) => (
+                <div key={label}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93',
+                                textTransform: 'uppercase', letterSpacing: .4, marginBottom: 8 }}>
+                    {label}
+                  </div>
+                  <input type="number" step={step} min={min} value={val}
+                         onChange={e => setter(e.target.value)}
+                         style={{ width: '100%', fontSize: 22, fontWeight: 700, padding: '10px 0',
+                                  border: 'none', borderBottom: '2px solid #d1d1d6',
+                                  textAlign: 'center', boxSizing: 'border-box', outline: 'none',
+                                  color: '#1c1c1e', background: 'transparent' }} />
+                </div>
+              ))}
+            </div>
+
+            {/* Syringe */}
+            <SyringeGraphic doseMg={doseMg} concentration={concMgMl} color="#4a90d9" />
+
+            {/* Result */}
+            <div style={{ marginTop: 16, textAlign: 'center', padding: '14px 12px',
+                          background: doseMg > 0 ? '#f0f7ff' : '#f9f9fb', borderRadius: 14 }}>
+              {doseMg > 0 ? (
+                <>
+                  <div>
+                    <span style={{ fontSize: 38, fontWeight: 800, color: '#4a90d9',
+                                   fontVariantNumeric: 'tabular-nums' }}>{units}</span>
+                    <span style={{ fontSize: 20, color: '#4a90d9', marginLeft: 6 }}>units</span>
+                    <span style={{ fontSize: 16, color: '#8e8e93', marginLeft: 16 }}>{ml} mL</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#aeaeb2', marginTop: 4 }}>
+                    on 100-unit insulin syringe
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 14, color: '#aeaeb2' }}>Enter a dose above</div>
+              )}
+            </div>
+          </div>
+        </div>
       );
     }
 

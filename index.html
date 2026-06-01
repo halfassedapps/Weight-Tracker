@@ -454,10 +454,29 @@
       ).join(' ');
       const area = `${line} L${xOf(endMs).toFixed(1)},${(PAD.t+cH).toFixed(1)} L${xOf(startMs).toFixed(1)},${(PAD.t+cH).toFixed(1)} Z`;
 
-      const todayX      = xOf(todayMs);
-      const curLevel    = pkTotal(sortedInj, todayMs);
-      const lastInjMs   = new Date(sortedInj[sortedInj.length - 1].date + 'T12:00:00').getTime();
-      const nextInjMs   = lastInjMs + 7 * 86400000;
+      const todayX   = xOf(todayMs);
+      const curLevel = pkTotal(sortedInj, todayMs);
+      const lastInjMs = new Date(sortedInj[sortedInj.length - 1].date + 'T12:00:00').getTime();
+
+      // Detect split-dose schedule from recent injection intervals
+      let injInterval = 7;
+      if (sortedInj.length >= 2) {
+        const recent4 = sortedInj.slice(-4);
+        const intervals = [];
+        for (let i = 1; i < recent4.length; i++) {
+          const a = new Date(recent4[i-1].date + 'T12:00:00').getTime();
+          const b = new Date(recent4[i].date   + 'T12:00:00').getTime();
+          intervals.push((b - a) / 86400000);
+        }
+        injInterval = avg(intervals);
+      }
+      const isSplitDose = injInterval < 5;
+      // Weekly dose: sum last two injections if split, else last injection
+      const weeklyDose = isSplitDose && sortedInj.length >= 2
+        ? sortedInj[sortedInj.length - 1].doseMg + sortedInj[sortedInj.length - 2].doseMg
+        : sortedInj[sortedInj.length - 1].doseMg;
+
+      const nextInjMs   = lastInjMs + injInterval * 86400000;
       const troughLevel = pkTotal(sortedInj, nextInjMs - 3600000);
       const yTicks = [maxV * 0.5, maxV];
       const yDate  = PAD.t + cH + 14;
@@ -598,12 +617,12 @@
             <PkStat label="Half-life" value="5 days" color="#8e8e93" />
           </div>
           {(() => {
-            const recent     = (rows ?? []).find(r => r.twoWeekLoss != null);
-            const currentDose = sortedInj.length ? sortedInj[sortedInj.length - 1].doseMg : null;
-            if (!recent || currentDose == null) return null;
-            const rec = recommendedDose(currentDose, recent.twoWeekLoss);
+            const recent = (rows ?? []).find(r => r.twoWeekLoss != null);
+            if (!recent || weeklyDose == null) return null;
+            const rec = recommendedDose(weeklyDose, recent.twoWeekLoss);
             if (!rec) return null;
             const { dose, g } = rec;
+            const recWeekly = dose != null ? dose : weeklyDose;
             const lossSign = recent.twoWeekLoss >= 0 ? '↓' : '↑';
             const subtext = g.action === 'increase'
               ? 'Progress below 3 lbs/2wk — advance to next dose'
@@ -622,14 +641,17 @@
                               background: g.bg, border: `1px solid ${g.color}33`,
                               display: 'flex', alignItems: 'center', gap: 14 }}>
                   {/* Dose pill */}
-                  <div style={{ textAlign: 'center', minWidth: 64 }}>
+                  <div style={{ textAlign: 'center', minWidth: 72 }}>
                     <div style={{ fontSize: 11, fontWeight: 600, color: g.color, textTransform: 'uppercase',
                                   letterSpacing: .4, marginBottom: 3 }}>
                       {g.action === 'increase' ? 'Increase to' : g.action === 'contact' ? 'Hold at' : 'Stay at'}
                     </div>
                     <div style={{ fontSize: 22, fontWeight: 800, color: g.color, lineHeight: 1,
                                   fontVariantNumeric: 'tabular-nums' }}>
-                      {dose != null ? dose : currentDose} mg
+                      {recWeekly} mg
+                    </div>
+                    <div style={{ fontSize: 11, color: g.color, opacity: .75, marginTop: 2 }}>
+                      {isSplitDose ? `${recWeekly / 2} mg × 2/wk` : 'per week'}
                     </div>
                     {g.action === 'increase' && dose == null && (
                       <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>
@@ -645,7 +667,7 @@
                     <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{subtext}</div>
                     <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
                       2-wk loss: {lossSign}{Math.abs(recent.twoWeekLoss).toFixed(1)} lbs &nbsp;·&nbsp;
-                      current: {currentDose} mg
+                      current: {weeklyDose} mg/wk{isSplitDose ? ` (${sortedInj[sortedInj.length-1].doseMg} mg × 2)` : ''}
                     </div>
                   </div>
                 </div>

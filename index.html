@@ -483,7 +483,9 @@
       }
       const isSplitDose = splitManual || injInterval < 5;
       // Weekly dose: sum last two injections if split, else last injection
-      const weeklyDose = isSplitDose && sortedInj.length >= 2
+      // Only sum last two injections as weekly dose when they're actually split-schedule
+      // (interval < 5 days). If manual override but still weekly, use last injection alone.
+      const weeklyDose = (isSplitDose && injInterval < 5 && sortedInj.length >= 2)
         ? sortedInj[sortedInj.length - 1].doseMg + sortedInj[sortedInj.length - 2].doseMg
         : sortedInj[sortedInj.length - 1].doseMg;
 
@@ -998,107 +1000,121 @@
       const pct   = Math.min(units / 100, 1);
       const uid   = `syr${Math.round(doseMg*1000)}_${Math.round(concentration*100)}`;
 
-      const VW = 320, VH = 90;
-      const bx = 68, by = 38, bw = 206, bh = 26;
+      const VW = 360, VH = 108;
+      const bx = 80, by = 42, bw = 210, bh = 28;
+      const ncy   = by + bh / 2;
       const fillW = pct * bw;
-      const gx    = bx + fillW;
-      const lx    = Math.min(Math.max(gx, bx + 24), bx + bw - 24);
+      // Gasket always sits inside the barrel; clamp left edge at least 2px in
+      const gaskR = Math.max(bx + 12, bx + fillW);
+      const gaskL = gaskR - 10;
 
       return (
         <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
           <defs>
-            <clipPath id={uid}>
-              <rect x={bx} y={by} width={bw} height={bh} rx={4} />
+            <clipPath id={`${uid}c`}>
+              <rect x={bx} y={by} width={bw} height={bh} />
             </clipPath>
-            <linearGradient id={`${uid}g`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor={color} stopOpacity="0.15" />
-              <stop offset="45%"  stopColor={color} stopOpacity="0.30" />
+            <linearGradient id={`${uid}f`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stopColor={color} stopOpacity="0.14" />
+              <stop offset="50%"  stopColor={color} stopOpacity="0.34" />
               <stop offset="100%" stopColor={color} stopOpacity="0.22" />
             </linearGradient>
           </defs>
 
-          {/* ── Needle ── */}
-          <line x1="13" y1={by+bh/2} x2="57" y2={by+bh/2}
-                stroke="#adadb8" strokeWidth="1.6" strokeLinecap="round" />
-          <line x1="13" y1={by+bh/2} x2="29" y2={by+bh/2-4}
-                stroke="#cacace" strokeWidth="0.9" strokeLinecap="round" />
-          {/* needle hub (trapezoid) */}
-          <path d={`M57,${by+bh/2-9} L${bx},${by+4} L${bx},${by+bh-4} L57,${by+bh/2+9} Z`}
-                fill="#cacacc" stroke="#bbbbc4" strokeWidth="0.5" />
+          {/* ── Needle: top edge longer than bottom — classic bevel tip ── */}
+          <line x1={12} y1={ncy - 1.4} x2={70} y2={ncy - 1.4}
+                stroke="#b8b8c8" strokeWidth="1.8" strokeLinecap="square" />
+          <line x1={28} y1={ncy + 1.4} x2={70} y2={ncy + 1.4}
+                stroke="#a8a8b8" strokeWidth="1.2" strokeLinecap="square" />
+          <line x1={12} y1={ncy - 1.4} x2={28} y2={ncy + 1.4}
+                stroke="#9898a8" strokeWidth="0.9" />
 
-          {/* ── Left collar ── */}
-          <rect x={bx-3} y={by-4} width={5} height={bh+8} rx={2.5} fill="#d4d4e2" />
+          {/* ── Hub (needle-to-barrel connector) ── */}
+          <rect x={62} y={ncy - 9} width={13} height={18} rx={2}
+                fill="#c4c4d6" stroke="#acacc0" strokeWidth="0.7" />
+          <line x1={66} y1={ncy - 9} x2={66} y2={ncy + 9} stroke="rgba(255,255,255,.5)" strokeWidth="1" />
+          <line x1={70} y1={ncy - 9} x2={70} y2={ncy + 9} stroke="rgba(255,255,255,.35)" strokeWidth="1" />
 
-          {/* ── Barrel ── */}
-          <rect x={bx} y={by} width={bw} height={bh} rx={4} fill="#f6f6fc" />
+          {/* ── Left barrel flange ── */}
+          <rect x={bx - 5} y={by - 5} width={7} height={bh + 10} rx={3}
+                fill="#cacada" stroke="#b8b8ca" strokeWidth="0.5" />
 
-          {/* liquid fill */}
+          {/* ── Barrel background ── */}
+          <rect x={bx} y={by} width={bw} height={bh} fill="#eeeefb" />
+
+          {/* Liquid fill — full inner height ── */}
           {fillW > 0 && (
             <rect x={bx} y={by} width={fillW} height={bh}
-                  fill={`url(#${uid}g)`} clipPath={`url(#${uid})`} />
+                  fill={`url(#${uid}f)`} clipPath={`url(#${uid}c)`} />
           )}
-          {/* glass sheen — top strip */}
-          <rect x={bx} y={by}   width={bw} height={7}  fill="white"            opacity={0.72} clipPath={`url(#${uid})`} />
-          {/* glass shadow — bottom strip */}
-          <rect x={bx} y={by+bh-5} width={bw} height={5} fill="rgba(0,0,0,.04)" clipPath={`url(#${uid})`} />
 
-          {/* tick marks */}
+          {/* Subtle sheen at very top only */}
+          <rect x={bx} y={by} width={bw} height={4}
+                fill="rgba(255,255,255,.58)" clipPath={`url(#${uid}c)`} />
+
+          {/* ── Tick marks from top edge down ── */}
           {Array.from({ length: 21 }, (_, i) => i * 5).map(u => {
-            const tx = bx + (u/100)*bw;
-            const maj20 = u % 20 === 0, maj10 = u % 10 === 0;
-            const h = maj20 ? 13 : maj10 ? 8 : 4;
+            const tx  = bx + (u / 100) * bw;
+            const big = u % 20 === 0, med = u % 10 === 0;
+            const h   = big ? 12 : med ? 8 : 5;
             return (
-              <line key={u} x1={tx} y1={by} x2={tx} y2={by+h}
-                    stroke={u/100 < pct ? 'rgba(255,255,255,.72)' : '#b8b8c8'}
-                    strokeWidth={maj20 ? 1.6 : maj10 ? 1.1 : 0.7} />
+              <line key={u} x1={tx} y1={by} x2={tx} y2={by + h}
+                    stroke={u / 100 < pct ? 'rgba(255,255,255,.78)' : '#9898b2'}
+                    strokeWidth={big ? 1.4 : med ? 1.0 : 0.65} />
             );
           })}
 
-          {/* barrel border */}
-          <rect x={bx} y={by} width={bw} height={bh} rx={4}
-                fill="none" stroke="#c8c8dc" strokeWidth={1} />
-
-          {/* ── Right collar ── */}
-          <rect x={bx+bw-2} y={by-4} width={5} height={bh+8} rx={2.5} fill="#d4d4e2" />
-
-          {/* ── Plunger gasket (black rubber) ── */}
-          {pct >= 0 && (
-            <>
-              <rect x={gx-5} y={by+2} width={9} height={bh-4} rx={3.5}
-                    fill="#18182a" opacity={0.84} />
-              {/* gasket reflection */}
-              <line x1={gx-3} y1={by+5} x2={gx-3} y2={by+bh-5}
-                    stroke="rgba(255,255,255,0.18)" strokeWidth={1.5} strokeLinecap="round" />
-            </>
-          )}
-
-          {/* plunger rod */}
-          <rect x={gx+4} y={by+bh/2-2}
-                width={Math.max(0, bx+bw-5-(gx+4))} height={4}
-                rx={2} fill="#c2c2d4" />
-
-          {/* ── Thumb rest ── */}
-          <rect x={bx+bw+3} y={by-4}  width={4} height={bh+8} rx={2} fill="#9898aa" />
-          <rect x={bx+bw+7} y={by-11} width={17} height={12}  rx={5} fill="#8e8e9e" />
-          <rect x={bx+bw+7} y={by+bh-1} width={17} height={12} rx={5} fill="#8e8e9e" />
-
-          {/* ── Axis numbers ── */}
-          {[0,20,40,60,80,100].map(u => (
-            <text key={u} x={bx+(u/100)*bw} y={by+bh+16}
-                  textAnchor="middle" fontSize={7} fill="#b0b0c0">{u}</text>
+          {/* ── Number labels above barrel ── */}
+          {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(u => (
+            <text key={u} x={bx + (u / 100) * bw} y={by - 4}
+                  textAnchor="middle" fontSize={7.5} fill="#9090a8">{u}</text>
           ))}
 
-          {/* ── Dose callout ── */}
-          {doseMg > 0 && (
-            <>
-              <line x1={lx} y1={by-3} x2={lx} y2={by-11}
-                    stroke={color} strokeWidth={1.5} strokeLinecap="round" opacity={0.55} />
-              <text x={lx} y={by-14} textAnchor="middle"
-                    fontSize={10.5} fontWeight="700" fill={color}>{units} units</text>
-              <text x={lx} y={by-2} textAnchor="middle"
-                    fontSize={7.5} fill={color} opacity={0.65}>{ml} mL</text>
-            </>
-          )}
+          {/* Barrel border */}
+          <rect x={bx} y={by} width={bw} height={bh}
+                fill="none" stroke="#b0b0c6" strokeWidth="1" />
+
+          {/* ── Right barrel flange ── */}
+          <rect x={bx + bw - 2} y={by - 5} width={7} height={bh + 10} rx={3}
+                fill="#cacada" stroke="#b8b8ca" strokeWidth="0.5" />
+
+          {/* ── Gasket (rubber stopper — spans full inner height) ── */}
+          <rect x={gaskL} y={by + 1} width={10} height={bh - 2} rx={2.5}
+                fill="#262636" />
+          <rect x={gaskL} y={by + 1} width={3.5} height={bh - 2} rx={1.5}
+                fill="#40404e" />
+          <line x1={gaskL + 1.8} y1={by + 5} x2={gaskL + 1.8} y2={by + bh - 5}
+                stroke="rgba(255,255,255,.18)" strokeWidth="1.5" strokeLinecap="round" />
+
+          {/* ── Plunger rod ── */}
+          <rect x={gaskR + 1} y={ncy - 2.5}
+                width={Math.max(0, bx + bw + 12 - (gaskR + 1))} height={5}
+                rx={2.5} fill="#b8b8cc" />
+
+          {/* ── Thumb rest: post + two finger wings ── */}
+          <rect x={bx + bw + 14} y={by - 5} width={5} height={bh + 10} rx={2.5}
+                fill="#9090a6" />
+          <rect x={bx + bw + 19} y={by - 13} width={20} height={13} rx={5.5}
+                fill="#828298" />
+          <rect x={bx + bw + 19} y={by + bh} width={20} height={13} rx={5.5}
+                fill="#828298" />
+
+          {/* ── Dose callout below barrel ── */}
+          {doseMg > 0 && (() => {
+            const cx = Math.min(Math.max(bx + fillW / 2, bx + 20), bx + bw - 20);
+            return (
+              <>
+                <text x={cx} y={by + bh + 18}
+                      textAnchor="middle" fontSize={11.5} fontWeight="700" fill={color}>
+                  {units} units
+                </text>
+                <text x={cx} y={by + bh + 30}
+                      textAnchor="middle" fontSize={8.5} fill={color} opacity={0.7}>
+                  {ml} mL
+                </text>
+              </>
+            );
+          })()}
         </svg>
       );
     }

@@ -26,7 +26,8 @@
     const LS_KEY          = 'weight-tracker-data';
     const LS_INJ_KEY      = 'weight-tracker-injections';
     const LS_LAST_CSV_KEY = 'weight-tracker-last-csv';
-    const LS_GIST_PAT_KEY = 'weight-tracker-gist-pat';
+    const LS_GIST_PAT_KEY  = 'weight-tracker-gist-pat';
+    const LS_SPLIT_KEY     = 'weight-tracker-split-dose';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     const GIST_ID         = 'aa6e7ae2259f94c7a91637b447a0cd99';
     const GIST_USER       = 'miesemer';
@@ -397,9 +398,17 @@
     const today = () => new Date().toLocaleDateString('en-CA');
 
     /* ─── PK Chart ───────────────────────────────────────────────────────────── */
-    function PkChart({ injections, rows }) {
+    function PkChart({ injections, rows, isAdmin }) {
       if (!injections.length) return null;
       const [tip, setTip] = useState(null); // { x, y, level, dateStr, wLbs }
+      const [splitManual, setSplitManual] = useState(
+        () => localStorage.getItem(LS_SPLIT_KEY) === 'true'
+      );
+      const toggleSplit = () => {
+        const next = !splitManual;
+        setSplitManual(next);
+        localStorage.setItem(LS_SPLIT_KEY, String(next));
+      };
 
       const sortedInj = [...injections].sort((a, b) => a.date.localeCompare(b.date));
 
@@ -470,7 +479,7 @@
         }
         injInterval = avg(intervals);
       }
-      const isSplitDose = injInterval < 5;
+      const isSplitDose = splitManual || injInterval < 5;
       // Weekly dose: sum last two injections if split, else last injection
       const weeklyDose = isSplitDose && sortedInj.length >= 2
         ? sortedInj[sortedInj.length - 1].doseMg + sortedInj[sortedInj.length - 2].doseMg
@@ -610,11 +619,24 @@
             })()}
           </svg>
 
-          <div style={{ display: 'flex', padding: '8px 14px 4px', gap: 12 }}>
+          <div style={{ display: 'flex', padding: '8px 14px 4px', gap: 12, alignItems: 'flex-start' }}>
             <PkStat label="On board now" value={curLevel.toFixed(2) + ' mg'} color="#4a90d9" />
             <PkStat label="Pre-dose trough" value={troughLevel.toFixed(2) + ' mg'}
                     note={'(' + fmtShort(new Date(nextInjMs).toISOString().slice(0,10)) + ')'} color="#8e8e93" />
             <PkStat label="Half-life" value="5 days" color="#8e8e93" />
+            {isAdmin && (
+              <div style={{ flex: 1, textAlign: 'center' }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                              letterSpacing: .4, marginBottom: 4 }}>Schedule</div>
+                <button onClick={toggleSplit}
+                        style={{ fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 20,
+                                 background: isSplitDose ? '#4a90d9' : '#e5e5ea',
+                                 color: isSplitDose ? '#fff' : '#8e8e93',
+                                 border: 'none', cursor: 'pointer', lineHeight: 1.3 }}>
+                  {isSplitDose ? '2×/wk' : '1×/wk'}
+                </button>
+              </div>
+            )}
           </div>
           {(() => {
             const recent = (rows ?? []).find(r => r.twoWeekLoss != null);
@@ -1445,7 +1467,7 @@
                   </div>
                   <div style={{ fontSize: 12, color: '#aeaeb2' }}>t½ = 5 d · tpeak = 36 h</div>
                 </div>
-                <PkChart injections={injections} rows={rows} />
+                <PkChart injections={injections} rows={rows} isAdmin={isAdmin} />
               </div>
 
               {/* Weight Trend Chart */}

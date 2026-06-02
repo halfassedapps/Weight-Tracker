@@ -523,17 +523,17 @@
             ))}
             <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(endMs) - todayX)} height={cH}
                   fill="rgba(0,0,0,.025)" />
-            <path d={area} fill="#4a90d9" opacity="0.12" />
-            <path d={line} fill="none" stroke="#4a90d9" strokeWidth="2" strokeLinejoin="round" />
+            <path d={area} fill="#4a90d9" opacity="0.10" />
+            <path d={line} fill="none" stroke="#4a90d9" strokeWidth="1.5" strokeLinejoin="round" />
 
             {/* Weight line (right axis) */}
             {wPts.length > 1 && (
               <polyline
                 points={wPts.map(p => `${xOf(p.ms).toFixed(1)},${yOfW(p.lbs).toFixed(1)}`).join(' ')}
-                fill="none" stroke="#34c759" strokeWidth="1.5" strokeLinejoin="round" opacity="0.85" />
+                fill="none" stroke="#34c759" strokeWidth="1" strokeLinejoin="round" opacity="0.85" />
             )}
             {wPts.length === 1 && (
-              <circle cx={xOf(wPts[0].ms)} cy={yOfW(wPts[0].lbs)} r="2.5" fill="#34c759" />
+              <circle cx={xOf(wPts[0].ms)} cy={yOfW(wPts[0].lbs)} r="2" fill="#34c759" />
             )}
 
             {/* Right Y axis — weight */}
@@ -542,15 +542,15 @@
               const ticks = [wLo + wPad, (wLo + wHi) / 2, wHi - wPad].map(v => Math.round(v * 10) / 10);
               return (
                 <g>
-                  <line x1={rx} y1={PAD.t} x2={rx} y2={PAD.t + cH} stroke="rgba(52,198,89,.3)" strokeWidth="1" />
+                  <line x1={rx} y1={PAD.t} x2={rx} y2={PAD.t + cH} stroke="rgba(52,198,89,.3)" strokeWidth="0.7" />
                   {ticks.map((v, i) => (
                     <g key={i}>
-                      <line x1={rx} y1={yOfW(v)} x2={rx + 4} y2={yOfW(v)} stroke="rgba(52,198,89,.4)" strokeWidth="1" />
-                      <text x={rx + 6} y={yOfW(v) + 3} fontSize="6.5" fill="#34c759" opacity="0.8">{Math.round(v)}</text>
+                      <line x1={rx} y1={yOfW(v)} x2={rx + 3} y2={yOfW(v)} stroke="rgba(52,198,89,.4)" strokeWidth="0.7" />
+                      <text x={rx + 5} y={yOfW(v) + 2.5} fontSize="4.5" fill="#34c759" opacity="0.8">{Math.round(v)}</text>
                     </g>
                   ))}
-                  <text x={rx + 28} y={PAD.t + cH / 2} fontSize="6" fill="#34c759" opacity="0.6"
-                        textAnchor="middle" transform={`rotate(90, ${rx + 28}, ${PAD.t + cH / 2})`}>lbs</text>
+                  <text x={rx + 24} y={PAD.t + cH / 2} fontSize="4" fill="#34c759" opacity="0.6"
+                        textAnchor="middle" transform={`rotate(90, ${rx + 24}, ${PAD.t + cH / 2})`}>lbs</text>
                 </g>
               );
             })()}
@@ -568,14 +568,14 @@
                 const x  = xOf(ms);
                 const y  = yOf(pkTotal(sortedInj, ms));
                 const { mo, day } = fmtDate(inj.date);
-                const ro = (labelRow[i] ?? 0) * 18;
+                const ro = (labelRow[i] ?? 0) * 14;
                 return (
                   <g key={inj.date}>
                     <line x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
-                          stroke="#4a90d9" strokeWidth="1" strokeDasharray="3,2" opacity="0.45" />
-                    <circle cx={x} cy={y} r="3" fill="#fff" stroke="#4a90d9" strokeWidth="1.5" />
-                    <text x={x} y={yDate + ro} textAnchor="middle" fontSize="7.5" fill="#6a9fd4">{mo} {day}</text>
-                    <text x={x} y={yDose + ro} textAnchor="middle" fontSize="7" fill="#4a90d9">{inj.doseMg} mg</text>
+                          stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="3,2" opacity="0.45" />
+                    <circle cx={x} cy={y} r="2" fill="#fff" stroke="#4a90d9" strokeWidth="1" />
+                    <text x={x} y={yDate + ro} textAnchor="middle" fontSize="5" fill="#6a9fd4">{mo} {day}</text>
+                    <text x={x} y={yDose + ro} textAnchor="middle" fontSize="4.5" fill="#4a90d9">{inj.doseMg} mg</text>
                   </g>
                 );
               });
@@ -584,24 +584,24 @@
             {nextInjMs <= endMs && (
               <g>
                 <line x1={xOf(nextInjMs)} y1={PAD.t} x2={xOf(nextInjMs)} y2={PAD.t + cH}
-                      stroke="#4a90d9" strokeWidth="1" strokeDasharray="2,3" opacity="0.25" />
-                <text x={xOf(nextInjMs)} y={yDate} textAnchor="middle" fontSize="7.5" fill="#4a90d9" opacity="0.45">
+                      stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="2,3" opacity="0.25" />
+                <text x={xOf(nextInjMs)} y={yDate} textAnchor="middle" fontSize="5" fill="#4a90d9" opacity="0.45">
                   {fmtShort(new Date(nextInjMs).toISOString().slice(0,10))}
                 </text>
-                <text x={xOf(nextInjMs)} y={yDose} textAnchor="middle" fontSize="7" fill="#4a90d9" opacity="0.45">next?</text>
+                <text x={xOf(nextInjMs)} y={yDose} textAnchor="middle" fontSize="4.5" fill="#4a90d9" opacity="0.45">next?</text>
               </g>
             )}
 
-            <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH} stroke="#ff6b35" strokeWidth="1.5" />
-            <circle cx={todayX} cy={yOf(curLevel)} r="3.5" fill="#ff6b35" stroke="#fff" strokeWidth="1" />
-            <text x={todayX + 4} y={PAD.t + 8} fontSize="7" fill="#ff6b35" fontWeight="600">today</text>
+            <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH} stroke="#ff6b35" strokeWidth="1" />
+            <circle cx={todayX} cy={yOf(curLevel)} r="2.5" fill="#ff6b35" stroke="#fff" strokeWidth="1" />
+            <text x={todayX + 4} y={PAD.t + 7} fontSize="5" fill="#ff6b35" fontWeight="600">today</text>
 
             {yTicks.map((v, i) => (
-              <text key={i} x={PAD.l - 4} y={yOf(v) + 3} textAnchor="end" fontSize="6.5" fill="#aeaeb2">
+              <text key={i} x={PAD.l - 4} y={yOf(v) + 2.5} textAnchor="end" fontSize="4.5" fill="#aeaeb2">
                 {v.toFixed(1)}
               </text>
             ))}
-            <text x={PAD.l - 4} y={PAD.t + cH + 4} textAnchor="end" fontSize="6.5" fill="#aeaeb2">0</text>
+            <text x={PAD.l - 4} y={PAD.t + cH + 4} textAnchor="end" fontSize="4.5" fill="#aeaeb2">0</text>
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
             <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
 

@@ -426,8 +426,8 @@
       }
       const maxV = Math.max(...pts.map(p => p.v), 0.01);
 
-      const VW = 360, VH = 172;
-      const PAD = { t: 18, r: 40, b: 42, l: 36 };
+      const VW = 360, VH = 190;
+      const PAD = { t: 18, r: 40, b: 60, l: 36 };
       const cW  = VW - PAD.l - PAD.r;
       const cH  = VH - PAD.t - PAD.b;
 
@@ -482,11 +482,10 @@
         injInterval = avg(intervals);
       }
       const isSplitDose = splitManual || injInterval < 5;
-      // Weekly dose: sum last two injections if split, else last injection
-      // Only sum last two injections as weekly dose when they're actually split-schedule
-      // (interval < 5 days). If manual override but still weekly, use last injection alone.
-      const weeklyDose = (isSplitDose && injInterval < 5 && sortedInj.length >= 2)
-        ? sortedInj[sortedInj.length - 1].doseMg + sortedInj[sortedInj.length - 2].doseMg
+      // Weekly dose = last injection × 2 in split mode (works at any dose level,
+      // including during transitions where the two most recent shots differ).
+      const weeklyDose = isSplitDose
+        ? sortedInj[sortedInj.length - 1].doseMg * 2
         : sortedInj[sortedInj.length - 1].doseMg;
 
       const nextInjMs   = lastInjMs + injInterval * 86400000;
@@ -555,21 +554,31 @@
               );
             })()}
 
-            {sortedInj.map(inj => {
-              const ms = new Date(inj.date + 'T12:00:00').getTime();
-              const x  = xOf(ms);
-              const y  = yOf(pkTotal(sortedInj, ms));
-              const { mo, day } = fmtDate(inj.date);
-              return (
-                <g key={inj.date}>
-                  <line x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
-                        stroke="#4a90d9" strokeWidth="1" strokeDasharray="3,2" opacity="0.45" />
-                  <circle cx={x} cy={y} r="3" fill="#fff" stroke="#4a90d9" strokeWidth="1.5" />
-                  <text x={x} y={yDate} textAnchor="middle" fontSize="7.5" fill="#6a9fd4">{mo} {day}</text>
-                  <text x={x} y={yDose} textAnchor="middle" fontSize="7" fill="#4a90d9">{inj.doseMg} mg</text>
-                </g>
-              );
-            })}
+            {(() => {
+              // Stagger labels onto two rows when consecutive injections are < 6 days apart
+              const labelRow = [];
+              for (let i = 0; i < sortedInj.length; i++) {
+                if (i === 0) { labelRow.push(0); continue; }
+                const days = (new Date(sortedInj[i].date + 'T12:00:00') - new Date(sortedInj[i-1].date + 'T12:00:00')) / 86400000;
+                labelRow.push(days < 6 ? 1 - labelRow[i-1] : 0);
+              }
+              return sortedInj.map((inj, i) => {
+                const ms = new Date(inj.date + 'T12:00:00').getTime();
+                const x  = xOf(ms);
+                const y  = yOf(pkTotal(sortedInj, ms));
+                const { mo, day } = fmtDate(inj.date);
+                const ro = (labelRow[i] ?? 0) * 18;
+                return (
+                  <g key={inj.date}>
+                    <line x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
+                          stroke="#4a90d9" strokeWidth="1" strokeDasharray="3,2" opacity="0.45" />
+                    <circle cx={x} cy={y} r="3" fill="#fff" stroke="#4a90d9" strokeWidth="1.5" />
+                    <text x={x} y={yDate + ro} textAnchor="middle" fontSize="7.5" fill="#6a9fd4">{mo} {day}</text>
+                    <text x={x} y={yDose + ro} textAnchor="middle" fontSize="7" fill="#4a90d9">{inj.doseMg} mg</text>
+                  </g>
+                );
+              });
+            })()}
 
             {nextInjMs <= endMs && (
               <g>

@@ -494,6 +494,14 @@
       const yTicks = [maxV * 0.5, maxV];
       const yLabelPivot = PAD.t + cH + 4; // baseline for rotated injection labels
 
+      // Weekly grid lines aligned to calendar Sundays
+      const xWeekTicks = [];
+      const firstSun = new Date(startMs); firstSun.setHours(12, 0, 0, 0);
+      firstSun.setDate(firstSun.getDate() - firstSun.getDay());
+      for (const tw = new Date(firstSun); tw.getTime() <= endMs; tw.setDate(tw.getDate() + 7)) {
+        if (tw.getTime() >= startMs) xWeekTicks.push(tw.getTime());
+      }
+
       const handleMouseMove = (e) => {
         const rect  = e.currentTarget.getBoundingClientRect();
         const svgX  = (e.clientX - rect.left) / rect.width * VW;
@@ -516,6 +524,10 @@
                onMouseMove={handleMouseMove}
                onMouseLeave={() => setTip(null)}>
 
+            {xWeekTicks.map(ms => (
+              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
+                    stroke="rgba(0,0,0,.05)" strokeWidth="0.7" />
+            ))}
             {yTicks.map((v, i) => (
               <line key={i} x1={PAD.l} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)}
                     stroke="rgba(0,0,0,.06)" strokeWidth="1" />
@@ -846,7 +858,7 @@
             {/* Weight line */}
             <polyline
               points={pts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
-              fill="none" stroke="#4a90d9" strokeWidth="2" strokeLinejoin="round" />
+              fill="none" stroke="#4a90d9" strokeWidth="1.5" strokeLinejoin="round" />
 
             {/* Weight dots */}
             {pts.map(p => (
@@ -857,7 +869,7 @@
             {/* Today line */}
             <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH}
                   stroke="#ff6b35" strokeWidth="1.5" opacity="0.5" />
-            <text x={todayX + 3} y={PAD.t + 9} fontSize="7" fill="#ff6b35" fontWeight="600">today</text>
+            <text x={todayX + 3} y={PAD.t + 9} fontSize="5" fill="#ff6b35" fontWeight="600">today</text>
 
             {/* Projected goal marker */}
             {goalMs && goalMs > todayMs && (
@@ -867,7 +879,7 @@
                 <circle cx={xOf(goalMs)} cy={goalY} r="4"
                         fill="#34c759" stroke="#fff" strokeWidth="1.5" />
                 <text x={xOf(goalMs)} y={PAD.t + cH + 26} textAnchor="middle"
-                      fontSize="7" fill="#34c759" fontWeight="600">{goalDateStr}</text>
+                      fontSize="5" fill="#34c759" fontWeight="600">{goalDateStr}</text>
               </g>
             )}
 
@@ -878,10 +890,10 @@
             {/* Y axis labels */}
             {yTicks.map(v => (
               <text key={v} x={PAD.l - 5} y={yOf(v) + 3} textAnchor="end"
-                    fontSize="6.5" fill="#aeaeb2">{v}</text>
+                    fontSize="4.5" fill="#aeaeb2">{v}</text>
             ))}
             <text x={PAD.l - 5} y={goalY + 3} textAnchor="end"
-                  fontSize="6.5" fill="#34c759" fontWeight="600">{GOAL_LBS}</text>
+                  fontSize="4.5" fill="#34c759" fontWeight="600">{GOAL_LBS}</text>
 
             {/* X axis ticks */}
             {xTicks.map(ms => (
@@ -889,7 +901,7 @@
                 <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 3}
                       stroke="#d1d1d6" strokeWidth="1" />
                 <text x={xOf(ms)} y={PAD.t + cH + 12} textAnchor="middle"
-                      fontSize="7" fill="#aeaeb2">
+                      fontSize="5" fill="#aeaeb2">
                   {new Date(ms).toLocaleDateString('en-US', { month: 'short' })}
                 </text>
               </g>

@@ -766,7 +766,8 @@
       );
     }
 
-    const GOAL_LBS = 155;
+    const GOAL_LBS        = 155;
+    const HEIGHT_IN       = 67; // 5'7"
 
     function WeightChart({ rows }) {
       if (!rows || rows.length < 2) return null;
@@ -1658,7 +1659,7 @@
                 <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.1fr 1.1fr 1.5fr 1.1fr 1fr',
                               padding: '8px 14px', background: '#f2f2f7',
                               borderBottom: '.5px solid rgba(0,0,0,.1)' }}>
-                  {['DATE', "REC'D", '7D AVG', '2WK LOSS', '10D HIGH', '% LOST'].map((h, i) => (
+                  {['DATE', "REC'D", '7D AVG', '2WK LOSS', 'BMI', '% LOST'].map((h, i) => (
                     <div key={h} style={{ fontSize: 12, fontWeight: 700, letterSpacing: .6,
                                           color: '#8e8e93', textAlign: i === 0 ? 'left' : 'right' }}>{h}</div>
                   ))}
@@ -1690,9 +1691,6 @@
 
                   const { mo, day, wd } = fmtDate(item.date);
                   const rate    = rateInfo(item.rate);
-                  const prevRow = items.slice(0, idx).reverse().find(x => x.type === 'row');
-                  const prevHi  = prevRow ? prevRow.tenHigh : null;
-                  const hiDrop  = prevHi != null && item.tenHigh < prevHi - 0.05;
 
                   return (
                     <div key={item.date} className="row-in"
@@ -1734,18 +1732,9 @@
                           );
                         })()}
                       </div>
-                      <div style={{ textAlign: 'right' }}>
-                        {hiDrop ? (
-                          <span style={{ display: 'inline-block', fontSize: 13, fontWeight: 600,
-                                         fontVariantNumeric: 'tabular-nums', padding: '2px 6px',
-                                         borderRadius: 6, ...BADGE.loss }}>
-                            ↓ {fw(item.tenHigh)}
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: 16, color: '#3c3c43', fontVariantNumeric: 'tabular-nums' }}>
-                            {fw(item.tenHigh)}
-                          </span>
-                        )}
+                      <div style={{ textAlign: 'right', fontSize: 16, color: '#3c3c43',
+                                    fontVariantNumeric: 'tabular-nums' }}>
+                        {(703 * item.lbs / (HEIGHT_IN * HEIGHT_IN)).toFixed(1)}
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         {baselineLbs != null && (() => {

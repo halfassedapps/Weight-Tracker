@@ -425,6 +425,7 @@
         pts.push({ ms, v: pkTotal(sortedInj, ms) });
       }
       const maxV = Math.max(...pts.map(p => p.v), 0.01);
+      const yMax = maxV * 1.18; // 18% headroom so peaks don't touch the top border
 
       const VW = 360, VH = 190;
       const PAD = { t: 18, r: 40, b: 60, l: 36 };
@@ -458,7 +459,7 @@
       };
 
       const xOf = ms => PAD.l + ((ms - startMs) / (endMs - startMs)) * cW;
-      const yOf = v  => PAD.t + cH - Math.min(v / maxV, 1) * cH;
+      const yOf = v  => PAD.t + cH - Math.min(v / yMax, 1) * cH;
 
       const line = pts.map((p, i) =>
         `${i === 0 ? 'M' : 'L'}${xOf(p.ms).toFixed(1)},${yOf(p.v).toFixed(1)}`

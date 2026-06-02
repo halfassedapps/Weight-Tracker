@@ -564,8 +564,8 @@
                   <line x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
                         stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="3,2" opacity="0.45" />
                   <circle cx={x} cy={y} r="2" fill="#fff" stroke="#4a90d9" strokeWidth="1" />
-                  <text x={x} y={yLabelPivot} textAnchor="start" fontSize="5" fill="#4a90d9"
-                        transform={`rotate(90, ${x}, ${yLabelPivot})`}>
+                  <text x={x} y={yLabelPivot} textAnchor="end" fontSize="5" fill="#4a90d9"
+                        transform={`rotate(-90, ${x}, ${yLabelPivot})`}>
                     {mo} {day} · {inj.doseMg} mg
                   </text>
                 </g>
@@ -578,8 +578,8 @@
                 <g>
                   <line x1={nx} y1={PAD.t} x2={nx} y2={PAD.t + cH}
                         stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="2,3" opacity="0.25" />
-                  <text x={nx} y={yLabelPivot} textAnchor="start" fontSize="5" fill="#4a90d9" opacity="0.45"
-                        transform={`rotate(90, ${nx}, ${yLabelPivot})`}>
+                  <text x={nx} y={yLabelPivot} textAnchor="end" fontSize="5" fill="#4a90d9" opacity="0.45"
+                        transform={`rotate(-90, ${nx}, ${yLabelPivot})`}>
                     {fmtShort(new Date(nextInjMs).toISOString().slice(0,10))} · next?
                   </text>
                 </g>

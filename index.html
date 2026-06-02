@@ -498,9 +498,13 @@
       const xWeekTicks = [];
       const firstSun = new Date(startMs); firstSun.setHours(12, 0, 0, 0);
       firstSun.setDate(firstSun.getDate() - firstSun.getDay());
-      for (const tw = new Date(firstSun); tw.getTime() <= endMs; tw.setDate(tw.getDate() + 7)) {
+      for (let tw = new Date(firstSun); tw.getTime() <= endMs; tw.setDate(tw.getDate() + 7)) {
         if (tw.getTime() >= startMs) xWeekTicks.push(tw.getTime());
       }
+
+      // Time-averaged on-board level (historical range only)
+      const histPts = pts.filter(p => p.ms <= todayMs);
+      const avgLevel = histPts.length > 0 ? histPts.reduce((s, p) => s + p.v, 0) / histPts.length : 0;
 
       const handleMouseMove = (e) => {
         const rect  = e.currentTarget.getBoundingClientRect();
@@ -526,7 +530,7 @@
 
             {xWeekTicks.map(ms => (
               <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
-                    stroke="rgba(0,0,0,.05)" strokeWidth="0.7" />
+                    stroke="rgba(0,0,0,.08)" strokeWidth="0.6" />
             ))}
             {yTicks.map((v, i) => (
               <line key={i} x1={PAD.l} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)}
@@ -536,6 +540,16 @@
                   fill="rgba(0,0,0,.025)" />
             <path d={area} fill="#4a90d9" opacity="0.10" />
             <path d={line} fill="none" stroke="#4a90d9" strokeWidth="1.5" strokeLinejoin="round" />
+
+            {/* Average on-board level */}
+            {avgLevel > 0 && (
+              <g>
+                <line x1={PAD.l} y1={yOf(avgLevel)} x2={PAD.l + cW} y2={yOf(avgLevel)}
+                      stroke="#4a90d9" strokeWidth="0.8" strokeDasharray="3,4" opacity="0.4" />
+                <text x={PAD.l - 4} y={yOf(avgLevel) + 2.5} textAnchor="end"
+                      fontSize="4" fill="#4a90d9" opacity="0.55">avg</text>
+              </g>
+            )}
 
             {/* Weight line (right axis) */}
             {wPts.length > 1 && (

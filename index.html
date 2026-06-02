@@ -502,9 +502,16 @@
         if (tw.getTime() >= startMs) xWeekTicks.push(tw.getTime());
       }
 
-      // Time-averaged on-board level (historical range only)
-      const histPts = pts.filter(p => p.ms <= todayMs);
-      const avgLevel = histPts.length > 0 ? histPts.reduce((s, p) => s + p.v, 0) / histPts.length : 0;
+      // Per-injection-interval average on-board level
+      const intervalAvgs = sortedInj.map((inj, i) => {
+        const iStart = new Date(inj.date + 'T12:00:00').getTime();
+        const iEnd   = i < sortedInj.length - 1
+          ? new Date(sortedInj[i + 1].date + 'T12:00:00').getTime()
+          : todayMs;
+        const iPts = pts.filter(p => p.ms >= iStart && p.ms <= iEnd);
+        const mean = iPts.length ? iPts.reduce((s, p) => s + p.v, 0) / iPts.length : 0;
+        return { startMs: iStart, endMs: iEnd, mean };
+      }).filter(s => s.mean > 0);
 
       const handleMouseMove = (e) => {
         const rect  = e.currentTarget.getBoundingClientRect();
@@ -541,15 +548,20 @@
             <path d={area} fill="#4a90d9" opacity="0.10" />
             <path d={line} fill="none" stroke="#4a90d9" strokeWidth="1.5" strokeLinejoin="round" />
 
-            {/* Average on-board level */}
-            {avgLevel > 0 && (
-              <g>
-                <line x1={PAD.l} y1={yOf(avgLevel)} x2={PAD.l + cW} y2={yOf(avgLevel)}
-                      stroke="#4a90d9" strokeWidth="0.8" strokeDasharray="3,4" opacity="0.4" />
-                <text x={PAD.l - 4} y={yOf(avgLevel) + 2.5} textAnchor="end"
-                      fontSize="4" fill="#4a90d9" opacity="0.55">avg</text>
-              </g>
-            )}
+            {/* Per-interval average bars */}
+            {intervalAvgs.map((seg, i) => (
+              <rect key={i}
+                x={xOf(seg.startMs)} y={yOf(seg.mean)}
+                width={Math.max(0, xOf(seg.endMs) - xOf(seg.startMs))}
+                height={Math.max(0, (PAD.t + cH) - yOf(seg.mean))}
+                fill="#4a90d9" opacity="0.10" />
+            ))}
+            {intervalAvgs.map((seg, i) => (
+              <line key={i}
+                x1={xOf(seg.startMs)} y1={yOf(seg.mean)}
+                x2={xOf(seg.endMs)}   y2={yOf(seg.mean)}
+                stroke="#4a90d9" strokeWidth="1" opacity="0.45" strokeLinecap="round" />
+            ))}
 
             {/* Weight line (right axis) */}
             {wPts.length > 1 && (

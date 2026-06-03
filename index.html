@@ -783,10 +783,15 @@
       const todayD   = new Date(); todayD.setHours(12,0,0,0);
       const todayMs  = todayD.getTime();
 
-      // Linear regression (days from start vs lbs)
-      const n     = pts.length;
-      const rxs   = pts.map(p => (p.ms - startMs) / 86400000);
-      const rys   = pts.map(p => p.lbs);
+      // Rolling 21-day regression window (falls back to all data if fewer points)
+      const TREND_DAYS = 21;
+      const cutoffMs   = todayMs - TREND_DAYS * 86400000;
+      const rPts = pts.filter(p => p.ms >= cutoffMs);
+      const regPts = rPts.length >= 4 ? rPts : pts;
+
+      const n     = regPts.length;
+      const rxs   = regPts.map(p => (p.ms - startMs) / 86400000);
+      const rys   = regPts.map(p => p.lbs);
       const mX    = rxs.reduce((s,v) => s+v, 0) / n;
       const mY    = rys.reduce((s,v) => s+v, 0) / n;
       const slope = rxs.reduce((s,x,i) => s + (x-mX)*(rys[i]-mY), 0)

@@ -470,17 +470,13 @@
       const curLevel = pkTotal(sortedInj, todayMs);
       const lastInjMs = new Date(sortedInj[sortedInj.length - 1].date + 'T12:00:00').getTime();
 
-      // Detect split-dose schedule from recent injection intervals
+      // Detect split-dose from the single most recent interval only.
+      // Averaging multiple intervals masks a recent switch to 2x/wk.
       let injInterval = 7;
       if (sortedInj.length >= 2) {
-        const recent4 = sortedInj.slice(-4);
-        const intervals = [];
-        for (let i = 1; i < recent4.length; i++) {
-          const a = new Date(recent4[i-1].date + 'T12:00:00').getTime();
-          const b = new Date(recent4[i].date   + 'T12:00:00').getTime();
-          intervals.push((b - a) / 86400000);
-        }
-        injInterval = avg(intervals);
+        const a = new Date(sortedInj[sortedInj.length - 2].date + 'T12:00:00').getTime();
+        const b = new Date(sortedInj[sortedInj.length - 1].date + 'T12:00:00').getTime();
+        injInterval = (b - a) / 86400000;
       }
       const isSplitDose = splitManual || injInterval < 5;
       // Weekly dose = last injection × 2 in split mode (works at any dose level,

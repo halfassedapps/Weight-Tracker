@@ -518,11 +518,13 @@
         const level   = pkTotal(sortedInj, ms);
         const wLbs    = interpW(ms);
         const dateStr = new Date(ms).toISOString().slice(0, 10);
-        setTip({ x: svgX, y: yOf(level), level, dateStr, wLbs });
+        const seg     = intervalAvgs.find(s => ms >= s.startMs && ms <= s.endMs);
+        const segAvg  = seg ? seg.mean : null;
+        setTip({ x: svgX, y: yOf(level), level, dateStr, wLbs, segAvg });
       };
 
-      // Tooltip box dimensions (height expands inside render when weight is available)
-      const TW = 76, TR = 6;
+      // Tooltip box dimensions
+      const TW = 82, TR = 6;
 
       return (
         <div>
@@ -635,27 +637,29 @@
 
             {/* Hover tooltip */}
             {tip && (() => {
-              const TH = tip.wLbs != null ? 46 : 32;
+              const TH = 32 + (tip.wLbs != null ? 13 : 0) + (tip.segAvg != null ? 13 : 0);
               const flipLeft = tip.x > PAD.l + cW * 0.65;
               const tx = flipLeft ? tip.x - TW - 8 : tip.x + 8;
               const ty = Math.max(PAD.t, Math.min(tip.y - TH / 2, PAD.t + cH - TH));
               const { mo, day } = fmtDate(tip.dateStr);
+              let row = ty + 13;
               return (
                 <g style={{ pointerEvents: 'none' }}>
-                  {/* Crosshair */}
                   <line x1={tip.x} y1={PAD.t} x2={tip.x} y2={PAD.t + cH}
                         stroke="rgba(28,28,30,.25)" strokeWidth="1" />
-                  {/* Dot on curve */}
                   <circle cx={tip.x} cy={tip.y} r="4" fill="#4a90d9" stroke="#fff" strokeWidth="1.5" />
-                  {/* Box */}
                   <rect x={tx} y={ty} width={TW} height={TH} rx={TR}
                         fill="rgba(28,28,30,.88)" />
-                  <text x={tx + 8} y={ty + 13} fontSize="8" fill="rgba(255,255,255,.65)">{mo} {day}</text>
-                  <text x={tx + 8} y={ty + 26} fontSize="11" fontWeight="700" fill="#fff"
+                  <text x={tx + 8} y={row} fontSize="8" fill="rgba(255,255,255,.65)">{mo} {day}</text>
+                  <text x={tx + 8} y={row += 13} fontSize="11" fontWeight="700" fill="#fff"
                         fontVariantNumeric="tabular-nums">{tip.level.toFixed(2)} mg</text>
                   {tip.wLbs != null && (
-                    <text x={tx + 8} y={ty + 40} fontSize="9" fill="#34c759"
+                    <text x={tx + 8} y={row += 13} fontSize="9" fill="#34c759"
                           fontVariantNumeric="tabular-nums">{tip.wLbs.toFixed(1)} lbs</text>
+                  )}
+                  {tip.segAvg != null && (
+                    <text x={tx + 8} y={row += 13} fontSize="9" fill="rgba(147,180,255,.85)"
+                          fontVariantNumeric="tabular-nums">avg {tip.segAvg.toFixed(2)} mg</text>
                   )}
                 </g>
               );

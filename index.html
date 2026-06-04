@@ -524,7 +524,7 @@
       };
 
       // Tooltip box dimensions
-      const TW = 64, TR = 5;
+      const TW = 52, TR = 4;
 
       return (
         <div>
@@ -637,12 +637,12 @@
 
             {/* Hover tooltip */}
             {tip && (() => {
-              const TH = 24 + (tip.wLbs != null ? 11 : 0) + (tip.segAvg != null ? 11 : 0);
+              const TH = 18 + (tip.wLbs != null ? 9 : 0) + (tip.segAvg != null ? 9 : 0);
               const flipLeft = tip.x > PAD.l + cW * 0.65;
-              const tx = flipLeft ? tip.x - TW - 6 : tip.x + 6;
+              const tx = flipLeft ? tip.x - TW - 5 : tip.x + 5;
               const ty = Math.max(PAD.t, Math.min(tip.y - TH / 2, PAD.t + cH - TH));
               const { mo, day } = fmtDate(tip.dateStr);
-              let row = ty + 9;
+              let row = ty + 7;
               return (
                 <g style={{ pointerEvents: 'none' }}>
                   <line x1={tip.x} y1={PAD.t} x2={tip.x} y2={PAD.t + cH}
@@ -650,15 +650,15 @@
                   <circle cx={tip.x} cy={tip.y} r="3" fill="#4a90d9" stroke="#fff" strokeWidth="1" />
                   <rect x={tx} y={ty} width={TW} height={TH} rx={TR}
                         fill="rgba(28,28,30,.88)" />
-                  <text x={tx + 6} y={row} fontSize="6.5" fill="rgba(255,255,255,.6)">{mo} {day}</text>
-                  <text x={tx + 6} y={row += 10} fontSize="9.5" fontWeight="700" fill="#fff"
+                  <text x={tx + 5} y={row} fontSize="5" fill="rgba(255,255,255,.55)">{mo} {day}</text>
+                  <text x={tx + 5} y={row += 8} fontSize="7.5" fontWeight="700" fill="#fff"
                         fontVariantNumeric="tabular-nums">{tip.level.toFixed(2)} mg</text>
                   {tip.wLbs != null && (
-                    <text x={tx + 6} y={row += 11} fontSize="8" fill="#34c759"
+                    <text x={tx + 5} y={row += 9} fontSize="6.5" fill="#34c759"
                           fontVariantNumeric="tabular-nums">{tip.wLbs.toFixed(1)} lbs</text>
                   )}
                   {tip.segAvg != null && (
-                    <text x={tx + 6} y={row += 11} fontSize="8" fill="#b06dff"
+                    <text x={tx + 5} y={row += 9} fontSize="6.5" fill="#b06dff"
                           fontVariantNumeric="tabular-nums">{tip.segAvg.toFixed(2)} mg</text>
                   )}
                 </g>

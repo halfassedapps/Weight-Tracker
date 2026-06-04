@@ -1670,6 +1670,7 @@
                   ))}
                 </div>
 
+                <div style={{ maxHeight: 600, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
                 {items.map((item, idx) => {
                   if (item.type === 'injection') {
                     const next  = items[idx + 1];
@@ -1756,6 +1757,7 @@
                     </div>
                   );
                 })}
+                </div>
               </div>
 
               <Summary rows={rows} />
@@ -1807,7 +1809,8 @@
                   </div>
                 )}
 
-                {[...injections].sort((a, b) => b.date.localeCompare(a.date)).map((inj, i, arr) => (
+                <div style={{ maxHeight: 440, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                {[...injections].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10).map((inj, i, arr) => (
                   <div key={inj.date}
                        style={{ display: 'flex', alignItems: 'center', padding: '10px 14px',
                                 borderBottom: i < arr.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
@@ -1826,6 +1829,7 @@
                     )}
                   </div>
                 ))}
+                </div>
               </div>
 
               {isAdmin ? (

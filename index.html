@@ -771,6 +771,7 @@
 
     function WeightChart({ rows }) {
       if (!rows || rows.length < 2) return null;
+      const [goalTip, setGoalTip] = useState(false);
 
       const VW = 360, VH = 180;
       const PAD = { t: 14, r: 14, b: 38, l: 38 };
@@ -811,7 +812,8 @@
       const prevCutoffMs = prevToMs - TREND_DAYS * 86400000;
       const prevRPts     = pts.filter(p => p.ms >= prevCutoffMs && p.ms <= prevToMs);
       const prevRegPts   = prevRPts.length >= 4 ? prevRPts : pts.filter(p => p.ms <= prevToMs);
-      let goalDriftDays  = null;
+      let goalDriftDays = null;
+      let prevGoalMs    = null;
       if (prevRegPts.length >= 2) {
         const pn  = prevRegPts.length;
         const pxs = prevRegPts.map(p => (p.ms - startMs) / 86400000);
@@ -821,10 +823,13 @@
         const pSlope = pxs.reduce((s,x,i) => s+(x-pmX)*(pys[i]-pmY),0) / pxs.reduce((s,x) => s+(x-pmX)**2,0);
         const pIntcp = pmY - pSlope * pmX;
         const pGoalDays = pSlope < 0 ? (GOAL_LBS - pIntcp) / pSlope : null;
-        const prevGoalMs = pGoalDays != null ? startMs + pGoalDays * 86400000 : null;
+        prevGoalMs = pGoalDays != null ? startMs + pGoalDays * 86400000 : null;
         if (goalMs != null && prevGoalMs != null)
           goalDriftDays = (goalMs - prevGoalMs) / 86400000;
       }
+      const fmtGoalDate = ms => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : '—';
+      const prevGoalDateStr = fmtGoalDate(prevGoalMs);
+      const driftAbs   = goalDriftDays != null ? Math.round(Math.abs(goalDriftDays)) : null;
       const DRIFT_THRESH = 5;
       const driftSymbol = goalDriftDays == null ? null
         : goalDriftDays < -DRIFT_THRESH ? '←'
@@ -937,20 +942,57 @@
               <g>
                 <line x1={xOf(goalMs)} y1={PAD.t} x2={xOf(goalMs)} y2={PAD.t + cH}
                       stroke="#34c759" strokeWidth="1" strokeDasharray="3,2" opacity="0.5" />
-                <circle cx={xOf(goalMs)} cy={goalY} r="6"
-                        fill={driftColor ?? '#34c759'} stroke="#fff" strokeWidth="1.5" />
-                {driftSymbol === '←' && (
-                  <path d={`M ${xOf(goalMs)+2.5},${goalY-2} L ${xOf(goalMs)-2.5},${goalY} L ${xOf(goalMs)+2.5},${goalY+2}`}
-                        fill="none" stroke="#fff" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
-                )}
-                {driftSymbol === '→' && (
-                  <path d={`M ${xOf(goalMs)-2.5},${goalY-2} L ${xOf(goalMs)+2.5},${goalY} L ${xOf(goalMs)-2.5},${goalY+2}`}
-                        fill="none" stroke="#fff" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
-                )}
-                {driftSymbol === '–' && (
-                  <line x1={xOf(goalMs)-2.5} y1={goalY} x2={xOf(goalMs)+2.5} y2={goalY}
-                        stroke="#fff" strokeWidth="1.3" strokeLinecap="round" />
-                )}
+                {/* Interactive goal dot */}
+                {(() => {
+                  const gx = xOf(goalMs);
+                  const tipW = 96, tipH = prevGoalMs ? 56 : 44, tipR = 5;
+                  const tipX = gx + tipW + 10 > PAD.l + cW ? gx - tipW - 8 : gx + 8;
+                  const tipY = Math.max(PAD.t, goalY - tipH / 2);
+                  const statusLabel = driftSymbol === '←' ? 'Improving' : driftSymbol === '→' ? 'Worsening' : 'Stable';
+                  return (
+                    <g style={{ cursor: 'pointer' }}
+                       onMouseEnter={() => setGoalTip(true)}
+                       onMouseLeave={() => setGoalTip(false)}
+                       onClick={() => setGoalTip(v => !v)}>
+                      <circle cx={gx} cy={goalY} r="10" fill="transparent" />
+                      <circle cx={gx} cy={goalY} r="6"
+                              fill={driftColor ?? '#34c759'} stroke="#fff" strokeWidth="1.5" />
+                      {driftSymbol === '←' && (
+                        <path d={`M ${gx+2.5},${goalY-2} L ${gx-2.5},${goalY} L ${gx+2.5},${goalY+2}`}
+                              fill="none" stroke="#fff" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
+                      )}
+                      {driftSymbol === '→' && (
+                        <path d={`M ${gx-2.5},${goalY-2} L ${gx+2.5},${goalY} L ${gx-2.5},${goalY+2}`}
+                              fill="none" stroke="#fff" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
+                      )}
+                      {driftSymbol === '–' && (
+                        <line x1={gx-2.5} y1={goalY} x2={gx+2.5} y2={goalY}
+                              stroke="#fff" strokeWidth="1.3" strokeLinecap="round" />
+                      )}
+                      {goalTip && (
+                        <g style={{ pointerEvents: 'none' }}>
+                          <rect x={tipX} y={tipY} width={tipW} height={tipH} rx={tipR}
+                                fill="rgba(28,28,30,.9)" />
+                          <text x={tipX+8} y={tipY+12} fontSize="7" fontWeight="700"
+                                fill={driftColor ?? '#34c759'}>{statusLabel}</text>
+                          <text x={tipX+8} y={tipY+23} fontSize="6" fill="rgba(255,255,255,.6)">now</text>
+                          <text x={tipX+20} y={tipY+23} fontSize="6" fontWeight="600" fill="#fff">{goalDateStr}</text>
+                          {prevGoalMs && (<>
+                            <text x={tipX+8} y={tipY+34} fontSize="6" fill="rgba(255,255,255,.6)">7d ago</text>
+                            <text x={tipX+28} y={tipY+34} fontSize="6" fontWeight="600" fill="rgba(255,255,255,.75)">{prevGoalDateStr}</text>
+                          </>)}
+                          {driftAbs != null && driftAbs > 0 && (
+                            <text x={tipX+8} y={tipY+(prevGoalMs ? 45 : 34)} fontSize="6"
+                                  fill={driftColor ?? '#aeaeb2'}>
+                              {driftSymbol === '←' ? `↓ ${driftAbs}d sooner` : `↑ ${driftAbs}d later`}
+                            </text>
+                          )}
+                          <text x={tipX+8} y={tipY+tipH-5} fontSize="5" fill="rgba(255,255,255,.35)">21-day rolling trend</text>
+                        </g>
+                      )}
+                    </g>
+                  );
+                })()}
                 <text x={xOf(goalMs)} y={PAD.t + cH + 26} textAnchor="middle"
                       fontSize="5" fill="#34c759" fontWeight="600">{goalDateStr}</text>
               </g>

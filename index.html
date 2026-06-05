@@ -973,21 +973,31 @@
                         <g style={{ pointerEvents: 'none' }}>
                           <rect x={tipX} y={tipY} width={tipW} height={tipH} rx={tipR}
                                 fill="rgba(28,28,30,.9)" />
-                          <text x={tipX+8} y={tipY+12} fontSize="7" fontWeight="700"
+                          {/* status */}
+                          <text x={tipX+8} y={tipY+11} fontSize="7" fontWeight="700"
                                 fill={driftColor ?? '#34c759'}>{statusLabel}</text>
-                          <text x={tipX+8} y={tipY+23} fontSize="6" fill="rgba(255,255,255,.6)">now</text>
-                          <text x={tipX+20} y={tipY+23} fontSize="6" fontWeight="600" fill="#fff">{goalDateStr}</text>
-                          {prevGoalMs && (<>
-                            <text x={tipX+8} y={tipY+34} fontSize="6" fill="rgba(255,255,255,.6)">7d ago</text>
-                            <text x={tipX+28} y={tipY+34} fontSize="6" fontWeight="600" fill="rgba(255,255,255,.75)">{prevGoalDateStr}</text>
-                          </>)}
-                          {driftAbs != null && driftAbs > 0 && (
-                            <text x={tipX+8} y={tipY+(prevGoalMs ? 45 : 34)} fontSize="6"
-                                  fill={driftColor ?? '#aeaeb2'}>
+                          {/* now row */}
+                          <text x={tipX+8} y={tipY+22} fontSize="6">
+                            <tspan fill="rgba(255,255,255,.45)">now · </tspan>
+                            <tspan fill="#fff" fontWeight="600">{goalDateStr}</tspan>
+                          </text>
+                          {/* 7d ago row */}
+                          {prevGoalMs && (
+                            <text x={tipX+8} y={tipY+32} fontSize="6">
+                              <tspan fill="rgba(255,255,255,.45)">7d ago · </tspan>
+                              <tspan fill="rgba(255,255,255,.75)" fontWeight="600">{prevGoalDateStr}</tspan>
+                            </text>
+                          )}
+                          {/* drift amount — only when not stable */}
+                          {driftAbs != null && driftSymbol !== '–' && (
+                            <text x={tipX+8} y={tipY+(prevGoalMs ? 42 : 32)} fontSize="6"
+                                  fill={driftColor}>
                               {driftSymbol === '←' ? `↓ ${driftAbs}d sooner` : `↑ ${driftAbs}d later`}
                             </text>
                           )}
-                          <text x={tipX+8} y={tipY+tipH-5} fontSize="5" fill="rgba(255,255,255,.35)">21-day rolling trend</text>
+                          {/* footer */}
+                          <text x={tipX+8} y={tipY+tipH-4} fontSize="4.5"
+                                fill="rgba(255,255,255,.3)">21-day rolling trend</text>
                         </g>
                       )}
                     </g>

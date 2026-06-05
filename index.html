@@ -806,6 +806,35 @@
       const goalDays = slope < 0 ? (GOAL_LBS - intcp) / slope : null;
       const goalMs   = goalDays != null ? startMs + goalDays * 86400000 : null;
 
+      // Goal date drift: compare to projection from 7 days ago
+      const prevToMs     = todayMs - 7 * 86400000;
+      const prevCutoffMs = prevToMs - TREND_DAYS * 86400000;
+      const prevRPts     = pts.filter(p => p.ms >= prevCutoffMs && p.ms <= prevToMs);
+      const prevRegPts   = prevRPts.length >= 4 ? prevRPts : pts.filter(p => p.ms <= prevToMs);
+      let goalDriftDays  = null;
+      if (prevRegPts.length >= 2) {
+        const pn  = prevRegPts.length;
+        const pxs = prevRegPts.map(p => (p.ms - startMs) / 86400000);
+        const pys = prevRegPts.map(p => p.lbs);
+        const pmX = pxs.reduce((s,v) => s+v,0) / pn;
+        const pmY = pys.reduce((s,v) => s+v,0) / pn;
+        const pSlope = pxs.reduce((s,x,i) => s+(x-pmX)*(pys[i]-pmY),0) / pxs.reduce((s,x) => s+(x-pmX)**2,0);
+        const pIntcp = pmY - pSlope * pmX;
+        const pGoalDays = pSlope < 0 ? (GOAL_LBS - pIntcp) / pSlope : null;
+        const prevGoalMs = pGoalDays != null ? startMs + pGoalDays * 86400000 : null;
+        if (goalMs != null && prevGoalMs != null)
+          goalDriftDays = (goalMs - prevGoalMs) / 86400000;
+      }
+      const DRIFT_THRESH = 5;
+      const driftSymbol = goalDriftDays == null ? null
+        : goalDriftDays < -DRIFT_THRESH ? '←'
+        : goalDriftDays >  DRIFT_THRESH ? '→'
+        : '–';
+      const driftColor = goalDriftDays == null ? '#aeaeb2'
+        : goalDriftDays < -DRIFT_THRESH ? '#30d158'
+        : goalDriftDays >  DRIFT_THRESH ? '#ff9500'
+        : '#aeaeb2';
+
       // Chart x range: start → goal + 2wk buffer (cap at 18 months)
       const endMs = goalMs
         ? Math.min(goalMs + 14 * 86400000, startMs + 548 * 86400000)
@@ -911,7 +940,10 @@
                 <circle cx={xOf(goalMs)} cy={goalY} r="4"
                         fill="#34c759" stroke="#fff" strokeWidth="1.5" />
                 <text x={xOf(goalMs)} y={PAD.t + cH + 26} textAnchor="middle"
-                      fontSize="5" fill="#34c759" fontWeight="600">{goalDateStr}</text>
+                      fontSize="5" fill="#34c759" fontWeight="600">
+                  {driftSymbol && <tspan fill={driftColor}>{driftSymbol} </tspan>}
+                  {goalDateStr}
+                </text>
               </g>
             )}
 

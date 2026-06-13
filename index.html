@@ -403,6 +403,8 @@
     const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const fmtDate  = s => { const d = new Date(s + 'T12:00:00'); return { mo: MO[d.getMonth()], day: d.getDate(), wd: WD[d.getDay()] }; };
     const fmtShort = s => { const { mo, day } = fmtDate(s); return `${mo} ${day}`; };
+    // Convert a ms timestamp to a local YYYY-MM-DD string (avoids UTC-date shift for e.g. 8pm injections)
+    const msToLocalDate = ms => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
     const fw = v => v != null ? v.toFixed(1) : '—';
 
     function rateInfo(v) {
@@ -680,7 +682,7 @@
                 ← Earlier
               </button>
               <span style={{ fontSize: 10, color: '#aeaeb2' }}>
-                {fmtShort(new Date(visStartMs).toISOString().slice(0,10))} – {fmtShort(new Date(Math.min(todayMs, visEndMs)).toISOString().slice(0,10))}
+                {fmtShort(msToLocalDate(visStartMs))} – {fmtShort(msToLocalDate(Math.min(todayMs, visEndMs)))}
               </span>
               <button onClick={() => canScrollLater && setWindowOffset(o => o - 1)}
                       disabled={!canScrollLater}
@@ -817,7 +819,7 @@
                         stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="2,3" opacity="0.25" />
                   <text x={nx} y={yLabelPivot} textAnchor="end" fontSize="5" fill="#4a90d9" opacity="0.45"
                         transform={`rotate(-90, ${nx}, ${yLabelPivot})`}>
-                    {fmtShort(new Date(ms).toISOString().slice(0,10))}{scheduleActive ? '' : ' · next?'}
+                    {fmtShort(msToLocalDate(ms))}{scheduleActive ? '' : ' · next?'}
                   </text>
                 </g>
               );
@@ -888,7 +890,7 @@
           <div style={{ display: 'flex', padding: '8px 14px 4px', gap: 12, alignItems: 'flex-start' }}>
             <PkStat label="On board now" value={curLevel.toFixed(2) + ' mg'} color="#4a90d9" />
             <PkStat label="Pre-dose trough" value={troughLevel.toFixed(2) + ' mg'}
-                    note={'(' + fmtShort(new Date(nextInjMs).toISOString().slice(0,10)) + ')'} color="#8e8e93" />
+                    note={'(' + fmtShort(msToLocalDate(nextInjMs)) + ')'} color="#8e8e93" />
             <PkStat label="Half-life" value="5 days" color="#8e8e93" />
           </div>
           {(() => {

@@ -6,7 +6,7 @@
   <title>Weight Tracker</title>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone@7.24.0/babel.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
@@ -146,16 +146,17 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [] }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [] }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
         .sort((a, b) => b.date.localeCompare(a.date))
         .filter(e => { if (seen.has(e.date)) return false; seen.add(e.date); return true; });
       return {
-        logbook:    daily.length ? computeLogbook(daily) : [],
-        meta:       meta ?? { metric: 'Weight', source: '' },
-        injections: injections.filter(i => i.date && i.doseMg),
+        logbook:     daily.length ? computeLogbook(daily) : [],
+        meta:        meta ?? { metric: 'Weight', source: '' },
+        injections:  injections.filter(i => i.date && i.doseMg),
+        injSchedule: Array.isArray(injSchedule) ? injSchedule : [],
       };
     }
 
@@ -180,9 +181,10 @@
       }
     }
 
-    async function patchGist(gistId, pat, rows, meta, injections) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = []) {
       const content = JSON.stringify({
         version: 1, savedAt: new Date().toISOString(), meta,
+        injSchedule,
         injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
       }, null, 2);
@@ -342,20 +344,40 @@
     }
 
     /* ─── Pharmacokinetics ───────────────────────────────────────────────────── */
-    const TPEAK_D = 1.5;
-    const T_HALF  = 5;
-    const KE      = Math.LN2 / T_HALF;
+    // One-compartment first-order absorption model (Bateman equation)
+    // t½ elim = 5 days (120 h), Ka gives Tmax ≈ 36 h
+    const T_HALF   = 5;
+    const KE_H     = Math.LN2 / (T_HALF * 24); // elimination rate, h⁻¹
+    const KA_H     = 0.078125;                  // absorption rate, h⁻¹
+    const KA_SCALE = KA_H / (KA_H - KE_H);     // pre-computed Bateman factor
 
     function pkContrib(doseMg, dtDays) {
-      if (dtDays < 0)       return 0;
-      if (dtDays < TPEAK_D) return doseMg * (dtDays / TPEAK_D);
-      return doseMg * Math.exp(-KE * (dtDays - TPEAK_D));
+      if (dtDays < 0) return 0;
+      const t = dtDays * 24; // hours
+      return doseMg * KA_SCALE * (Math.exp(-KE_H * t) - Math.exp(-KA_H * t));
     }
     function pkTotal(injections, evalMs) {
       return injections.reduce((sum, inj) => {
         const injMs = new Date(inj.date + 'T12:00:00').getTime();
         return sum + pkContrib(inj.doseMg, (evalMs - injMs) / 86400000);
       }, 0);
+    }
+
+    // Given a ms timestamp, return the next scheduled injection ms per the config.
+    // schedule = [{ day: 0-6, ampm: 'am'|'pm' }]  (0=Sun … 6=Sat)
+    function nextScheduledMs(afterMs, schedule) {
+      if (!schedule || schedule.length === 0) return null;
+      const base = new Date(afterMs);
+      for (let d = 1; d <= 7; d++) {
+        const cand = new Date(base);
+        cand.setDate(cand.getDate() + d);
+        const slot = schedule.find(s => s.day === cand.getDay());
+        if (slot) {
+          cand.setHours(slot.ampm === 'am' ? 8 : 20, 0, 0, 0);
+          return cand.getTime();
+        }
+      }
+      return null;
     }
 
     /* ─── Logbook item builder ───────────────────────────────────────────────── */
@@ -398,14 +420,17 @@
     const today = () => new Date().toLocaleDateString('en-CA');
 
     /* ─── PK Chart ───────────────────────────────────────────────────────────── */
-    function PkChart({ injections, rows, isAdmin }) {
+    function PkChart({ injections, rows, isAdmin, injSchedule, onSaveSchedule }) {
       if (!injections.length) return null;
       const [tip, setTip] = useState(null); // { x, y, level, dateStr, wLbs }
       const [splitManual, setSplitManual] = useState(
         () => localStorage.getItem(LS_SPLIT_KEY) === 'true'
       );
-      const [showCalc,    setShowCalc]    = useState(false);
+      const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
+      const [showSchedule, setShowSchedule] = useState(false);
+      const [viewMode,     setViewMode]     = useState('30d'); // '30d' | '60d' | 'all'
+      const [windowOffset, setWindowOffset] = useState(0);
       const toggleSplit = () => {
         const next = !splitManual;
         setSplitManual(next);
@@ -419,37 +444,83 @@
       const todayMs = todayD.getTime();
       const endMs   = todayMs + 21 * 86400000;
 
+      const windowDays       = viewMode === '30d' ? 30 : viewMode === '60d' ? 60 : null;
+      const refEnd           = windowDays ? todayMs - windowOffset * windowDays * 86400000 : null;
+      const visStartMs       = (() => {
+        if (windowDays) return refEnd - windowDays * 86400000;
+        // "all" view: snap to first of the month so month labels land inside the chart
+        const d = new Date(startMs); d.setDate(1); d.setHours(12, 0, 0, 0);
+        return d.getTime();
+      })();
+      const visEndMs         = windowDays ? (windowOffset === 0 ? todayMs + 7 * 86400000 : refEnd) : todayMs + 7 * 86400000;
+      const canScrollEarlier = !!windowDays && visStartMs > startMs;
+      const canScrollLater   = windowOffset > 0;
+
       const STEP = 6 * 3600000;
       const pts  = [];
       for (let ms = startMs; ms <= endMs; ms += STEP) {
         pts.push({ ms, v: pkTotal(sortedInj, ms) });
       }
-      const maxV = Math.max(...pts.map(p => p.v), 0.01);
+      const visPts = pts.filter(p => p.ms >= visStartMs && p.ms <= visEndMs);
+      const weeklyPkPts = (() => {
+        const weeks = {};
+        pts.forEach(p => {
+          const d = new Date(p.ms);
+          const sun = new Date(d); sun.setDate(d.getDate() - d.getDay()); sun.setHours(12,0,0,0);
+          const key = sun.getTime();
+          if (!weeks[key]) weeks[key] = { ms: sun.getTime() + 3.5*86400000, sum: 0, n: 0 };
+          weeks[key].sum += p.v; weeks[key].n++;
+        });
+        return Object.values(weeks).map(w => ({ ms: w.ms, v: w.sum/w.n })).sort((a,b) => a.ms - b.ms);
+      })();
+      const displayPts = (() => {
+        const base = (viewMode === 'all' ? weeklyPkPts : visPts).filter(p => p.ms <= visEndMs);
+        if (viewMode !== 'all') return base;
+        // Weekly midpoints can fall before visStartMs when the week's Sunday is in the
+        // prior month. Filter those out and anchor the line at (visStartMs, 0) instead.
+        const visible = base.filter(p => p.ms >= visStartMs);
+        return visible.length < base.length ? [{ ms: visStartMs, v: 0 }, ...visible] : visible;
+      })();
+      const maxV = Math.max(...displayPts.map(p => p.v), 0.01);
       const yMax = maxV * 1.18; // 18% headroom so peaks don't touch the top border
 
       const VW = 360, VH = 190;
-      const PAD = { t: 18, r: 40, b: 60, l: 36 };
+      const PAD = { t: 18, r: 40, b: viewMode === 'all' ? 22 : 60, l: 36 };
       const cW  = VW - PAD.l - PAD.r;
       const cH  = VH - PAD.t - PAD.b;
 
-      // Weight line: filter rows within chart range, sort ascending
-      const wPts = (rows ?? [])
+      // Weight line: all data for y-axis scaling; visible/averaged subset for display
+      const wAllPts = (rows ?? [])
         .map(r => ({ ms: new Date(r.date + 'T12:00:00').getTime(), lbs: r.lbs }))
         .filter(p => p.ms >= startMs && p.ms <= todayMs)
         .sort((a, b) => a.ms - b.ms);
-      const wVals = wPts.map(p => p.lbs);
+      const wVals = wAllPts.map(p => p.lbs);
       const wMin  = wVals.length ? Math.min(...wVals) : 0;
       const wMax  = wVals.length ? Math.max(...wVals) : 1;
       const wPad  = Math.max((wMax - wMin) * 0.15, 2);
       const wLo   = wMin - wPad;
       const wHi   = wMax + wPad;
       const yOfW  = lbs => PAD.t + cH - ((lbs - wLo) / (wHi - wLo)) * cH;
+      const wWeeklyPts = (() => {
+        const weeks = {};
+        wAllPts.forEach(p => {
+          const d = new Date(p.ms);
+          const sun = new Date(d); sun.setDate(d.getDate() - d.getDay()); sun.setHours(12,0,0,0);
+          const key = sun.getTime();
+          if (!weeks[key]) weeks[key] = { ms: sun.getTime() + 3.5*86400000, sum: 0, n: 0 };
+          weeks[key].sum += p.lbs; weeks[key].n++;
+        });
+        return Object.values(weeks).map(w => ({ ms: w.ms, lbs: w.sum/w.n })).sort((a,b) => a.ms - b.ms);
+      })();
+      const wPts = viewMode === 'all'
+        ? wWeeklyPts.filter(p => p.ms >= visStartMs)
+        : wAllPts.filter(p => p.ms >= visStartMs && p.ms <= Math.min(todayMs, visEndMs));
 
       // Interpolate weight at any ms for tooltip
       const interpW = (ms) => {
-        if (!wPts.length) return null;
+        if (!wAllPts.length) return null;
         let lo = null, hi = null;
-        for (const p of wPts) {
+        for (const p of wAllPts) {
           if (p.ms <= ms) lo = p; else if (!hi) hi = p;
         }
         if (!lo && !hi) return null;
@@ -458,13 +529,23 @@
         return lo.lbs + (ms - lo.ms) / (hi.ms - lo.ms) * (hi.lbs - lo.lbs);
       };
 
-      const xOf = ms => PAD.l + ((ms - startMs) / (endMs - startMs)) * cW;
+      const xOf = ms => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
       const yOf = v  => PAD.t + cH - Math.min(v / yMax, 1) * cH;
 
-      const line = pts.map((p, i) =>
+      const monthTicks = (() => {
+        const ticks = [];
+        const d = new Date(visStartMs); d.setDate(1); d.setHours(12,0,0,0);
+        while (d.getTime() <= visEndMs) {
+          ticks.push({ ms: d.getTime(), label: MO[d.getMonth()] + ' \'' + String(d.getFullYear()).slice(2) });
+          d.setMonth(d.getMonth() + 1);
+        }
+        return ticks;
+      })();
+
+      const line = displayPts.map((p, i) =>
         `${i === 0 ? 'M' : 'L'}${xOf(p.ms).toFixed(1)},${yOf(p.v).toFixed(1)}`
       ).join(' ');
-      const area = `${line} L${xOf(endMs).toFixed(1)},${(PAD.t+cH).toFixed(1)} L${xOf(startMs).toFixed(1)},${(PAD.t+cH).toFixed(1)} Z`;
+      const area = `${line} L${xOf(visEndMs).toFixed(1)},${(PAD.t+cH).toFixed(1)} L${xOf(visStartMs).toFixed(1)},${(PAD.t+cH).toFixed(1)} Z`;
 
       const todayX   = xOf(todayMs);
       const curLevel = pkTotal(sortedInj, todayMs);
@@ -478,24 +559,27 @@
         const b = new Date(sortedInj[sortedInj.length - 1].date + 'T12:00:00').getTime();
         injInterval = (b - a) / 86400000;
       }
-      const isSplitDose = splitManual || injInterval < 5;
+      const scheduleActive = injSchedule && injSchedule.length > 0;
+      const isSplitDose = scheduleActive ? injSchedule.length >= 2 : (splitManual || injInterval < 5);
       // Weekly dose = last injection × 2 in split mode (works at any dose level,
       // including during transitions where the two most recent shots differ).
       const weeklyDose = isSplitDose
         ? sortedInj[sortedInj.length - 1].doseMg * 2
         : sortedInj[sortedInj.length - 1].doseMg;
 
-      const nextInjMs   = lastInjMs + injInterval * 86400000;
+      const nextInjMs = scheduleActive
+        ? (nextScheduledMs(lastInjMs, injSchedule) ?? lastInjMs + injInterval * 86400000)
+        : lastInjMs + injInterval * 86400000;
       const troughLevel = pkTotal(sortedInj, nextInjMs - 3600000);
       const yTicks = [maxV * 0.5, maxV];
       const yLabelPivot = PAD.t + cH + 4; // baseline for rotated injection labels
 
-      // Weekly grid lines aligned to calendar Sundays
+      // Weekly grid lines aligned to calendar Sundays (for 30d/60d views)
       const xWeekTicks = [];
-      const firstSun = new Date(startMs); firstSun.setHours(12, 0, 0, 0);
+      const firstSun = new Date(visStartMs); firstSun.setHours(12, 0, 0, 0);
       firstSun.setDate(firstSun.getDate() - firstSun.getDay());
-      for (let tw = new Date(firstSun); tw.getTime() <= endMs; tw.setDate(tw.getDate() + 7)) {
-        if (tw.getTime() >= startMs) xWeekTicks.push(tw.getTime());
+      for (let tw = new Date(firstSun); tw.getTime() <= visEndMs; tw.setDate(tw.getDate() + 7)) {
+        if (tw.getTime() >= visStartMs) xWeekTicks.push(tw.getTime());
       }
 
       // Per-injection-interval average on-board level
@@ -514,7 +598,7 @@
         const svgX  = (e.clientX - rect.left) / rect.width * VW;
         if (svgX < PAD.l || svgX > PAD.l + cW) { setTip(null); return; }
         const frac    = (svgX - PAD.l) / cW;
-        const ms      = startMs + frac * (endMs - startMs);
+        const ms      = visStartMs + frac * (visEndMs - visStartMs);
         const level   = pkTotal(sortedInj, ms);
         const wLbs    = interpW(ms);
         const dateStr = new Date(ms).toISOString().slice(0, 10);
@@ -529,11 +613,55 @@
       return (
         <div>
           {showCalc && <DoseCalculatorModal initialDose={calcInitDose} initialConc={12.5} onClose={() => setShowCalc(false)} />}
-          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair' }}
+          {showSchedule && <InjScheduleModal schedule={injSchedule} isAdmin={isAdmin}
+                             onSave={onSaveSchedule} onClose={() => setShowSchedule(false)} />}
+
+          {/* View range selector */}
+          <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px' }}>
+            {[['30d','30 Days'],['60d','60 Days'],['all','All · Weekly']].map(([mode, label]) => (
+              <button key={mode} onClick={() => { setViewMode(mode); setWindowOffset(0); }}
+                      style={{ flex: 1, fontSize: 11, fontWeight: 600, padding: '5px 4px', borderRadius: 10,
+                               background: viewMode === mode ? '#4a90d9' : '#e5e5ea',
+                               color: viewMode === mode ? '#fff' : '#8e8e93',
+                               border: 'none', cursor: 'pointer', lineHeight: 1.3 }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {viewMode !== 'all' && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: '0 14px 2px' }}>
+              <button onClick={() => canScrollEarlier && setWindowOffset(o => o + 1)}
+                      disabled={!canScrollEarlier}
+                      style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 10,
+                               background: canScrollEarlier ? '#e5e5ea' : 'transparent',
+                               color: canScrollEarlier ? '#3c3c43' : '#c7c7cc',
+                               border: 'none', cursor: canScrollEarlier ? 'pointer' : 'default' }}>
+                ← Earlier
+              </button>
+              <span style={{ fontSize: 10, color: '#aeaeb2' }}>
+                {fmtShort(new Date(visStartMs).toISOString().slice(0,10))} – {fmtShort(new Date(Math.min(todayMs, visEndMs)).toISOString().slice(0,10))}
+              </span>
+              <button onClick={() => canScrollLater && setWindowOffset(o => o - 1)}
+                      disabled={!canScrollLater}
+                      style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 10,
+                               background: canScrollLater ? '#e5e5ea' : 'transparent',
+                               color: canScrollLater ? '#3c3c43' : '#c7c7cc',
+                               border: 'none', cursor: canScrollLater ? 'pointer' : 'default' }}>
+                Later →
+              </button>
+            </div>
+          )}
+
+          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair', overflow: 'hidden' }}
                onMouseMove={handleMouseMove}
                onMouseLeave={() => setTip(null)}>
 
-            {xWeekTicks.map(ms => (
+            {viewMode !== 'all' && xWeekTicks.map(ms => (
+              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
+                    stroke="rgba(0,0,0,.08)" strokeWidth="0.6" />
+            ))}
+            {viewMode === 'all' && monthTicks.map(({ ms }) => (
               <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
                     stroke="rgba(0,0,0,.08)" strokeWidth="0.6" />
             ))}
@@ -541,25 +669,28 @@
               <line key={i} x1={PAD.l} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)}
                     stroke="rgba(0,0,0,.06)" strokeWidth="1" />
             ))}
-            <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(endMs) - todayX)} height={cH}
-                  fill="rgba(0,0,0,.025)" />
+            {todayMs >= visStartMs && todayMs <= visEndMs && (
+              <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(visEndMs) - todayX)} height={cH}
+                    fill="rgba(0,0,0,.025)" />
+            )}
             <path d={area} fill="#4a90d9" opacity="0.10" />
             <path d={line} fill="none" stroke="#4a90d9" strokeWidth="1.5" strokeLinejoin="round" />
 
-            {/* Per-interval average bars */}
-            {intervalAvgs.map((seg, i) => (
-              <rect key={i}
-                x={xOf(seg.startMs)} y={yOf(seg.mean)}
-                width={Math.max(0, xOf(seg.endMs) - xOf(seg.startMs))}
-                height={Math.max(0, (PAD.t + cH) - yOf(seg.mean))}
-                fill="#b06dff" opacity="0.08" />
-            ))}
-            {intervalAvgs.map((seg, i) => (
-              <line key={i}
-                x1={xOf(seg.startMs)} y1={yOf(seg.mean)}
-                x2={xOf(seg.endMs)}   y2={yOf(seg.mean)}
-                stroke="#b06dff" strokeWidth="1" opacity="0.55" strokeLinecap="round" />
-            ))}
+            {/* Per-interval average bars (clamped to chart bounds) */}
+            {viewMode !== 'all' && intervalAvgs.map((seg, i) => {
+              const x1 = Math.max(PAD.l, xOf(seg.startMs));
+              const x2 = Math.min(PAD.l + cW, xOf(seg.endMs));
+              if (x2 <= x1) return null;
+              return (
+                <g key={i}>
+                  <rect x={x1} y={yOf(seg.mean)} width={x2 - x1}
+                        height={Math.max(0, (PAD.t + cH) - yOf(seg.mean))}
+                        fill="#b06dff" opacity="0.08" />
+                  <line x1={x1} y1={yOf(seg.mean)} x2={x2} y2={yOf(seg.mean)}
+                        stroke="#b06dff" strokeWidth="1" opacity="0.55" strokeLinecap="round" />
+                </g>
+              );
+            })}
 
             {/* Weight line (right axis) */}
             {wPts.length > 1 && (
@@ -572,7 +703,7 @@
             )}
 
             {/* Right Y axis — weight */}
-            {wPts.length > 0 && (() => {
+            {wAllPts.length > 0 && (() => {
               const rx   = PAD.l + cW;
               const ticks = [wLo + wPad, (wLo + wHi) / 2, wHi - wPad].map(v => Math.round(v * 10) / 10);
               return (
@@ -590,7 +721,10 @@
               );
             })()}
 
-            {sortedInj.map(inj => {
+            {viewMode !== 'all' && sortedInj.filter(inj => {
+              const ms = new Date(inj.date + 'T12:00:00').getTime();
+              return ms >= visStartMs && ms <= visEndMs;
+            }).map(inj => {
               const ms = new Date(inj.date + 'T12:00:00').getTime();
               const x  = xOf(ms);
               const y  = yOf(pkTotal(sortedInj, ms));
@@ -608,7 +742,7 @@
               );
             })}
 
-            {nextInjMs <= endMs && (() => {
+            {viewMode !== 'all' && nextInjMs >= visStartMs && nextInjMs <= visEndMs && (() => {
               const nx = xOf(nextInjMs);
               return (
                 <g>
@@ -616,15 +750,19 @@
                         stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="2,3" opacity="0.25" />
                   <text x={nx} y={yLabelPivot} textAnchor="end" fontSize="5" fill="#4a90d9" opacity="0.45"
                         transform={`rotate(-90, ${nx}, ${yLabelPivot})`}>
-                    {fmtShort(new Date(nextInjMs).toISOString().slice(0,10))} · next?
+                    {fmtShort(new Date(nextInjMs).toISOString().slice(0,10))} · next{scheduleActive ? '' : '?'}
                   </text>
                 </g>
               );
             })()}
 
-            <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH} stroke="#ff6b35" strokeWidth="1" />
-            <circle cx={todayX} cy={yOf(curLevel)} r="2.5" fill="#ff6b35" stroke="#fff" strokeWidth="1" />
-            <text x={todayX + 4} y={PAD.t + 7} fontSize="5" fill="#ff6b35" fontWeight="600">today</text>
+            {todayMs >= visStartMs && todayMs <= visEndMs && (
+              <g>
+                <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH} stroke="#ff6b35" strokeWidth="1" />
+                <circle cx={todayX} cy={yOf(curLevel)} r="2.5" fill="#ff6b35" stroke="#fff" strokeWidth="1" />
+                <text x={todayX + 4} y={PAD.t + 7} fontSize="5" fill="#ff6b35" fontWeight="600">today</text>
+              </g>
+            )}
 
             {yTicks.map((v, i) => (
               <text key={i} x={PAD.l - 4} y={yOf(v) + 2.5} textAnchor="end" fontSize="4.5" fill="#aeaeb2">
@@ -634,6 +772,20 @@
             <text x={PAD.l - 4} y={PAD.t + cH + 4} textAnchor="end" fontSize="4.5" fill="#aeaeb2">0</text>
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
             <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
+
+            {viewMode === 'all' && monthTicks.map(({ ms, label }) => {
+              const gx = xOf(ms);
+              const lx = Math.max(PAD.l + 16, Math.min(PAD.l + cW - 16, gx));
+              return (
+                <g key={ms}>
+                  <line x1={gx} y1={PAD.t + cH} x2={gx} y2={PAD.t + cH + 4}
+                        stroke="rgba(0,0,0,.15)" strokeWidth="0.8" />
+                  <text x={lx} y={PAD.t + cH + 13} textAnchor="middle" fontSize="7" fill="#8e8e93">
+                    {label}
+                  </text>
+                </g>
+              );
+            })}
 
             {/* Hover tooltip */}
             {tip && (() => {
@@ -728,19 +880,18 @@
                     </div>
                   </div>
                   </div>{/* end flex row */}
-                  {/* Schedule toggle */}
-                  {isAdmin && (
-                    <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 12, color: '#8e8e93' }}>Injection schedule</span>
-                      <button onClick={toggleSplit}
-                              style={{ fontSize: 13, fontWeight: 700, padding: '5px 14px', borderRadius: 20,
-                                       background: isSplitDose ? '#4a90d9' : '#e5e5ea',
-                                       color: isSplitDose ? '#fff' : '#8e8e93',
-                                       border: 'none', cursor: 'pointer', lineHeight: 1.3 }}>
-                        {isSplitDose ? '2× / week' : '1× / week'}
-                      </button>
-                    </div>
-                  )}
+                  {/* Schedule pill — opens config modal */}
+                  <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: '#8e8e93' }}>Injection schedule</span>
+                    <button onClick={() => setShowSchedule(true)}
+                            style={{ fontSize: 13, fontWeight: 700, padding: '5px 14px', borderRadius: 20,
+                                     background: '#4a90d9', color: '#fff',
+                                     border: 'none', cursor: 'pointer', lineHeight: 1.3 }}>
+                      {scheduleActive
+                        ? [...injSchedule].sort((a,b)=>a.day-b.day).map(s=>SCHED_DAYS_LNG[s.day]).join(' · ')
+                        : (isSplitDose ? '2× / week' : '1× / week')}
+                    </button>
+                  </div>
                   {/* Syringe draw-up graphic */}
                   <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${g.color}22` }}>
                     <div style={{ display: 'flex', alignItems: 'center',
@@ -1338,12 +1489,125 @@
       );
     }
 
+    /* ─── Injection Schedule Modal ───────────────────────────────────────────── */
+    const SCHED_DAYS     = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+    const SCHED_DAYS_LNG = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+    function InjScheduleModal({ schedule, onSave, onClose, isAdmin }) {
+      const [draft, setDraft] = useState(() => [...(schedule ?? [])].sort((a,b) => a.day - b.day));
+
+      const toggleDay = (i) => {
+        if (!isAdmin) return;
+        const has = draft.find(s => s.day === i);
+        setDraft(has
+          ? draft.filter(s => s.day !== i)
+          : [...draft, { day: i, ampm: 'am' }].sort((a, b) => a.day - b.day));
+      };
+      const toggleAmPm = (i) => {
+        if (!isAdmin) return;
+        setDraft(draft.map(s => s.day === i ? { ...s, ampm: s.ampm === 'am' ? 'pm' : 'am' } : s));
+      };
+
+      const sorted  = [...draft].sort((a, b) => a.day - b.day);
+      const changed = JSON.stringify(sorted) !== JSON.stringify([...(schedule ?? [])].sort((a,b) => a.day - b.day));
+
+      return (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+                      zIndex: 1000, display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', padding: 16 }}
+             onClick={onClose}>
+          <div style={{ background: '#fff', borderRadius: 22, padding: '22px 20px 24px',
+                        width: '100%', maxWidth: 380, boxShadow: '0 24px 64px rgba(0,0,0,.28)' }}
+               onClick={e => e.stopPropagation()}>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between',
+                          alignItems: 'center', marginBottom: 20 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#1c1c1e' }}>Injection Schedule</div>
+              <button onClick={onClose}
+                      style={{ fontSize: 18, color: '#8e8e93', background: '#f2f2f7',
+                               border: 'none', cursor: 'pointer', borderRadius: 50,
+                               width: 32, height: 32, display: 'flex', alignItems: 'center',
+                               justifyContent: 'center' }}>✕</button>
+            </div>
+
+            {/* Day picker */}
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93',
+                          textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>
+              Injection days
+            </div>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+              {SCHED_DAYS.map((d, i) => {
+                const sel = !!draft.find(s => s.day === i);
+                return (
+                  <button key={i} onClick={() => toggleDay(i)}
+                          style={{ flex: 1, padding: '8px 0', borderRadius: 10,
+                                   fontSize: 13, fontWeight: 600,
+                                   background: sel ? '#4a90d9' : '#f2f2f7',
+                                   color: sel ? '#fff' : '#8e8e93',
+                                   border: 'none', cursor: isAdmin ? 'pointer' : 'default' }}>
+                    {d}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* AM/PM per selected day */}
+            {sorted.length > 0 ? (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
+                {sorted.map(s => (
+                  <div key={s.day} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#3c3c43' }}>
+                      {SCHED_DAYS_LNG[s.day]}
+                    </span>
+                    <button onClick={() => toggleAmPm(s.day)}
+                            style={{ fontSize: 12, fontWeight: 600, padding: '5px 12px',
+                                     borderRadius: 10, background: '#f2f2f7', color: '#3c3c43',
+                                     border: 'none', cursor: isAdmin ? 'pointer' : 'default' }}>
+                      {s.ampm === 'am' ? 'Morning' : 'Evening'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: '#aeaeb2', marginBottom: 20 }}>
+                {isAdmin ? 'Tap days above to set your injection days.' : 'No schedule configured.'}
+              </div>
+            )}
+
+            {!isAdmin && (
+              <div style={{ fontSize: 12, color: '#aeaeb2', marginBottom: 16 }}>
+                Log in to edit the schedule.
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              {isAdmin && changed && (
+                <button onClick={() => { onSave(sorted); onClose(); }}
+                        style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '12px',
+                                 borderRadius: 12, background: '#4a90d9', color: '#fff',
+                                 border: 'none', cursor: 'pointer' }}>
+                  Save
+                </button>
+              )}
+              <button onClick={onClose}
+                      style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '12px',
+                               borderRadius: 12, background: '#f2f2f7', color: '#3c3c43',
+                               border: 'none', cursor: 'pointer' }}>
+                {isAdmin && changed ? 'Cancel' : 'Done'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     /* ─── App ────────────────────────────────────────────────────────────────── */
     function App() {
       const saved = lsLoad();
-      const [rows,       setRows]       = useState(saved?.logbook ?? []);
-      const [meta,       setMeta]       = useState(saved?.meta    ?? null);
-      const [injections, setInjections] = useState(lsLoadInjections);
+      const [rows,        setRows]        = useState(saved?.logbook ?? []);
+      const [meta,        setMeta]        = useState(saved?.meta    ?? null);
+      const [injections,  setInjections]  = useState(lsLoadInjections);
+      const [injSchedule, setInjSchedule] = useState([]);
       const [error,      setError]      = useState('');
       const [dragging,   setDragging]   = useState(false);
       const [showInj,    setShowInj]    = useState(false);
@@ -1371,7 +1635,7 @@
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) return;
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, injSchedule);
           setGistOk(true); setGistMsg('');
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
@@ -1388,7 +1652,8 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched } = result;
+              if (sched) setInjSchedule(sched);
               if (pat) {
                 // Admin: merge gist with local, gist wins
                 const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
@@ -1414,18 +1679,20 @@
       }, []);
 
       // Save PAT and reconnect (admin already logged in, reconfiguring token)
-      const saveGistConfig = useCallback(async (pat) => {
+      const saveGistConfig = useCallback(async (rawPat) => {
+        const pat = rawPat.trim();
         localStorage.setItem(LS_GIST_PAT_KEY, pat);
         setGistMsg('Connecting…');
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
+            if (sched) setInjSchedule(sched);
             lsSave(logbook, m); lsSaveInjections(inj);
             setGistOk(true); setGistMsg('');
             showMsg('Gist connected ✓');
@@ -1433,23 +1700,35 @@
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections]);
+      }, [rows, meta, injections, injSchedule]);
 
       // Admin login (view-only user entering PAT)
-      const adminLogin = useCallback(async (pat, setMsg) => {
+      const adminLogin = useCallback(async (rawPat, setMsg) => {
+        const pat = rawPat.trim();
         setMsg('Verifying…');
         try {
           const result = await fetchGist(GIST_ID, pat);
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
+            if (sched) setInjSchedule(sched);
             lsSave(logbook, m); lsSaveInjections(inj);
           }
           setMsg('');
         } catch (e) { setMsg(e.message); }
       }, []);
+
+      const saveInjSchedule = useCallback(async (newSched) => {
+        setInjSchedule(newSched);
+        const pat = localStorage.getItem(LS_GIST_PAT_KEY);
+        if (!pat) return;
+        try {
+          await patchGist(GIST_ID, pat, rows, meta, injections, newSched);
+          setGistOk(true); setGistMsg('');
+        } catch (e) { setGistOk(false); setGistMsg(e.message); }
+      }, [rows, meta, injections]);
 
       // Admin logout
       const adminLogout = useCallback(() => {
@@ -1569,6 +1848,7 @@
       const exportJSON = useCallback(() => {
         const payload = JSON.stringify({
           version: 1, savedAt: new Date().toISOString(), meta,
+          injSchedule,
           injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
           entries: rows.map(r => ({ date: r.date, wKg: r.wKg })),
         }, null, 2);
@@ -1731,7 +2011,8 @@
                   </div>
                   <div style={{ fontSize: 12, color: '#aeaeb2' }}>t½ = 5 d · tpeak = 36 h</div>
                 </div>
-                <PkChart injections={injections} rows={rows} isAdmin={isAdmin} />
+                <PkChart injections={injections} rows={rows} isAdmin={isAdmin}
+                         injSchedule={injSchedule} onSaveSchedule={saveInjSchedule} />
               </div>
 
               {/* Weight Trend Chart */}

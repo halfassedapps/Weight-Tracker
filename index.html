@@ -358,7 +358,8 @@
     }
     function pkTotal(injections, evalMs) {
       return injections.reduce((sum, inj) => {
-        const injMs = new Date(inj.date + 'T12:00:00').getTime();
+        // _ms allows synthetic future injections to use their exact scheduled timestamp
+        const injMs = inj._ms ?? new Date(inj.date + 'T12:00:00').getTime();
         return sum + pkContrib(inj.doseMg, (evalMs - injMs) / 86400000);
       }, 0);
     }
@@ -593,9 +594,7 @@
       // Future projection: PK curve + interval averages assuming scheduled doses at current dose
       const lastDoseMg = sortedInj[sortedInj.length - 1].doseMg;
       const projInjs = scheduleActive
-        ? [...sortedInj, ...upcomingInjMs.map(ms => ({
-            date: new Date(ms).toISOString().slice(0, 10), doseMg: lastDoseMg,
-          }))]
+        ? [...sortedInj, ...upcomingInjMs.map(ms => ({ _ms: ms, doseMg: lastDoseMg }))]
         : sortedInj;
       const projPts = scheduleActive && upcomingInjMs.length > 0 ? (() => {
         const ps = [];
@@ -624,15 +623,15 @@
         if (tw.getTime() >= visStartMs) xWeekTicks.push(tw.getTime());
       }
 
-      // Per-injection-interval average on-board level
+      // Per-injection-interval average; last interval extends to next scheduled injection
       const intervalAvgs = sortedInj.map((inj, i) => {
         const iStart = new Date(inj.date + 'T12:00:00').getTime();
         const iEnd   = i < sortedInj.length - 1
           ? new Date(sortedInj[i + 1].date + 'T12:00:00').getTime()
-          : todayMs;
+          : nextInjMs;
         const iPts = pts.filter(p => p.ms >= iStart && p.ms <= iEnd);
         const mean = iPts.length ? iPts.reduce((s, p) => s + p.v, 0) / iPts.length : 0;
-        return { startMs: iStart, endMs: iEnd, mean };
+        return { startMs: iStart, endMs: iEnd, mean, isLast: i === sortedInj.length - 1 };
       }).filter(s => s.mean > 0);
 
       const handleMouseMove = (e) => {
@@ -744,18 +743,29 @@
               );
             })}
 
-            {/* Per-interval average bars (clamped to chart bounds) */}
+            {/* Per-interval average bars; last segment split at today: solid past, dashed future */}
             {viewMode !== 'all' && intervalAvgs.map((seg, i) => {
-              const x1 = Math.max(PAD.l, xOf(seg.startMs));
-              const x2 = Math.min(PAD.l + cW, xOf(seg.endMs));
+              const x1  = Math.max(PAD.l, xOf(seg.startMs));
+              const x2  = Math.min(PAD.l + cW, xOf(seg.endMs));
               if (x2 <= x1) return null;
+              const xNow = seg.isLast ? Math.max(x1, Math.min(xOf(todayMs), x2)) : x2;
+              const y    = yOf(seg.mean);
+              const h    = Math.max(0, (PAD.t + cH) - y);
               return (
                 <g key={i}>
-                  <rect x={x1} y={yOf(seg.mean)} width={x2 - x1}
-                        height={Math.max(0, (PAD.t + cH) - yOf(seg.mean))}
-                        fill="#b06dff" opacity="0.08" />
-                  <line x1={x1} y1={yOf(seg.mean)} x2={x2} y2={yOf(seg.mean)}
+                  {/* Solid historical portion */}
+                  <rect x={x1} y={y} width={xNow - x1} height={h} fill="#b06dff" opacity="0.08" />
+                  <line x1={x1} y1={y} x2={xNow} y2={y}
                         stroke="#b06dff" strokeWidth="1" opacity="0.55" strokeLinecap="round" />
+                  {/* Dashed future portion (last interval only, today → nextInjMs) */}
+                  {seg.isLast && xNow < x2 && (
+                    <>
+                      <rect x={xNow} y={y} width={x2 - xNow} height={h} fill="#b06dff" opacity="0.04" />
+                      <line x1={xNow} y1={y} x2={x2} y2={y}
+                            stroke="#b06dff" strokeWidth="1" opacity="0.45"
+                            strokeLinecap="round" strokeDasharray="3,2" />
+                    </>
+                  )}
                 </g>
               );
             })}

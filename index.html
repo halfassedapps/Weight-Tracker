@@ -482,7 +482,7 @@
         return visible.length < base.length ? [{ ms: visStartMs, v: 0 }, ...visible] : visible;
       })();
       const maxV = Math.max(...displayPts.map(p => p.v), 0.01);
-      // yMax computed later after projPts are available
+      const yMax = maxV * 1.18; // 18% headroom so peaks don't touch the top border
 
       const VW = 360, VH = 190;
       const PAD = { t: 18, r: 40, b: viewMode === 'all' ? 22 : 60, l: 36 };
@@ -611,8 +611,7 @@
           }).filter(s => s.mean > 0)
         : [];
 
-      const yMax = Math.max(maxV, ...projPts.map(p => p.v), 0.01) * 1.18;
-      const yTicks = [yMax / 1.18 * 0.5, yMax / 1.18];
+      const yTicks = [maxV * 0.5, maxV];
       const yLabelPivot = PAD.t + cH + 4; // baseline for rotated injection labels
 
       // Weekly grid lines aligned to calendar Sundays (for 30d/60d views)
@@ -717,18 +716,16 @@
             <path d={area} fill="#4a90d9" opacity="0.10" />
             <path d={line} fill="none" stroke="#4a90d9" strokeWidth="1.5" strokeLinejoin="round" />
 
-            {/* Future projected PK curve (dashed) */}
-            {projPts.length > 1 && (() => {
-              const projLine = projPts.map((p, i) =>
-                `${i === 0 ? 'M' : 'L'}${xOf(p.ms).toFixed(1)},${yOf(p.v).toFixed(1)}`
-              ).join(' ');
-              return (
-                <path d={projLine} fill="none" stroke="#4a90d9" strokeWidth="1.5"
-                      strokeLinejoin="round" strokeDasharray="5,3" opacity="0.55" />
-              );
-            })()}
+            {/* Future projected PK curve — dashed, same algorithm, next scheduled injections */}
+            {projPts.length > 1 && (
+              <path d={projPts.map((p, i) =>
+                        `${i === 0 ? 'M' : 'L'}${xOf(p.ms).toFixed(1)},${Math.max(PAD.t, yOf(p.v)).toFixed(1)}`
+                      ).join(' ')}
+                    fill="none" stroke="#4a90d9" strokeWidth="1.5"
+                    strokeLinejoin="round" strokeDasharray="5,3" opacity="0.6" />
+            )}
 
-            {/* Future interval averages (dashed) */}
+            {/* Future interval averages — dashed purple */}
             {futureIntervalAvgs.map((seg, i) => {
               const x1 = Math.max(PAD.l, xOf(seg.startMs));
               const x2 = Math.min(PAD.l + cW, xOf(seg.endMs));

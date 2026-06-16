@@ -759,12 +759,12 @@
                         stroke="#b06dff" strokeWidth="1" opacity="0.55" strokeLinecap="round" />
                   {/* Dashed future portion (last interval only, today → nextInjMs) */}
                   {seg.isLast && xNow < x2 && (
-                    <>
+                    <g>
                       <rect x={xNow} y={y} width={x2 - xNow} height={h} fill="#b06dff" opacity="0.04" />
                       <line x1={xNow} y1={y} x2={x2} y2={y}
                             stroke="#b06dff" strokeWidth="1" opacity="0.45"
                             strokeLinecap="round" strokeDasharray="3,2" />
-                    </>
+                    </g>
                   )}
                 </g>
               );

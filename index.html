@@ -29,6 +29,7 @@
     const LS_LAST_CSV_KEY = 'weight-tracker-last-csv';
     const LS_GIST_PAT_KEY  = 'weight-tracker-gist-pat';
     const LS_SPLIT_KEY     = 'weight-tracker-split-dose';
+    const LS_VIAL_CONC_KEY = 'weight-tracker-vial-conc';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     const GIST_ID         = 'aa6e7ae2259f94c7a91637b447a0cd99';
     const GIST_USER       = 'halfassedapps';
@@ -1497,7 +1498,14 @@
 
     function DoseCalculatorModal({ initialDose = 2.25, initialConc = 12.5, onClose }) {
       const [dose, setDose] = React.useState(String(initialDose));
-      const [conc, setConc] = React.useState(String(initialConc));
+      const [conc, setConc] = React.useState(() => {
+        const saved = localStorage.getItem(LS_VIAL_CONC_KEY);
+        return String(saved ?? initialConc);
+      });
+      const handleConcChange = (v) => {
+        setConc(v);
+        try { localStorage.setItem(LS_VIAL_CONC_KEY, v); } catch (_) {}
+      };
       const doseMg   = parseFloat(dose)  || 0;
       const concMgMl = Math.max(parseFloat(conc) || 12.5, 0.1);
       const units    = doseMg > 0 ? Math.round(doseMg / concMgMl * 100 * 10) / 10 : 0;
@@ -1529,7 +1537,7 @@
             {/* Inputs */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 22 }}>
               {[['Dose (mg)', dose, setDose, '0.125', '0'],
-                ['Vial (mg/mL)', conc, setConc, '0.1', '0.1']].map(([label, val, setter, step, min]) => (
+                ['Vial (mg/mL)', conc, handleConcChange, '0.1', '0.1']].map(([label, val, setter, step, min]) => (
                 <div key={label}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93',
                                 textTransform: 'uppercase', letterSpacing: .4, marginBottom: 8 }}>

@@ -1925,6 +1925,9 @@
                   .filter(e => e.date && e.wKg != null)
                   .sort((a, b) => b.date.localeCompare(a.date));
                 const logbook = daily.length ? computeLogbook(daily) : [];
+                if (data.vialConc) {
+                  try { localStorage.setItem(LS_VIAL_CONC_KEY, String(data.vialConc)); } catch (_) {}
+                }
                 applyResult({
                   logbook,
                   meta: data.meta ?? { metric: 'Weight', source: '' },
@@ -1970,9 +1973,11 @@
       }, [rows, meta, injections]);
 
       const exportJSON = useCallback(() => {
+        const vialConc = localStorage.getItem(LS_VIAL_CONC_KEY);
         const payload = JSON.stringify({
           version: 1, savedAt: new Date().toISOString(), meta,
           injSchedule,
+          vialConc: vialConc ? parseFloat(vialConc) : 12.5,
           injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
           entries: rows.map(r => ({ date: r.date, wKg: r.wKg })),
         }, null, 2);

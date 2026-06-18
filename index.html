@@ -577,11 +577,10 @@
       }
       const scheduleActive = injSchedule && injSchedule.length > 0;
       const isSplitDose = scheduleActive ? injSchedule.length >= 2 : (splitManual || injInterval < 5);
-      // Weekly dose = last injection × 2 in split mode (works at any dose level,
-      // including during transitions where the two most recent shots differ).
-      const weeklyDose = isSplitDose
-        ? sortedInj[sortedInj.length - 1].doseMg * 2
-        : sortedInj[sortedInj.length - 1].doseMg;
+      // Number of injections per week from schedule
+      const injPerWeek = scheduleActive ? injSchedule.length : (isSplitDose ? 2 : 1);
+      // Weekly dose based on number of injections per week
+      const weeklyDose = injPerWeek * sortedInj[sortedInj.length - 1].doseMg;
 
       const nextInjMs = scheduleActive
         ? (nextScheduledMs(lastInjMs, injSchedule) ?? lastInjMs + injInterval * 86400000)
@@ -952,7 +951,7 @@
                       {recWeekly} mg
                     </div>
                     <div style={{ fontSize: 11, color: g.color, opacity: .75, marginTop: 2 }}>
-                      {isSplitDose ? `${recWeekly / 2} mg × 2/wk` : 'per week'}
+                      {injPerWeek > 1 ? `${recWeekly / injPerWeek} mg × ${injPerWeek}/wk` : 'per week'}
                     </div>
                     {g.action === 'increase' && dose == null && (
                       <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>

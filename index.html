@@ -25,6 +25,7 @@
 
     const LS_KEY          = 'weight-tracker-data';
     const LS_INJ_KEY      = 'weight-tracker-injections';
+    const LS_SCHED_KEY    = 'weight-tracker-inj-schedule';
     const LS_LAST_CSV_KEY = 'weight-tracker-last-csv';
     const LS_GIST_PAT_KEY  = 'weight-tracker-gist-pat';
     const LS_SPLIT_KEY     = 'weight-tracker-split-dose';
@@ -103,6 +104,18 @@
     }
     function lsSaveInjections(list) {
       try { localStorage.setItem(LS_INJ_KEY, JSON.stringify(list)); } catch (_) {}
+    }
+
+    /* ─── Injection Schedule localStorage ────────────────────────────────────── */
+    function lsLoadSchedule() {
+      try {
+        const raw = localStorage.getItem(LS_SCHED_KEY);
+        if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) return p; }
+      } catch (_) {}
+      return [];
+    }
+    function lsSaveSchedule(sched) {
+      try { localStorage.setItem(LS_SCHED_KEY, JSON.stringify(sched)); } catch (_) {}
     }
 
     /* ─── Weight localStorage ────────────────────────────────────────────────── */
@@ -1686,7 +1699,7 @@
       const [rows,        setRows]        = useState(saved?.logbook ?? []);
       const [meta,        setMeta]        = useState(saved?.meta    ?? null);
       const [injections,  setInjections]  = useState(lsLoadInjections);
-      const [injSchedule, setInjSchedule] = useState([]);
+      const [injSchedule, setInjSchedule] = useState(lsLoadSchedule);
       const [error,      setError]      = useState('');
       const [dragging,   setDragging]   = useState(false);
       const [showInj,    setShowInj]    = useState(false);
@@ -1732,7 +1745,7 @@
               setGistOk(!!pat);
             } else {
               const { logbook, meta: m, injections: inj, injSchedule: sched } = result;
-              if (sched) setInjSchedule(sched);
+              if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
                 const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
@@ -1771,7 +1784,7 @@
           } else {
             const { logbook, meta: m, injections: inj, injSchedule: sched } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
-            if (sched) setInjSchedule(sched);
+            if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             lsSave(logbook, m); lsSaveInjections(inj);
             setGistOk(true); setGistMsg('');
             showMsg('Gist connected ✓');
@@ -1801,6 +1814,7 @@
 
       const saveInjSchedule = useCallback(async (newSched) => {
         setInjSchedule(newSched);
+        lsSaveSchedule(newSched);
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) return;
         try {

@@ -579,8 +579,11 @@
       const isSplitDose = scheduleActive ? injSchedule.length >= 2 : (splitManual || injInterval < 5);
       // Number of injections per week from schedule
       const injPerWeek = scheduleActive ? injSchedule.length : (isSplitDose ? 2 : 1);
-      // Weekly dose based on number of injections per week
-      const weeklyDose = injPerWeek * sortedInj[sortedInj.length - 1].doseMg;
+      // Weekly dose = last injection × 2 in split mode (works at any dose level,
+      // including during transitions where the two most recent shots differ).
+      const weeklyDose = isSplitDose
+        ? sortedInj[sortedInj.length - 1].doseMg * 2
+        : sortedInj[sortedInj.length - 1].doseMg;
 
       const nextInjMs = scheduleActive
         ? (nextScheduledMs(lastInjMs, injSchedule) ?? lastInjMs + injInterval * 86400000)

@@ -1829,10 +1829,11 @@
         setIsAdmin(false); setGistOk(false); setGistMsg('');
       }, []);
 
-      // Apply processed CSV result to state + localStorage + Gist
-      const applyResult = useCallback(({ logbook, meta: newMeta }) => {
+      // Apply processed result to state + localStorage + Gist
+      const applyResult = useCallback(({ logbook, meta: newMeta, injSchedule: newSched }) => {
         setRows(logbook);
         setMeta(newMeta);
+        if (newSched) { setInjSchedule(newSched); lsSaveSchedule(newSched); }
         setError('');
         lsSave(logbook, newMeta);
         writeToGist(logbook, newMeta, injections);
@@ -1904,7 +1905,27 @@
         const reader = new FileReader();
         reader.onload = (e) => {
           try {
-            applyResult(processCSVText(e.target.result));
+            const text = e.target.result;
+            // Try JSON first
+            if (file.name.endsWith('.json')) {
+              const data = JSON.parse(text);
+              if (data.version && data.entries) {
+                // This is our export format
+                const daily = (data.entries ?? [])
+                  .filter(e => e.date && e.wKg != null)
+                  .sort((a, b) => b.date.localeCompare(a.date));
+                const logbook = daily.length ? computeLogbook(daily) : [];
+                applyResult({
+                  logbook,
+                  meta: data.meta ?? { metric: 'Weight', source: '' },
+                  injSchedule: data.injSchedule,
+                });
+              } else {
+                throw new Error('Invalid JSON format');
+              }
+            } else {
+              applyResult(processCSVText(text));
+            }
           } catch (ex) { setError(ex.message); }
         };
         reader.readAsText(file);
@@ -2006,7 +2027,7 @@
                   </div>
                 )}
               </div>
-              <input ref={inputRef} type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={onInput} />
+              <input ref={inputRef} type="file" accept=".csv,.txt,.json" style={{ display: 'none' }} onChange={onInput} />
             </div>
           </div>
 
@@ -2054,7 +2075,7 @@
                   or tap below to browse.
                 </div>
                 <label style={{ cursor: 'pointer' }}>
-                  <input type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={onInput} />
+                  <input type="file" accept=".csv,.txt,.json" style={{ display: 'none' }} onChange={onInput} />
                   <span style={{ display: 'inline-block', background: '#34c759', color: '#fff',
                                  fontWeight: 600, fontSize: 15, padding: '12px 28px', borderRadius: 50 }}>
                     Choose File

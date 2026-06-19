@@ -2029,12 +2029,13 @@
           if (!latest) { if (!silent) showMsg('No export files found in that folder.'); return; }
           const lastLoaded = localStorage.getItem(LS_LAST_CSV_KEY);
           console.log(`[Weight Tracker] Last loaded: ${lastLoaded ?? '(none)'}`);
-          if (latest.name === lastLoaded) {
+          const isNewFile = latest.name !== lastLoaded;
+          if (latest.name === lastLoaded && calories.length > 0) {
             console.log('[Weight Tracker] Already up to date — skipping import.');
             if (!silent) showMsg('Already up to date — no new export found.');
             return;
           }
-          console.log(`[Weight Tracker] Importing: ${latest.name}`);
+          console.log(`[Weight Tracker] ${isNewFile ? 'Importing' : 'Re-processing'}: ${latest.name}`);
           const text = await readFileWithRetry(latest.handle, {
             onWaiting: attempt => showMsg(`Downloading from iCloud… (attempt ${attempt})`, 10000),
           });
@@ -2042,11 +2043,11 @@
           applyResult(result);
           localStorage.setItem(LS_LAST_CSV_KEY, latest.name);
           console.log(`[Weight Tracker] Import complete.`);
-          showMsg(`Updated from ${latest.name.replace('Automation_Daily_export_', '').replace('.csv', '')}`);
+          if (!silent) showMsg(`${isNewFile ? 'Updated' : 'Calorie data refreshed'} from ${latest.name.replace('Automation_Daily_export_', '').replace('HealthExport_', '').replace('.csv', '')}`);
         } catch (ex) {
           if (!silent) setError('Auto-import error: ' + ex.message);
         }
-      }, [applyResult]);
+      }, [applyResult, calories.length]);
 
       // On mount: restore dir handle and silently try auto-import
       useEffect(() => {

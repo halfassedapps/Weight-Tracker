@@ -270,6 +270,7 @@
     function buildCalorieMap(rows, schema) {
       const map = {};
       const calorieMetrics = {};
+      let found = 0;
       for (const row of rows) {
         const rawDate = row[schema.dateCol];
         if (!rawDate) continue;
@@ -282,16 +283,18 @@
         if (isNaN(val)) continue;
         const key = d.toISOString().slice(0, 10);
         if (!map[key]) map[key] = { date: key, ts: d, Calories: 0, ActiveEnergy: 0, BasalEnergy: 0 };
-        if (metric.toLowerCase().includes('calor')) calorieMetrics[key] = (calorieMetrics[key] ?? 0) + val;
-        else if (metric.toLowerCase().includes('active energy')) map[key].ActiveEnergy = val;
-        else if (metric.toLowerCase().includes('basal energy')) map[key].BasalEnergy = val;
+        if (metric.toLowerCase().includes('calor')) { calorieMetrics[key] = (calorieMetrics[key] ?? 0) + val; found++; }
+        else if (metric.toLowerCase().includes('active energy')) { map[key].ActiveEnergy = val; found++; }
+        else if (metric.toLowerCase().includes('basal energy')) { map[key].BasalEnergy = val; found++; }
       }
       Object.entries(calorieMetrics).forEach(([key, total]) => {
         if (map[key]) map[key].Calories = total;
       });
-      return Object.values(map)
+      const result = Object.values(map)
         .filter(d => d.Calories > 0 || d.ActiveEnergy > 0)
         .sort((a, b) => b.date.localeCompare(a.date));
+      console.log(`[Calorie] Extracted ${result.length} days, found ${found} metrics`);
+      return result;
     }
 
     function buildDailyMap(rows, schema) {

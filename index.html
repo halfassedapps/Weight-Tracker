@@ -533,14 +533,8 @@
       const rawMax = Math.max(...pts.map(p => Math.max(p.Calories || 0, p.burned || 0)), 500);
       const maxVal = Math.ceil(rawMax / 500) * 500;
 
-      const netVals = pts.map(p => p.net);
-      const netMin = Math.min(...netVals, 0);
-      const netMax = Math.max(...netVals, GOAL * 1.5);
-      const netRange = Math.max(Math.abs(netMin), Math.abs(netMax - GOAL)) * 1.2;
-
       const xOf = (ms) => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
       const yOf = (val) => PAD.t + cH - (val / maxVal) * cH;
-      const yOfNet = (net) => PAD.t + cH / 2 - ((net - GOAL) / netRange) * (cH / 2);
 
       return (
         <div>
@@ -611,16 +605,12 @@
               );
             })}
 
-            {/* Goal line (centered scale) */}
-            <line x1={PAD.l} y1={yOfNet(GOAL)} x2={PAD.l + cW} y2={yOfNet(GOAL)}
+            {/* Goal line at 1709 */}
+            <line x1={PAD.l} y1={yOf(GOAL)} x2={PAD.l + cW} y2={yOf(GOAL)}
                   stroke="#34c759" strokeWidth="0.8" strokeDasharray="2,2" opacity="0.5" />
 
-            {/* Zero line (centered scale) */}
-            <line x1={PAD.l} y1={yOfNet(0)} x2={PAD.l + cW} y2={yOfNet(0)}
-                  stroke="rgba(0,0,0,.08)" strokeWidth="0.5" />
-
             {/* Net calories line */}
-            <polyline points={pts.map(p => `${xOf(p.ms)},${yOfNet(p.net)}`).join(' ')}
+            <polyline points={pts.map(p => `${xOf(p.ms)},${yOf(p.net)}`).join(' ')}
                       fill="none" stroke="#8e73de" strokeWidth="1.2" />
 
             {/* Axes */}

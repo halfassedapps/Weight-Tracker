@@ -507,8 +507,9 @@
           weeks[wk].push(d);
         }
         pts = Object.entries(weeks).map(([wk, days]) => {
-          const net = days.reduce((sum, d) => sum + (d.Calories - (d.ActiveEnergy + d.BasalEnergy || 0)), 0) / days.length;
-          return { date: wk, net, ms: new Date(wk + 'T00:00:00').getTime() + 3*STEP };
+          const avgCals = days.reduce((sum, d) => sum + (d.Calories || 0), 0) / days.length;
+          const avgBurned = days.reduce((sum, d) => sum + ((d.ActiveEnergy || 0) + (d.BasalEnergy || 0)), 0) / days.length;
+          return { date: wk, Calories: avgCals, burned: avgBurned, net: avgCals - avgBurned, ms: new Date(wk + 'T00:00:00').getTime() + 3*STEP };
         });
       } else {
         pts = sorted
@@ -516,14 +517,21 @@
             const ms = new Date(d.date + 'T00:00:00').getTime();
             return ms >= visStartMs && ms < visEndMs;
           })
-          .map(d => ({ date: d.date, net: d.Calories - (d.ActiveEnergy + d.BasalEnergy || 0), ms: new Date(d.date + 'T00:00:00').getTime() }));
+          .map(d => ({
+            date: d.date,
+            Calories: d.Calories || 0,
+            burned: (d.ActiveEnergy || 0) + (d.BasalEnergy || 0),
+            net: (d.Calories || 0) - ((d.ActiveEnergy || 0) + (d.BasalEnergy || 0)),
+            ms: new Date(d.date + 'T00:00:00').getTime()
+          }));
       }
 
       if (pts.length === 0) return null;
 
-      const maxNet = Math.max(...pts.map(p => Math.abs(p.net)), GOAL) * 1.1;
+      const maxVal = Math.max(...pts.map(p => Math.max(p.Calories || 0, p.burned || 0)), 500) * 1.1;
       const xOf = (ms) => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
-      const yOf = (net) => PAD.t + cH / 2 - (net / maxNet) * (cH / 2);
+      const yOf = (val) => PAD.t + cH - (val / maxVal) * cH;
+      const yOfNet = (net) => PAD.t + cH / 2 - (net / (maxVal / 2)) * (cH / 2);
 
       return (
         <div>
@@ -566,32 +574,37 @@
 
           {/* Chart */}
           <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', overflow: 'hidden' }}>
-            {/* Goal line */}
-            <line x1={PAD.l} y1={yOf(GOAL)} x2={PAD.l + cW} y2={yOf(GOAL)}
-                  stroke="#34c759" strokeWidth="0.8" strokeDasharray="2,2" opacity="0.5" />
-
-            {/* Zero line */}
-            <line x1={PAD.l} y1={yOf(0)} x2={PAD.l + cW} y2={yOf(0)}
-                  stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+            {/* Bars: ingested (blue) and burned (orange) */}
+            {pts.map(p => {
+              const x = xOf(p.ms);
+              const barW = 2;
+              const gap = 1;
+              return (
+                <g key={`bars-${p.date}`}>
+                  <rect x={x - barW - gap} y={yOf(p.Calories)} width={barW} height={PAD.t + cH - yOf(p.Calories)}
+                        fill="#4a90d9" opacity="0.6" />
+                  <rect x={x + gap} y={yOf(p.burned)} width={barW} height={PAD.t + cH - yOf(p.burned)}
+                        fill="#ff9500" opacity="0.6" />
+                </g>
+              );
+            })}
 
             {/* Net calories line */}
-            <polyline points={pts.map(p => `${xOf(p.ms)},${yOf(p.net)}`).join(' ')}
+            <polyline points={pts.map(p => `${xOf(p.ms)},${yOfNet(p.net)}`).join(' ')}
                       fill="none" stroke="#8e73de" strokeWidth="1.2" />
 
-            {/* Points */}
-            {pts.map(p => (
-              <circle key={p.date} cx={xOf(p.ms)} cy={yOf(p.net)}
-                      r="1.5" fill={p.net > GOAL ? '#ff3b30' : '#34c759'} opacity="0.7" />
-            ))}
+            {/* Goal line */}
+            <line x1={PAD.l} y1={yOfNet(GOAL)} x2={PAD.l + cW} y2={yOfNet(GOAL)}
+                  stroke="#34c759" strokeWidth="0.8" strokeDasharray="2,2" opacity="0.5" />
 
             {/* Axes */}
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
             <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
 
             {/* Y labels */}
-            {[0, GOAL].map(v => (
+            {[0, Math.round(maxVal/2), Math.round(maxVal)].map(v => (
               <text key={v} x={PAD.l - 3} y={yOf(v) + 2} textAnchor="end"
-                    fontSize="7" fill="#aeaeb2">{v}</text>
+                    fontSize="7" fill="#aeaeb2">{v < 1000 ? v : (v/1000).toFixed(1)+'k'}</text>
             ))}
 
             {/* X labels */}

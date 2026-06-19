@@ -529,11 +529,10 @@
 
       if (pts.length === 0) return null;
 
-      const maxVal = Math.max(...pts.map(p => Math.max(p.Calories || 0, p.burned || 0)), 500) * 1.1;
+      const rawMax = Math.max(...pts.map(p => Math.max(p.Calories || 0, p.burned || 0)), 500);
+      const maxVal = Math.ceil(rawMax / 500) * 500; // Round up to nearest 500
       const xOf = (ms) => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
       const yOf = (val) => PAD.t + cH - (val / maxVal) * cH;
-      // Net line uses same scale as bars for consistency
-      const yOfNet = (net) => PAD.t + cH - (net / maxVal) * cH;
 
       return (
         <div>
@@ -604,12 +603,8 @@
               );
             })}
 
-            {/* Net calories line (clamped to chart) */}
-            <polyline points={pts.map(p => {
-              const py = yOfNet(p.net);
-              const clamped = Math.max(PAD.t, Math.min(PAD.t + cH, py));
-              return `${xOf(p.ms)},${clamped}`;
-            }).join(' ')}
+            {/* Net calories line */}
+            <polyline points={pts.map(p => `${xOf(p.ms)},${yOf(p.net)}`).join(' ')}
                       fill="none" stroke="#8e73de" strokeWidth="1.2" />
 
             {/* Goal line */}
@@ -620,13 +615,13 @@
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
             <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
 
-            {/* Y labels with graduations */}
-            {Array.from({length: 6}, (_, i) => Math.round(maxVal * i / 5)).map(v => (
+            {/* Y labels with 500-calorie intervals */}
+            {Array.from({length: maxVal / 500 + 1}, (_, i) => i * 500).map(v => (
               <g key={`yax-${v}`}>
                 <line x1={PAD.l - 2} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)}
                       stroke="rgba(0,0,0,.05)" strokeWidth="0.5" />
                 <text x={PAD.l - 3} y={yOf(v) + 2} textAnchor="end"
-                      fontSize="7" fill="#aeaeb2">{parseInt(v)}</text>
+                      fontSize="7" fill="#aeaeb2">{v}</text>
               </g>
             ))}
 

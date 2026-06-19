@@ -469,17 +469,30 @@
     function CalorieChart({ calorieData }) {
       if (!calorieData || calorieData.length === 0) return null;
 
-      const VW = 360, VH = 240;
-      const PAD = { t: 14, r: 14, b: 42, l: 40 };
-      const cW = VW - PAD.l - PAD.r;
-      const cH = VH - PAD.t - PAD.b;
+      try {
+        const VW = 360, VH = 240;
+        const PAD = { t: 14, r: 14, b: 42, l: 40 };
+        const cW = VW - PAD.l - PAD.r;
+        const cH = VH - PAD.t - PAD.b;
 
-      const sorted = [...calorieData].sort((a, b) => a.date.localeCompare(b.date));
-      const maxCal = Math.max(...sorted.map(d => Math.max(d.Calories, d.ActiveEnergy + d.BasalEnergy))) * 1.15;
-      const goalLine = 1709;
+        const sorted = [...calorieData].sort((a, b) => a.date.localeCompare(b.date));
+        if (sorted.length === 0) return null;
 
-      const xOf = (i) => PAD.l + (i / (sorted.length - 1 || 1)) * cW;
-      const yOf = (cal) => PAD.t + cH - (cal / maxCal) * cH;
+        const vals = sorted.map(d => {
+          const ingest = d.Calories ?? 0;
+          const burn = (d.ActiveEnergy ?? 0) + (d.BasalEnergy ?? 0);
+          return Math.max(ingest, burn, 500);
+        });
+        const maxCal = Math.max(...vals) * 1.15;
+        if (!isFinite(maxCal) || maxCal <= 0) return null;
+
+        const goalLine = 1709;
+
+        const xOf = (i) => PAD.l + (sorted.length > 1 ? (i / (sorted.length - 1)) * cW : cW / 2);
+        const yOf = (cal) => {
+          const v = Math.min(Math.max(cal || 0, 0), maxCal);
+          return PAD.t + cH - (v / maxCal) * cH;
+        };
 
       const barW = Math.max(3, cW / (sorted.length * 2.5));
       const barGap = barW * 0.5;
@@ -540,7 +553,11 @@
             );
           })}
         </svg>
-      );
+        );
+      } catch (e) {
+        console.error('CalorieChart error:', e);
+        return <div style={{ padding: 20, color: '#ff3b30' }}>Chart error: {e.message}</div>;
+      }
     }
 
     /* ─── PK Chart ───────────────────────────────────────────────────────────── */

@@ -531,8 +531,17 @@
 
       const rawMax = Math.max(...pts.map(p => Math.max(p.Calories || 0, p.burned || 0)), 500);
       const maxVal = Math.ceil(rawMax / 500) * 500; // Round up to nearest 500
+
+      // Net line scale: centered to show range around goal
+      const netVals = pts.map(p => p.net);
+      const netMin = Math.min(...netVals, 0);
+      const netMax = Math.max(...netVals, GOAL * 1.5);
+      const netRange = Math.max(Math.abs(netMin), Math.abs(netMax - GOAL)) * 1.2;
+      const netMidpoint = GOAL;
+
       const xOf = (ms) => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
       const yOf = (val) => PAD.t + cH - (val / maxVal) * cH;
+      const yOfNet = (net) => PAD.t + cH / 2 - ((net - netMidpoint) / netRange) * (cH / 2);
 
       return (
         <div>
@@ -603,13 +612,17 @@
               );
             })}
 
-            {/* Net calories line */}
-            <polyline points={pts.map(p => `${xOf(p.ms)},${yOf(p.net)}`).join(' ')}
-                      fill="none" stroke="#8e73de" strokeWidth="1.2" />
-
-            {/* Goal line */}
+            {/* Goal line (centered scale) */}
             <line x1={PAD.l} y1={yOfNet(GOAL)} x2={PAD.l + cW} y2={yOfNet(GOAL)}
                   stroke="#34c759" strokeWidth="0.8" strokeDasharray="2,2" opacity="0.5" />
+
+            {/* Zero line (centered scale) */}
+            <line x1={PAD.l} y1={yOfNet(0)} x2={PAD.l + cW} y2={yOfNet(0)}
+                  stroke="rgba(0,0,0,.08)" strokeWidth="0.5" />
+
+            {/* Net calories line */}
+            <polyline points={pts.map(p => `${xOf(p.ms)},${yOfNet(p.net)}`).join(' ')}
+                      fill="none" stroke="#8e73de" strokeWidth="1.2" />
 
             {/* Axes */}
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
@@ -636,9 +649,9 @@
               <g style={{ pointerEvents: 'none' }}>
                 <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH}
                       stroke="rgba(28,28,30,.25)" strokeWidth="1" />
-                <rect x={xOf(tip.ms) - 28} y={PAD.t - 20} width={56} height={18} rx={4}
+                <rect x={Math.max(PAD.l, Math.min(xOf(tip.ms) - 28, PAD.l + cW - 56))} y={PAD.t + cH + 4} width={56} height={16} rx={3}
                       fill="#1c1c1e" />
-                <text x={xOf(tip.ms)} y={PAD.t - 7} textAnchor="middle" fontSize="8" fill="#fff" fontWeight="600">
+                <text x={Math.max(PAD.l + 28, Math.min(xOf(tip.ms), PAD.l + cW - 28))} y={PAD.t + cH + 13} textAnchor="middle" fontSize="8" fill="#fff" fontWeight="600">
                   {parseInt(tip.net)}
                 </text>
               </g>

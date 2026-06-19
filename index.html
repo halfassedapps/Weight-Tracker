@@ -467,97 +467,138 @@
 
     /* ─── Calorie Chart ──────────────────────────────────────────────────────── */
     function CalorieChart({ calorieData }) {
-      if (!calorieData || calorieData.length === 0) return null;
+      const [viewMode, setViewMode] = useState('30d');
+      const [windowOffset, setWindowOffset] = useState(0);
 
-      try {
-        const VW = 360, VH = 240;
-        const PAD = { t: 14, r: 14, b: 42, l: 40 };
-        const cW = VW - PAD.l - PAD.r;
-        const cH = VH - PAD.t - PAD.b;
+      if (!calorieData || calorieData.length < 2) return null;
 
-        const sorted = [...calorieData].sort((a, b) => a.date.localeCompare(b.date));
-        if (sorted.length === 0) return null;
+      const VW = 360, VH = 140;
+      const PAD = { t: 10, r: 8, b: 28, l: 32 };
+      const cW = VW - PAD.l - PAD.r;
+      const cH = VH - PAD.t - PAD.b;
+      const GOAL = 1709;
+      const STEP = 86400000;
 
-        const vals = sorted.map(d => {
-          const ingest = d.Calories ?? 0;
-          const burn = (d.ActiveEnergy ?? 0) + (d.BasalEnergy ?? 0);
-          return Math.max(ingest, burn, 500);
+      const sorted = [...calorieData].sort((a, b) => a.date.localeCompare(b.date));
+      const todayMs = new Date().setHours(0,0,0,0);
+      const startMs = new Date(sorted[0].date + 'T00:00:00').getTime();
+
+      // Window management
+      const windowDays = viewMode === '30d' ? 30 : viewMode === '60d' ? 60 : 0;
+      const refEnd = todayMs + STEP;
+      const visStartMs = windowDays ? refEnd - (windowDays + windowOffset) * STEP : startMs;
+      const visEndMs = windowDays ? refEnd - windowOffset * STEP : todayMs + STEP;
+      const canScrollEarlier = windowDays && startMs < visStartMs - STEP;
+      const canScrollLater = windowDays && windowOffset > 0;
+
+      // Build data for view
+      let pts = [];
+      if (viewMode === 'all') {
+        // Weekly aggregation
+        const weeks = {};
+        for (const d of sorted) {
+          const dms = new Date(d.date + 'T00:00:00').getTime();
+          const sunMs = new Date(dms).getTime() - (new Date(dms).getDay() || 7) * STEP;
+          const wk = new Date(sunMs).toISOString().slice(0, 10);
+          if (!weeks[wk]) weeks[wk] = [];
+          weeks[wk].push(d);
+        }
+        pts = Object.entries(weeks).map(([wk, days]) => {
+          const net = days.reduce((sum, d) => sum + (d.Calories - (d.ActiveEnergy + d.BasalEnergy || 0)), 0) / days.length;
+          return { date: wk, net, ms: new Date(wk + 'T00:00:00').getTime() + 3*STEP };
         });
-        const maxCal = Math.max(...vals) * 1.15;
-        if (!isFinite(maxCal) || maxCal <= 0) return null;
+      } else {
+        pts = sorted
+          .filter(d => {
+            const ms = new Date(d.date + 'T00:00:00').getTime();
+            return ms >= visStartMs && ms < visEndMs;
+          })
+          .map(d => ({ date: d.date, net: d.Calories - (d.ActiveEnergy + d.BasalEnergy || 0), ms: new Date(d.date + 'T00:00:00').getTime() }));
+      }
 
-        const goalLine = 1709;
+      if (pts.length === 0) return null;
 
-        const xOf = (i) => PAD.l + (sorted.length > 1 ? (i / (sorted.length - 1)) * cW : cW / 2);
-        const yOf = (cal) => {
-          const v = Math.min(Math.max(cal || 0, 0), maxCal);
-          return PAD.t + cH - (v / maxCal) * cH;
-        };
-
-      const barW = Math.max(3, cW / (sorted.length * 2.5));
-      const barGap = barW * 0.5;
+      const maxNet = Math.max(...pts.map(p => Math.abs(p.net)), GOAL) * 1.1;
+      const xOf = (ms) => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
+      const yOf = (net) => PAD.t + cH / 2 - (net / maxNet) * (cH / 2);
 
       return (
-        <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
-          {/* Goal line */}
-          <line x1={PAD.l} y1={yOf(goalLine)} x2={PAD.l + cW} y2={yOf(goalLine)}
-                stroke="#34c759" strokeWidth="1.5" strokeDasharray="3,3" opacity="0.6" />
-          <text x={PAD.l + cW + 3} y={yOf(goalLine) + 3} fontSize="9" fill="#34c759" fontWeight="600">
-            Goal: 1709
-          </text>
+        <div>
+          {/* Controls */}
+          <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px' }}>
+            {[['30d','30d'],['60d','60d'],['all','All']].map(([mode, label]) => (
+              <button key={mode} onClick={() => { setViewMode(mode); setWindowOffset(0); }}
+                      style={{ flex: 1, fontSize: 10, fontWeight: 600, padding: '4px 4px', borderRadius: 8,
+                               background: viewMode === mode ? '#4a90d9' : '#f2f2f7',
+                               color: viewMode === mode ? '#fff' : '#8e8e93',
+                               border: 'none', cursor: 'pointer', lineHeight: 1.2 }}>
+                {label}
+              </button>
+            ))}
+          </div>
 
-          {/* Bars: Ingested (blue) and Burned (orange) */}
-          {sorted.map((d, i) => {
-            const x = xOf(i);
-            const burned = d.ActiveEnergy + d.BasalEnergy;
-            const ingestedH = (d.Calories / maxCal) * cH;
-            const burnedH = (burned / maxCal) * cH;
-            return (
-              <g key={d.date}>
-                {/* Ingested */}
-                <rect x={x - barW - barGap/2} y={PAD.t + cH - ingestedH}
-                      width={barW} height={ingestedH}
-                      fill="#4a90d9" opacity="0.7" />
-                {/* Burned */}
-                <rect x={x + barGap/2} y={PAD.t + cH - burnedH}
-                      width={barW} height={burnedH}
-                      fill="#ff9500" opacity="0.7" />
-              </g>
-            );
-          })}
+          {/* Scroll controls */}
+          {windowDays !== 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: '0 14px 2px', fontSize: 9, color: '#aeaeb2' }}>
+              <button onClick={() => canScrollEarlier && setWindowOffset(o => o + 1)}
+                      disabled={!canScrollEarlier}
+                      style={{ fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 6,
+                               background: canScrollEarlier ? '#e5e5ea' : 'transparent',
+                               color: canScrollEarlier ? '#3c3c43' : '#c7c7cc',
+                               border: 'none', cursor: canScrollEarlier ? 'pointer' : 'default' }}>
+                ← Earlier
+              </button>
+              <span>{new Date(visStartMs).toISOString().slice(5,10)} – {new Date(Math.min(todayMs, visEndMs)).toISOString().slice(5,10)}</span>
+              <button onClick={() => canScrollLater && setWindowOffset(o => o - 1)}
+                      disabled={!canScrollLater}
+                      style={{ fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 6,
+                               background: canScrollLater ? '#e5e5ea' : 'transparent',
+                               color: canScrollLater ? '#3c3c43' : '#c7c7cc',
+                               border: 'none', cursor: canScrollLater ? 'pointer' : 'default' }}>
+                Later →
+              </button>
+            </div>
+          )}
 
-          {/* Net line */}
-          <polyline points={sorted.map((d, i) => {
-            const net = d.Calories - (d.ActiveEnergy + d.BasalEnergy);
-            return `${xOf(i)},${yOf(net)}`;
-          }).join(' ')}
-            fill="none" stroke="#8e73de" strokeWidth="2" />
+          {/* Chart */}
+          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', overflow: 'hidden' }}>
+            {/* Goal line */}
+            <line x1={PAD.l} y1={yOf(GOAL)} x2={PAD.l + cW} y2={yOf(GOAL)}
+                  stroke="#34c759" strokeWidth="0.8" strokeDasharray="2,2" opacity="0.5" />
 
-          {/* Axes */}
-          <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
-          <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
+            {/* Zero line */}
+            <line x1={PAD.l} y1={yOf(0)} x2={PAD.l + cW} y2={yOf(0)}
+                  stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
 
-          {/* Y axis ticks */}
-          {[0, maxCal/2, maxCal].map(v => (
-            <text key={v} x={PAD.l - 4} y={yOf(v) + 3} textAnchor="end"
-                  fontSize="8" fill="#aeaeb2">{Math.round(v)}</text>
-          ))}
+            {/* Net calories line */}
+            <polyline points={pts.map(p => `${xOf(p.ms)},${yOf(p.net)}`).join(' ')}
+                      fill="none" stroke="#8e73de" strokeWidth="1.2" />
 
-          {/* X axis labels (every 3rd day) */}
-          {sorted.map((d, i) => {
-            if (i % 3 !== sorted.length - 1 % 3) return null;
-            const [y, m, dt] = d.date.split('-');
-            return (
-              <text key={d.date} x={xOf(i)} y={PAD.t + cH + 14} textAnchor="middle"
-                    fontSize="8" fill="#aeaeb2">{m}/{dt}</text>
-            );
-          })}
-        </svg>
-        );
-      } catch (e) {
-        console.error('CalorieChart error:', e);
-        return <div style={{ padding: 20, color: '#ff3b30' }}>Chart error: {e.message}</div>;
-      }
+            {/* Points */}
+            {pts.map(p => (
+              <circle key={p.date} cx={xOf(p.ms)} cy={yOf(p.net)}
+                      r="1.5" fill={p.net > GOAL ? '#ff3b30' : '#34c759'} opacity="0.7" />
+            ))}
+
+            {/* Axes */}
+            <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+            <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+
+            {/* Y labels */}
+            {[0, GOAL].map(v => (
+              <text key={v} x={PAD.l - 3} y={yOf(v) + 2} textAnchor="end"
+                    fontSize="7" fill="#aeaeb2">{v}</text>
+            ))}
+
+            {/* X labels */}
+            {pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / 4)) === 0).map(p => (
+              <text key={p.date} x={xOf(p.ms)} y={PAD.t + cH + 10} textAnchor="middle"
+                    fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
+            ))}
+          </svg>
+        </div>
+      );
     }
 
     /* ─── PK Chart ───────────────────────────────────────────────────────────── */
@@ -2255,24 +2296,6 @@
           {!loading && rows.length > 0 && (
             <div style={{ padding: '12px 12px 32px' }}>
 
-              {/* Calorie Chart */}
-              {calories.length > 0 && (
-                <div style={{ borderRadius: 18, background: '#fff', border: '.5px solid rgba(0,0,0,.08)',
-                              marginBottom: 10, overflow: 'hidden' }}>
-                  <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e',
-                                  textTransform: 'uppercase', letterSpacing: .6 }}>
-                      Daily Calories
-                    </div>
-                  </div>
-                  <CalorieChart calorieData={calories} />
-                  <div style={{ padding: '8px 14px', fontSize: 11, color: '#8e8e93', display: 'flex', gap: 16 }}>
-                    <div><span style={{ display: 'inline-block', width: 12, height: 12, background: '#4a90d9', marginRight: 4 }}></span>Ingested</div>
-                    <div><span style={{ display: 'inline-block', width: 12, height: 12, background: '#ff9500', marginRight: 4 }}></span>Burned</div>
-                    <div><span style={{ display: 'inline-block', width: 12, height: 12, background: '#8e73de', marginRight: 4 }}></span>Net</div>
-                  </div>
-                </div>
-              )}
 
               {/* PK Chart */}
               <div style={{ borderRadius: 18, background: '#fff', border: '.5px solid rgba(0,0,0,.08)',
@@ -2299,6 +2322,19 @@
                 </div>
                 <WeightChart rows={rows} />
               </div>
+
+              {/* Calorie Chart */}
+              {calories.length > 0 && (
+                <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
+                              border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
+                  <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Daily Net Calories</div>
+                  </div>
+                  <div style={{ padding: '0 14px 8px' }}>
+                    <CalorieChart calorieData={calories} />
+                  </div>
+                </div>
+              )}
 
               {/* Weight logbook */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',

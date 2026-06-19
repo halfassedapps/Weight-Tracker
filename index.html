@@ -2010,7 +2010,7 @@
         setRows(logbook);
         setMeta(newMeta);
         if (newSched) { setInjSchedule(newSched); lsSaveSchedule(newSched); }
-        if (newCals) setCalories(newCals);
+        if (newCals && newCals.length > 0) setCalories(newCals);
         setError('');
         lsSave(logbook, newMeta);
         writeToGist(logbook, newMeta, injections);

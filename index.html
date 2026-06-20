@@ -666,25 +666,23 @@
 
             {/* Tooltip - anchored inside the top of the chart so it's never clipped */}
             {tip && (() => {
-              const TW = 76, TH = 48;
+              const TW = 66, TH = 19;
               const tx = Math.max(PAD.l, Math.min(xOf(tip.ms) - TW / 2, PAD.l + cW - TW));
               const ty = PAD.t + 2;
               return (
                 <g style={{ pointerEvents: 'none' }}>
                   <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH}
                         stroke="rgba(28,28,30,.25)" strokeWidth="1" />
-                  <rect x={tx} y={ty} width={TW} height={TH} rx={3} fill="#1c1c1e" opacity="0.93" />
-                  <text x={tx + TW / 2} y={ty + 10} textAnchor="middle" fontSize="6" fill="#aeaeb2">
-                    {tip.date}
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={3} fill="#1c1c1e" opacity="0.9" />
+                  <text x={tx + TW / 2} y={ty + 7} textAnchor="middle" fontSize="4.5" fill="#aeaeb2">
+                    {tip.date.slice(5)}
                   </text>
-                  <text x={tx + TW / 2} y={ty + 21} textAnchor="middle" fontSize="6.5" fill="#6cb2ff" fontWeight="600">
-                    🍔 {parseInt(tip.Calories)}
-                  </text>
-                  <text x={tx + TW / 2} y={ty + 32} textAnchor="middle" fontSize="6.5" fill="#ffb04d" fontWeight="600">
-                    🔥 {parseInt(tip.burned)}
-                  </text>
-                  <text x={tx + TW / 2} y={ty + 43} textAnchor="middle" fontSize="6.5" fill="#b9a6ef" fontWeight="600">
-                    Net {parseInt(tip.net)}
+                  <text x={tx + TW / 2} y={ty + 15} textAnchor="middle" fontSize="5.5" fontWeight="600">
+                    <tspan fill="#6cb2ff">🍔{parseInt(tip.Calories)}</tspan>
+                    <tspan fill="#48484a">  </tspan>
+                    <tspan fill="#ffb04d">🔥{parseInt(tip.burned)}</tspan>
+                    <tspan fill="#48484a">  </tspan>
+                    <tspan fill="#b9a6ef">{parseInt(tip.net)}</tspan>
                   </text>
                 </g>
               );

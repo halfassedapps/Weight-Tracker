@@ -33,6 +33,11 @@
     const LS_INTERVALS_KEY = 'weight-tracker-intervals-config';
     const LS_CALORIE_KEY = 'weight-tracker-calories';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
+    function lastImportIsToday() {
+      const name = localStorage.getItem(LS_LAST_CSV_KEY) ?? '';
+      const m = name.match(/(\d{4}-\d{2}-\d{2})/);
+      return !!m && m[1] === today();
+    }
     const GIST_ID         = 'aa6e7ae2259f94c7a91637b447a0cd99';
     const GIST_USER       = 'halfassedapps';
 
@@ -2314,6 +2319,67 @@
           } catch (_) {}
         })();
         return () => clearTimeout(msgTimer.current);
+      }, []);
+
+      // Background polling while the tab is open: fast burst (20s) for 3 min
+      // after load/refocus while today's export hasn't landed yet, then 5 min
+      // all day; intervals.icu checked independently every 15 min. Refs avoid
+      // retriggering this effect (and resetting the burst) when calories.length
+      // changes runAutoImport's identity on every successful import.
+      const exportDirRef       = useRef(exportDir);       exportDirRef.current       = exportDir;
+      const intervalsCfgRef    = useRef(intervalsCfg);    intervalsCfgRef.current    = intervalsCfg;
+      const runAutoImportRef   = useRef(runAutoImport);   runAutoImportRef.current   = runAutoImport;
+      const refreshIntervalsRef = useRef(refreshIntervals); refreshIntervalsRef.current = refreshIntervals;
+
+      useEffect(() => {
+        const FAST_MS = 20_000, FAST_WINDOW_MS = 3 * 60_000, SLOW_MS = 5 * 60_000;
+        const INTERVALS_MS = 15 * 60_000;
+        let csvTimer = null, intervalsTimer = null, cancelled = false;
+        let burstStartedAt = Date.now();
+
+        const scheduleCsv = () => {
+          if (cancelled) return;
+          const inBurst = !lastImportIsToday() && (Date.now() - burstStartedAt < FAST_WINDOW_MS);
+          csvTimer = setTimeout(csvTick, inBurst ? FAST_MS : SLOW_MS);
+        };
+        const csvTick = async () => {
+          if (cancelled) return;
+          if (!document.hidden && exportDirRef.current) {
+            try { await runAutoImportRef.current(exportDirRef.current, { silent: true }); }
+            catch (_) {}
+          }
+          scheduleCsv();
+        };
+
+        const scheduleIntervals = () => {
+          if (cancelled) return;
+          intervalsTimer = setTimeout(intervalsTick, INTERVALS_MS);
+        };
+        const intervalsTick = async () => {
+          if (cancelled) return;
+          if (!document.hidden && intervalsCfgRef.current) {
+            try { await refreshIntervalsRef.current(); } catch (_) {}
+          }
+          scheduleIntervals();
+        };
+
+        const onVisible = () => {
+          if (document.hidden) return;
+          burstStartedAt = Date.now(); // resume fast burst on refocus
+          clearTimeout(csvTimer); csvTick();
+          clearTimeout(intervalsTimer); intervalsTick();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+
+        scheduleCsv();
+        scheduleIntervals();
+
+        return () => {
+          cancelled = true;
+          clearTimeout(csvTimer);
+          clearTimeout(intervalsTimer);
+          document.removeEventListener('visibilitychange', onVisible);
+        };
       }, []);
 
       const pickExportFolder = useCallback(async () => {

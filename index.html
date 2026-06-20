@@ -645,23 +645,23 @@
                     fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
             ))}
 
-            {/* Tooltip */}
+            {/* Tooltip - positioned above the chart */}
             {tip && (
               <g style={{ pointerEvents: 'none' }}>
                 <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH}
                       stroke="rgba(28,28,30,.25)" strokeWidth="1" />
-                <rect x={Math.max(PAD.l, Math.min(xOf(tip.ms) - 40, PAD.l + cW - 80))} y={PAD.t + cH + 4} width={80} height={56} rx={3}
+                <rect x={Math.max(PAD.l, Math.min(xOf(tip.ms) - 40, PAD.l + cW - 80))} y={PAD.t - 60} width={80} height={56} rx={3}
                       fill="#1c1c1e" />
-                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t + cH + 13} textAnchor="middle" fontSize="6" fill="#aeaeb2">
+                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t - 47} textAnchor="middle" fontSize="6" fill="#aeaeb2">
                   {tip.date}
                 </text>
-                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t + cH + 24} textAnchor="middle" fontSize="6" fill="#4a90d9" fontWeight="500">
+                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t - 36} textAnchor="middle" fontSize="6" fill="#4a90d9" fontWeight="500">
                   🍔 {parseInt(tip.Calories)}
                 </text>
-                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t + cH + 34} textAnchor="middle" fontSize="6" fill="#ff9500" fontWeight="500">
+                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t - 26} textAnchor="middle" fontSize="6" fill="#ff9500" fontWeight="500">
                   🔥 {parseInt(tip.burned)}
                 </text>
-                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t + cH + 44} textAnchor="middle" fontSize="6" fill="#8e8e93">
+                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t - 16} textAnchor="middle" fontSize="6" fill="#8e8e93">
                   Net: {parseInt(tip.net)}
                 </text>
               </g>

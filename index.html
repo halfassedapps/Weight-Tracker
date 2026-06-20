@@ -284,8 +284,8 @@
         const key = d.toISOString().slice(0, 10);
         if (!map[key]) map[key] = { date: key, ts: d, Calories: 0, ActiveEnergy: 0, BasalEnergy: 0 };
         if (metric.toLowerCase().includes('calor')) { calorieMetrics[key] = (calorieMetrics[key] ?? 0) + val; found++; }
-        else if (metric.toLowerCase().includes('active energy')) { map[key].ActiveEnergy = val; found++; }
-        else if (metric.toLowerCase().includes('basal energy')) { map[key].BasalEnergy = val; found++; }
+        else if (metric.toLowerCase().includes('active energy')) { map[key].ActiveEnergy += val; found++; }
+        else if (metric.toLowerCase().includes('basal energy')) { map[key].BasalEnergy += val; found++; }
       }
       Object.entries(calorieMetrics).forEach(([key, total]) => {
         if (map[key]) map[key].Calories = total;
@@ -645,27 +645,31 @@
                     fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
             ))}
 
-            {/* Tooltip - positioned above the chart */}
-            {tip && (
-              <g style={{ pointerEvents: 'none' }}>
-                <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH}
-                      stroke="rgba(28,28,30,.25)" strokeWidth="1" />
-                <rect x={Math.max(PAD.l, Math.min(xOf(tip.ms) - 40, PAD.l + cW - 80))} y={PAD.t - 60} width={80} height={56} rx={3}
-                      fill="#1c1c1e" />
-                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t - 47} textAnchor="middle" fontSize="6" fill="#aeaeb2">
-                  {tip.date}
-                </text>
-                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t - 36} textAnchor="middle" fontSize="6" fill="#4a90d9" fontWeight="500">
-                  🍔 {parseInt(tip.Calories)}
-                </text>
-                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t - 26} textAnchor="middle" fontSize="6" fill="#ff9500" fontWeight="500">
-                  🔥 {parseInt(tip.burned)}
-                </text>
-                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t - 16} textAnchor="middle" fontSize="6" fill="#8e8e93">
-                  Net: {parseInt(tip.net)}
-                </text>
-              </g>
-            )}
+            {/* Tooltip - anchored inside the top of the chart so it's never clipped */}
+            {tip && (() => {
+              const TW = 76, TH = 48;
+              const tx = Math.max(PAD.l, Math.min(xOf(tip.ms) - TW / 2, PAD.l + cW - TW));
+              const ty = PAD.t + 2;
+              return (
+                <g style={{ pointerEvents: 'none' }}>
+                  <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH}
+                        stroke="rgba(28,28,30,.25)" strokeWidth="1" />
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={3} fill="#1c1c1e" opacity="0.93" />
+                  <text x={tx + TW / 2} y={ty + 10} textAnchor="middle" fontSize="6" fill="#aeaeb2">
+                    {tip.date}
+                  </text>
+                  <text x={tx + TW / 2} y={ty + 21} textAnchor="middle" fontSize="6.5" fill="#6cb2ff" fontWeight="600">
+                    🍔 {parseInt(tip.Calories)}
+                  </text>
+                  <text x={tx + TW / 2} y={ty + 32} textAnchor="middle" fontSize="6.5" fill="#ffb04d" fontWeight="600">
+                    🔥 {parseInt(tip.burned)}
+                  </text>
+                  <text x={tx + TW / 2} y={ty + 43} textAnchor="middle" fontSize="6.5" fill="#b9a6ef" fontWeight="600">
+                    Net {parseInt(tip.net)}
+                  </text>
+                </g>
+              );
+            })()}
           </svg>
 
           {/* Legend */}

@@ -31,6 +31,7 @@
     const LS_SPLIT_KEY     = 'weight-tracker-split-dose';
     const LS_VIAL_CONC_KEY = 'weight-tracker-vial-conc';
     const LS_INTERVALS_KEY = 'weight-tracker-intervals-config';
+    const LS_CALORIE_KEY = 'weight-tracker-calories';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     const GIST_ID         = 'aa6e7ae2259f94c7a91637b447a0cd99';
     const GIST_USER       = 'halfassedapps';
@@ -158,6 +159,25 @@
       return Object.entries(map)
         .map(([date, wKg]) => ({ date, wKg }))
         .sort((a, b) => b.date.localeCompare(a.date));
+    }
+
+    /* ─── Calorie localStorage ───────────────────────────────────────────────── */
+    // Each export file only covers a rolling ~week, so calorie history is
+    // accumulated here by date across imports rather than replaced each time.
+    function lsLoadCaloriesRaw() {
+      try {
+        const raw = localStorage.getItem(LS_CALORIE_KEY);
+        const map = raw ? JSON.parse(raw) : {};
+        return (map && typeof map === 'object') ? map : {};
+      } catch (_) { return {}; }
+    }
+    function mergeCaloriesWithStored(newCalRows) {
+      const map = lsLoadCaloriesRaw();
+      for (const d of newCalRows) {
+        map[d.date] = { date: d.date, Calories: d.Calories || 0, ActiveEnergy: d.ActiveEnergy || 0, BasalEnergy: d.BasalEnergy || 0 };
+      }
+      try { localStorage.setItem(LS_CALORIE_KEY, JSON.stringify(map)); } catch (_) {}
+      return Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
@@ -2042,7 +2062,9 @@
       const [meta,        setMeta]        = useState(saved?.meta    ?? null);
       const [injections,  setInjections]  = useState(lsLoadInjections);
       const [injSchedule, setInjSchedule] = useState(lsLoadSchedule);
-      const [calories,    setCalories]    = useState([]);
+      const [calories,    setCalories]    = useState(() =>
+        Object.values(lsLoadCaloriesRaw()).sort((a, b) => a.date.localeCompare(b.date))
+      );
       const [error,      setError]      = useState('');
       const [dragging,   setDragging]   = useState(false);
       const [showInj,    setShowInj]    = useState(false);
@@ -2182,7 +2204,7 @@
         setRows(logbook);
         setMeta(newMeta);
         if (newSched) { setInjSchedule(newSched); lsSaveSchedule(newSched); }
-        if (newCals && newCals.length > 0) setCalories(newCals);
+        if (newCals && newCals.length > 0) setCalories(mergeCaloriesWithStored(newCals));
         setError('');
         lsSave(logbook, newMeta);
         writeToGist(logbook, newMeta, injections);

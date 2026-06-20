@@ -2371,8 +2371,12 @@
         };
         document.addEventListener('visibilitychange', onVisible);
 
+        // CSV: don't fire blind here — exportDir restores async from IndexedDB in the
+        // other mount effect, so exportDirRef.current would still be null right now.
+        // The restore effect itself already runs an immediate check once the handle
+        // loads; we just need to arm the next one.
         scheduleCsv();
-        scheduleIntervals();
+        intervalsTick();  // intervalsCfg loads sync from localStorage, safe immediately
 
         return () => {
           cancelled = true;

@@ -21,7 +21,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useCallback, useRef, useEffect } = React;
+    const { useState, useCallback, useRef, useEffect, useMemo } = React;
 
     const LS_KEY          = 'weight-tracker-data';
     const LS_INJ_KEY      = 'weight-tracker-injections';
@@ -30,6 +30,7 @@
     const LS_GIST_PAT_KEY  = 'weight-tracker-gist-pat';
     const LS_SPLIT_KEY     = 'weight-tracker-split-dose';
     const LS_VIAL_CONC_KEY = 'weight-tracker-vial-conc';
+    const LS_INTERVALS_KEY = 'weight-tracker-intervals-config';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     const GIST_ID         = 'aa6e7ae2259f94c7a91637b447a0cd99';
     const GIST_USER       = 'halfassedapps';
@@ -211,6 +212,24 @@
         body: JSON.stringify({ files: { 'weight-data.json': { content } } }),
       });
       if (!res.ok) throw new Error(`Gist write ${res.status}`);
+    }
+
+    /* ─── intervals.icu ──────────────────────────────────────────────────────── */
+    // Returns a map of date ("YYYY-MM-DD") -> summed ride calories for that day.
+    async function fetchIntervalsCalories(apiKey, athleteId, oldestISODate, newestISODate) {
+      const auth = btoa(`API_KEY:${apiKey}`);
+      const url = `https://intervals.icu/api/v1/athlete/${athleteId}/activities?oldest=${oldestISODate}&newest=${newestISODate}`;
+      const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
+      if (!res.ok) throw new Error(`intervals.icu ${res.status}`);
+      const activities = await res.json();
+      const map = {};
+      for (const a of activities) {
+        const date = (a.start_date_local || '').slice(0, 10);
+        const cal  = a.calories;
+        if (!date || cal == null) continue;
+        map[date] = (map[date] ?? 0) + cal;
+      }
+      return map;
     }
 
     /* ─── CSV parser ─────────────────────────────────────────────────────────── */
@@ -1578,6 +1597,74 @@
       );
     }
 
+    function IntervalsPanel({ connected, msg, onSave, onRefresh, onDisconnect, style }) {
+      const [open,      setOpen]      = React.useState(false);
+      const [apiKey,    setApiKey]    = React.useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null')?.apiKey ?? ''; } catch (_) { return ''; }
+      });
+      const [athleteId, setAthleteId] = React.useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null')?.athleteId ?? ''; } catch (_) { return ''; }
+      });
+      return (
+        <div style={{ borderRadius: 14, overflow: 'hidden', border: `.5px solid ${connected ? '#34c759' : '#d1d1d6'}`,
+                      background: '#fff', ...style }}>
+          <button onClick={() => setOpen(v => !v)}
+                  style={{ width: '100%', padding: '12px 16px', background: 'none', border: 'none',
+                           cursor: 'pointer', display: 'flex', alignItems: 'center',
+                           justifyContent: 'space-between', textAlign: 'left' }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
+                {connected ? 'intervals.icu connected' : 'intervals.icu — tap to connect'}
+              </div>
+              <div style={{ fontSize: 12, color: msg ? '#ff3b30' : '#8e8e93', marginTop: 1 }}>
+                {msg || (connected ? 'Ride calories feed the Net Calories chart' : 'Enter API key + athlete ID')}
+              </div>
+            </div>
+            <div style={{ fontSize: 16, color: connected ? '#34c759' : '#8e8e93', marginLeft: 8 }}>
+              {connected ? '✓' : open ? '▾' : '›'}
+            </div>
+          </button>
+          {open && (
+            <div style={{ padding: '0 16px 14px', borderTop: '.5px solid #f2f2f7' }}>
+              <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>API Key</div>
+              <input value={apiKey} onChange={e => setApiKey(e.target.value)} type="text" placeholder="API key"
+                     autoCorrect="off" autoCapitalize="none" spellCheck={false} autoComplete="off"
+                     style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
+                              border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+              <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>Athlete ID</div>
+              <input value={athleteId} onChange={e => setAthleteId(e.target.value)} type="text" placeholder="e.g. 2857823"
+                     autoCorrect="off" autoCapitalize="none" spellCheck={false} autoComplete="off"
+                     style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
+                              border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <button onClick={() => { onSave(apiKey.trim(), athleteId.trim()); setOpen(false); }}
+                        disabled={!apiKey || !athleteId}
+                        style={{ flex: 1, padding: '10px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                                 border: 'none', cursor: (apiKey && athleteId) ? 'pointer' : 'default',
+                                 background: (!apiKey || !athleteId) ? '#e5e5ea' : '#4a90d9', color: '#fff' }}>
+                  Save &amp; Connect
+                </button>
+                {connected && (
+                  <button onClick={onRefresh}
+                          style={{ padding: '10px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                                   border: 'none', cursor: 'pointer', background: '#f2f2f7', color: '#1c1c1e' }}>
+                    Refresh
+                  </button>
+                )}
+                {connected && (
+                  <button onClick={onDisconnect}
+                          style={{ padding: '10px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                                   border: 'none', cursor: 'pointer', background: '#fff1f0', color: '#ff3b30' }}>
+                    Disconnect
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function AdminLogin({ onLogin, style }) {
       const [open, setOpen] = React.useState(false);
       const [pat,  setPat]  = React.useState('');
@@ -1971,6 +2058,11 @@
       const [gistMsg, setGistMsg] = useState('');
       const [isAdmin, setIsAdmin] = useState(() => !!localStorage.getItem(LS_GIST_PAT_KEY));
       const [loading, setLoading] = useState(true);
+      const [intervalsCfg, setIntervalsCfg] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) { return null; }
+      });
+      const [intervalsCalories, setIntervalsCalories] = useState({});
+      const [intervalsMsg,      setIntervalsMsg]      = useState('');
       const inputRef  = useRef();
       const msgTimer  = useRef();
 
@@ -2098,6 +2190,48 @@
         writeToGist(logbook, newMeta, injections);
       }, [injections]);
 
+      // Daily chart data with Active Energy replaced by intervals.icu ride calories
+      // (0 on non-ride days) once connected — matches MFP's net-calorie definition.
+      const calorieDataForChart = useMemo(() => {
+        if (!intervalsCfg) return calories;
+        return calories.map(d => ({ ...d, ActiveEnergy: intervalsCalories[d.date] ?? 0 }));
+      }, [calories, intervalsCfg, intervalsCalories]);
+
+      // Fetch ride calories from intervals.icu and merge into intervalsCalories map.
+      // Reads config fresh from localStorage (mirrors writeToGist) so callers don't
+      // need intervalsCfg in their dependency array.
+      const refreshIntervals = useCallback(async (calRows) => {
+        let cfg;
+        try { cfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) { cfg = null; }
+        if (!cfg?.apiKey || !cfg?.athleteId) return;
+        const rows = (calRows && calRows.length > 0) ? calRows : calories;
+        if (!rows.length) return;
+        const oldest = [...rows].map(d => d.date).sort()[0];
+        const newest = new Date().toISOString().slice(0, 10);
+        setIntervalsMsg('Syncing…');
+        try {
+          const map = await fetchIntervalsCalories(cfg.apiKey, cfg.athleteId, oldest, newest);
+          setIntervalsCalories(map);
+          setIntervalsMsg('');
+        } catch (e) {
+          setIntervalsMsg(e.message);
+        }
+      }, [calories]);
+
+      const saveIntervalsConfig = useCallback((apiKey, athleteId) => {
+        const cfg = { apiKey, athleteId };
+        localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(cfg));
+        setIntervalsCfg(cfg);
+        refreshIntervals();
+      }, [refreshIntervals]);
+
+      const disconnectIntervals = useCallback(() => {
+        localStorage.removeItem(LS_INTERVALS_KEY);
+        setIntervalsCfg(null);
+        setIntervalsCalories({});
+        setIntervalsMsg('');
+      }, []);
+
       // Auto-import: scan export folder for newest matching CSV
       const runAutoImport = useCallback(async (dirHandle, { silent = false } = {}) => {
         try {
@@ -2114,6 +2248,7 @@
           const isNewFile = latest.name !== lastLoaded;
           if (latest.name === lastLoaded && calories.length > 0) {
             console.log('[Weight Tracker] Already up to date — skipping import.');
+            refreshIntervals();
             if (!silent) showMsg('Already up to date — no new export found.');
             return;
           }
@@ -2123,13 +2258,14 @@
           });
           const result = processCSVText(text);
           applyResult(result);
+          refreshIntervals(result.calorieData);
           localStorage.setItem(LS_LAST_CSV_KEY, latest.name);
           console.log(`[Weight Tracker] Import complete.`);
           if (!silent) showMsg(`${isNewFile ? 'Updated' : 'Calorie data refreshed'} from ${latest.name.replace('Automation_Daily_export_', '').replace('HealthExport_', '').replace('.csv', '')}`);
         } catch (ex) {
           if (!silent) setError('Auto-import error: ' + ex.message);
         }
-      }, [applyResult, calories.length]);
+      }, [applyResult, calories.length, refreshIntervals]);
 
       // On mount: restore dir handle and silently try auto-import
       useEffect(() => {
@@ -2349,6 +2485,7 @@
               </div>
 
               <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
+              <IntervalsPanel connected={!!intervalsCfg} msg={intervalsMsg} onSave={saveIntervalsConfig} onRefresh={refreshIntervals} onDisconnect={disconnectIntervals} style={{ marginTop: 10 }} />
 
               {/* Set export folder */}
               {hasFSA && (
@@ -2414,7 +2551,7 @@
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Daily Net Calories</div>
                   </div>
                   <div style={{ padding: '0 14px 8px' }}>
-                    <CalorieChart calorieData={calories} />
+                    <CalorieChart calorieData={calorieDataForChart} />
                   </div>
                 </div>
               )}
@@ -2596,6 +2733,7 @@
               {isAdmin ? (
                 <>
                   <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
+                  <IntervalsPanel connected={!!intervalsCfg} msg={intervalsMsg} onSave={saveIntervalsConfig} onRefresh={refreshIntervals} onDisconnect={disconnectIntervals} style={{ marginTop: 10 }} />
 
                   {/* Export folder control */}
                   {hasFSA && (

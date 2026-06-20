@@ -181,7 +181,7 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [] }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [] }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -192,6 +192,7 @@
         meta:        meta ?? { metric: 'Weight', source: '' },
         injections:  injections.filter(i => i.date && i.doseMg),
         injSchedule: Array.isArray(injSchedule) ? injSchedule : [],
+        calories:    Array.isArray(calories) ? calories.filter(c => c.date) : [],
       };
     }
 
@@ -216,12 +217,13 @@
       }
     }
 
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = []) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = []) {
       const content = JSON.stringify({
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule,
         injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
+        calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy }) => ({ date, Calories, ActiveEnergy, BasalEnergy })),
       }, null, 2);
       const res = await fetch(`https://api.github.com/gists/${gistId}`, {
         method: 'PATCH',
@@ -2092,12 +2094,14 @@
         msgTimer.current = setTimeout(() => setAutoMsg(''), ms);
       };
 
-      // Always reads PAT from localStorage so closures don't go stale
-      const writeToGist = async (newRows, newMeta, newInj) => {
+      // Always reads PAT from localStorage so closures don't go stale.
+      // newCalories defaults to closure state but callers that just updated
+      // calories synchronously (e.g. applyResult) should pass the fresh value.
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) return;
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, injSchedule);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, injSchedule, newCalories);
           setGistOk(true); setGistMsg('');
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
@@ -2114,7 +2118,7 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
@@ -2126,9 +2130,11 @@
                 const newLogbook = daily.length ? computeLogbook(daily) : logbook;
                 setRows(newLogbook); setMeta(m); setInjections(inj);
                 lsSave(newLogbook, m); lsSaveInjections(inj);
+                if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
               } else {
                 // View-only: show gist data directly
                 setRows(logbook); setMeta(m); setInjections(inj);
+                if (gistCals) setCalories(gistCals);
               }
               setGistOk(!!pat);
             }
@@ -2148,21 +2154,22 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             lsSave(logbook, m); lsSaveInjections(inj);
+            if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             setGistOk(true); setGistMsg('');
             showMsg('Gist connected ✓');
           }
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections, injSchedule]);
+      }, [rows, meta, injections, injSchedule, calories]);
 
       // Admin login (view-only user entering PAT)
       const adminLogin = useCallback(async (rawPat, setMsg) => {
@@ -2173,10 +2180,11 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             lsSave(logbook, m); lsSaveInjections(inj);
+            if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
           }
           setMsg('');
         } catch (e) { setMsg(e.message); }
@@ -2188,10 +2196,10 @@
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) return;
         try {
-          await patchGist(GIST_ID, pat, rows, meta, injections, newSched);
+          await patchGist(GIST_ID, pat, rows, meta, injections, newSched, calories);
           setGistOk(true); setGistMsg('');
         } catch (e) { setGistOk(false); setGistMsg(e.message); }
-      }, [rows, meta, injections]);
+      }, [rows, meta, injections, calories]);
 
       // Admin logout
       const adminLogout = useCallback(() => {
@@ -2204,11 +2212,12 @@
         setRows(logbook);
         setMeta(newMeta);
         if (newSched) { setInjSchedule(newSched); lsSaveSchedule(newSched); }
-        if (newCals && newCals.length > 0) setCalories(mergeCaloriesWithStored(newCals));
+        const mergedCalories = (newCals && newCals.length > 0) ? mergeCaloriesWithStored(newCals) : calories;
+        if (newCals && newCals.length > 0) setCalories(mergedCalories);
         setError('');
         lsSave(logbook, newMeta);
-        writeToGist(logbook, newMeta, injections);
-      }, [injections]);
+        writeToGist(logbook, newMeta, injections, mergedCalories);
+      }, [injections, calories]);
 
       // Daily chart data with Active Energy replaced by intervals.icu ride calories
       // (0 on non-ride days) once connected — matches MFP's net-calorie definition.

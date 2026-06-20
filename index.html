@@ -650,12 +650,18 @@
               <g style={{ pointerEvents: 'none' }}>
                 <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH}
                       stroke="rgba(28,28,30,.25)" strokeWidth="1" />
-                <rect x={Math.max(PAD.l, Math.min(xOf(tip.ms) - 48, PAD.l + cW - 96))} y={PAD.t + cH + 4} width={96} height={30} rx={3}
+                <rect x={Math.max(PAD.l, Math.min(xOf(tip.ms) - 40, PAD.l + cW - 80))} y={PAD.t + cH + 4} width={80} height={56} rx={3}
                       fill="#1c1c1e" />
-                <text x={Math.max(PAD.l + 48, Math.min(xOf(tip.ms), PAD.l + cW - 48))} y={PAD.t + cH + 12} textAnchor="middle" fontSize="7" fill="#8e8e93">
-                  {parseInt(tip.Calories)}↓ {parseInt(tip.burned)}↑
+                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t + cH + 13} textAnchor="middle" fontSize="6" fill="#aeaeb2">
+                  {tip.date}
                 </text>
-                <text x={Math.max(PAD.l + 48, Math.min(xOf(tip.ms), PAD.l + cW - 48))} y={PAD.t + cH + 24} textAnchor="middle" fontSize="8" fill="#fff" fontWeight="600">
+                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t + cH + 24} textAnchor="middle" fontSize="6" fill="#4a90d9" fontWeight="500">
+                  🍔 {parseInt(tip.Calories)}
+                </text>
+                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t + cH + 34} textAnchor="middle" fontSize="6" fill="#ff9500" fontWeight="500">
+                  🔥 {parseInt(tip.burned)}
+                </text>
+                <text x={Math.max(PAD.l + 40, Math.min(xOf(tip.ms), PAD.l + cW - 40))} y={PAD.t + cH + 44} textAnchor="middle" fontSize="6" fill="#8e8e93">
                   Net: {parseInt(tip.net)}
                 </text>
               </g>

@@ -530,12 +530,14 @@
       const todayMs = new Date().setHours(0,0,0,0);
       const startMs = new Date(sorted[0].date + 'T00:00:00').getTime();
 
-      // Window management
+      // Window management — windowOffset is a page count (one full window per
+      // click), matching the PK chart's Earlier/Later paging behavior.
       const windowDays = viewMode === '30d' ? 30 : viewMode === '60d' ? 60 : 0;
       const refEnd = todayMs + STEP;
-      const visStartMs = windowDays ? refEnd - (windowDays + windowOffset) * STEP : startMs;
-      const visEndMs = windowDays ? refEnd - windowOffset * STEP : todayMs + STEP;
-      const canScrollEarlier = windowDays && startMs < visStartMs - STEP;
+      const pageShift = windowOffset * windowDays * STEP;
+      const visStartMs = windowDays ? refEnd - windowDays * STEP - pageShift : startMs;
+      const visEndMs = windowDays ? refEnd - pageShift : todayMs + STEP;
+      const canScrollEarlier = windowDays && startMs < visStartMs;
       const canScrollLater = windowDays && windowOffset > 0;
 
       // Build data for view

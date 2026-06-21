@@ -327,7 +327,7 @@
         const rawVal = (row[schema.valueCol] ?? '').replace(/,/g, '');
         const val = parseFloat(rawVal);
         if (isNaN(val)) continue;
-        const key = d.toISOString().slice(0, 10);
+        const key = msToLocalDate(d.getTime());
         if (!map[key]) map[key] = { date: key, ts: d, Calories: 0, ActiveEnergy: 0, BasalEnergy: 0 };
         if (metric.toLowerCase().includes('calor')) { calorieMetrics[key] = (calorieMetrics[key] ?? 0) + val; found++; }
         else if (metric.toLowerCase().includes('active energy')) { map[key].ActiveEnergy += val; found++; }
@@ -356,7 +356,7 @@
         if (isNaN(wRaw)) continue;
         const unit = schema.unitCol ? row[schema.unitCol] : '';
         const wKg  = toKg(wRaw, unit);
-        const key  = d.toISOString().slice(0, 10);
+        const key  = msToLocalDate(d.getTime());
         if (!map[key] || d > map[key].ts) map[key] = { date: key, wKg, ts: d };
       }
       return Object.values(map).sort((a, b) => b.date.localeCompare(a.date));
@@ -1221,6 +1221,8 @@
             const recWeekly  = dose != null ? dose : weeklyDose;
             const perInjMg   = isSplitDose ? recWeekly / 2 : recWeekly;
             const lossSign = recent.twoWeekLoss >= 0 ? '↓' : '↑';
+            const nextInjDate = new Date(nextInjMs);
+            const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
             const subtext = g.action === 'increase'
               ? 'Progress below 3 lbs/2wk — advance to next dose'
               : g.action === 'stay'
@@ -1265,6 +1267,9 @@
                     <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
                       2-wk loss: {lossSign}{Math.abs(recent.twoWeekLoss).toFixed(1)} lbs &nbsp;·&nbsp;
                       current: {weeklyDose} mg/wk{isSplitDose ? ` (${sortedInj[sortedInj.length-1].doseMg} mg × 2)` : ''}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 3 }}>
+                      Your next injection is planned for {nextInjLabel}.
                     </div>
                   </div>
                   </div>{/* end flex row */}

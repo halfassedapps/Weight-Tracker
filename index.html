@@ -32,6 +32,7 @@
     const LS_VIAL_CONC_KEY = 'weight-tracker-vial-conc';
     const LS_INTERVALS_KEY = 'weight-tracker-intervals-config';
     const LS_CALORIE_KEY = 'weight-tracker-calories';
+    const LS_INTERVALS_CAL_KEY = 'weight-tracker-intervals-calories';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     function lastImportIsToday() {
       const name = localStorage.getItem(LS_LAST_CSV_KEY) ?? '';
@@ -558,7 +559,7 @@
         }
         pts = Object.entries(weeks).map(([wk, days]) => {
           const avgCals = days.reduce((sum, d) => sum + (d.Calories || 0), 0) / days.length;
-          const avgBurned = days.reduce((sum, d) => sum + (d.ActiveEnergy || 0), 0) / days.length;
+          const avgBurned = days.reduce((sum, d) => sum + (d.BasalEnergy || 0) + (d.ActiveEnergy || 0), 0) / days.length;
           return { date: wk, Calories: avgCals, burned: avgBurned, net: avgCals - avgBurned, ms: new Date(wk + 'T00:00:00').getTime() + 3*STEP };
         });
       } else {
@@ -570,8 +571,8 @@
           .map(d => ({
             date: d.date,
             Calories: d.Calories || 0,
-            burned: d.ActiveEnergy || 0,
-            net: (d.Calories || 0) - (d.ActiveEnergy || 0),
+            burned: (d.BasalEnergy || 0) + (d.ActiveEnergy || 0),
+            net: (d.Calories || 0) - ((d.BasalEnergy || 0) + (d.ActiveEnergy || 0)),
             ms: new Date(d.date + 'T00:00:00').getTime()
           }));
       }
@@ -2095,7 +2096,11 @@
       const [intervalsCfg, setIntervalsCfg] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) { return null; }
       });
-      const [intervalsCalories, setIntervalsCalories] = useState({});
+      // Seeded from the last successful sync so the chart never paints with a
+      // blank "0 burned" flash while the fresh fetch below is in flight.
+      const [intervalsCalories, setIntervalsCalories] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_CAL_KEY) || '{}'); } catch (_) { return {}; }
+      });
       const [intervalsMsg,      setIntervalsMsg]      = useState('');
       const inputRef  = useRef();
       const msgTimer  = useRef();
@@ -2240,24 +2245,32 @@
 
       // Fetch ride calories from intervals.icu and merge into intervalsCalories map.
       // Reads config fresh from localStorage (mirrors writeToGist) so callers don't
-      // need intervalsCfg in their dependency array.
+      // need intervalsCfg in their dependency array. Once a cache exists, only the
+      // last REFRESH_WINDOW_DAYS are re-fetched (older rides don't change) instead
+      // of re-pulling the entire history every sync.
+      const REFRESH_WINDOW_DAYS = 14;
       const refreshIntervals = useCallback(async (calRows) => {
         let cfg;
         try { cfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) { cfg = null; }
         if (!cfg?.apiKey || !cfg?.athleteId) return;
         const rows = (calRows && calRows.length > 0) ? calRows : calories;
         if (!rows.length) return;
-        const oldest = [...rows].map(d => d.date).sort()[0];
-        const newest = new Date().toISOString().slice(0, 10);
+        const hasCache = Object.keys(intervalsCalories).length > 0;
+        const earliest = [...rows].map(d => d.date).sort()[0];
+        const recentCutoff = msToLocalDate(Date.now() - REFRESH_WINDOW_DAYS * 86400000);
+        const oldest = hasCache ? recentCutoff : earliest;
+        const newest = msToLocalDate(Date.now());
         setIntervalsMsg('Syncing…');
         try {
-          const map = await fetchIntervalsCalories(cfg.apiKey, cfg.athleteId, oldest, newest);
-          setIntervalsCalories(map);
+          const fetched = await fetchIntervalsCalories(cfg.apiKey, cfg.athleteId, oldest, newest);
+          const merged = { ...intervalsCalories, ...fetched };
+          setIntervalsCalories(merged);
+          try { localStorage.setItem(LS_INTERVALS_CAL_KEY, JSON.stringify(merged)); } catch (_) {}
           setIntervalsMsg('');
         } catch (e) {
           setIntervalsMsg(e.message);
         }
-      }, [calories]);
+      }, [calories, intervalsCalories]);
 
       const saveIntervalsConfig = useCallback((apiKey, athleteId) => {
         const cfg = { apiKey, athleteId };
@@ -2268,6 +2281,7 @@
 
       const disconnectIntervals = useCallback(() => {
         localStorage.removeItem(LS_INTERVALS_KEY);
+        localStorage.removeItem(LS_INTERVALS_CAL_KEY);
         setIntervalsCfg(null);
         setIntervalsCalories({});
         setIntervalsMsg('');

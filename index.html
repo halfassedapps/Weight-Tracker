@@ -559,7 +559,7 @@
         }
         pts = Object.entries(weeks).map(([wk, days]) => {
           const avgCals = days.reduce((sum, d) => sum + (d.Calories || 0), 0) / days.length;
-          const avgBurned = days.reduce((sum, d) => sum + (d.BasalEnergy || 0) + (d.ActiveEnergy || 0), 0) / days.length;
+          const avgBurned = days.reduce((sum, d) => sum + (d.ActiveEnergy || 0), 0) / days.length;
           return { date: wk, Calories: avgCals, burned: avgBurned, net: avgCals - avgBurned, ms: new Date(wk + 'T00:00:00').getTime() + 3*STEP };
         });
       } else {
@@ -571,8 +571,8 @@
           .map(d => ({
             date: d.date,
             Calories: d.Calories || 0,
-            burned: (d.BasalEnergy || 0) + (d.ActiveEnergy || 0),
-            net: (d.Calories || 0) - ((d.BasalEnergy || 0) + (d.ActiveEnergy || 0)),
+            burned: d.ActiveEnergy || 0,
+            net: (d.Calories || 0) - (d.ActiveEnergy || 0),
             ms: new Date(d.date + 'T00:00:00').getTime()
           }));
       }

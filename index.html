@@ -2736,10 +2736,7 @@
                   ) : meta ? (
                     <>
                       {rows.length} entries · lbs{meta.source ? ` · ${meta.source}` : ''}
-                      {exportDir && <span style={{ color: '#4a90d9' }}> · {exportDir.name}</span>}
                     </>
-                  ) : exportDir ? (
-                    <span style={{ color: '#4a90d9' }}>{exportDir.name}</span>
                   ) : null}
                 </div>
               </div>

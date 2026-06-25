@@ -1314,12 +1314,16 @@
     const GOAL_LBS        = 155;
     const HEIGHT_IN       = 67; // 5'7"
 
-    function WeightChart({ rows }) {
+    function WeightChart({ rows, injections }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
+      const [sharing, setSharing] = useState(false);
+      const svgRef = useRef(null);
 
       const VW = 360, VH = 180;
-      const PAD = { t: 14, r: 14, b: 38, l: 38 };
+      // Extra top padding reserves a dedicated band for dose-change pills,
+      // kept clear of the plotted line entirely (linked via leader lines).
+      const PAD = { t: 32, r: 14, b: 38, l: 38 };
       const cW  = VW - PAD.l - PAD.r;
       const cH  = VH - PAD.t - PAD.b;
 
@@ -1328,6 +1332,64 @@
         ms:  new Date(r.date + 'T12:00:00').getTime(),
         lbs: r.lbs,
       }));
+
+      // Dose timeline: which *weekly* tirz dose was active at any point in time,
+      // and where the weekly dose actually changed (used to color-grade the
+      // weight line and place subtle markers — not every injection, just
+      // changes). Sum all injections falling in the same Sun-Sat calendar
+      // week — this correctly captures split dosing (e.g. 1.25mg x2/wk =
+      // 2.5mg/wk) without misgrouping the single-dose -> split-dose
+      // transition week (gap-based pairing mis-paired those).
+      const injAsc = (injections || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+      const weekStartMs = ms => {
+        const d = new Date(ms);
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() - d.getDay());
+        return d.getTime();
+      };
+      const weekGroups = {};
+      for (const inj of injAsc) {
+        const ms = new Date(inj.date + 'T12:00:00').getTime();
+        const wk = weekStartMs(ms);
+        if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms };
+        weekGroups[wk].doseMg += inj.doseMg;
+        weekGroups[wk].firstMs = Math.min(weekGroups[wk].firstMs, ms);
+      }
+      const weeklyCycles = Object.values(weekGroups)
+        .sort((a, b) => a.firstMs - b.firstMs)
+        .map(g => ({ startMs: g.firstMs, doseMg: Math.round(g.doseMg * 1000) / 1000 }));
+      const doseAt = ms => {
+        let d = null;
+        for (const c of weeklyCycles) { if (c.startMs <= ms) d = c.doseMg; else break; }
+        return d;
+      };
+      const doseChanges = [];
+      { let prevDose = null;
+        for (const c of weeklyCycles) {
+          if (c.doseMg !== prevDose) {
+            doseChanges.push({ ms: c.startMs, doseMg: c.doseMg, date: msToLocalDate(c.startMs) });
+            prevDose = c.doseMg;
+          }
+        }
+      }
+      // Distinct color per dose level (not a magnitude gradient) so adjacent
+      // changes are always clearly different, regardless of how close the
+      // mg values are.
+      const DOSE_PALETTE = ['#4a90d9', '#34c759', '#ff9500', '#ff3b30', '#b06dff', '#00c7be', '#ff2d55', '#5856d6', '#ffcc00', '#8e8e93'];
+      const doseColorMap = new Map();
+      doseChanges.forEach((c, i) => doseColorMap.set(c.doseMg, DOSE_PALETTE[i % DOSE_PALETTE.length]));
+      const colorForDose = doseMg => doseColorMap.get(doseMg) ?? '#4a90d9';
+      const lbsAt = ms => {
+        if (ms <= pts[0].ms) return pts[0].lbs;
+        if (ms >= pts[pts.length - 1].ms) return pts[pts.length - 1].lbs;
+        for (let i = 0; i < pts.length - 1; i++) {
+          if (ms >= pts[i].ms && ms <= pts[i + 1].ms) {
+            const f = (ms - pts[i].ms) / (pts[i + 1].ms - pts[i].ms);
+            return pts[i].lbs + (pts[i + 1].lbs - pts[i].lbs) * f;
+          }
+        }
+        return pts[pts.length - 1].lbs;
+      };
 
       const startMs  = pts[0].ms;
       const todayD   = new Date(); todayD.setHours(12,0,0,0);
@@ -1421,6 +1483,54 @@
       const tipX   = tipGx != null ? (tipGx + tipW + 10 > PAD.l + cW ? tipGx - tipW - 8 : tipGx + 8) : 0;
       const tipY   = tipGx != null ? Math.max(PAD.t, goalY - tipH / 2) : 0;
 
+      // Color-graded weight line: split pts into runs sharing the same active
+      // dose, each run overlapping its neighbor by one point so segments
+      // connect with no visual gap.
+      const doseSegments = [];
+      { let curDose = doseAt(pts[0].ms);
+        let curRun  = [pts[0]];
+        for (let i = 1; i < pts.length; i++) {
+          const d = doseAt(pts[i].ms);
+          if (d !== curDose) {
+            curRun.push(pts[i]);
+            doseSegments.push({ dose: curDose, pts: curRun });
+            curRun = [pts[i]];
+            curDose = d;
+          } else {
+            curRun.push(pts[i]);
+          }
+        }
+        doseSegments.push({ dose: curDose, pts: curRun });
+      }
+
+      // Dose changes before the chart's first data point would otherwise be
+      // dropped entirely (e.g. the first injection often predates the first
+      // logged weight) — keep whichever was still active at chart start and
+      // pin it to the left edge instead of losing it.
+      const priorChanges = doseChanges.filter(c => c.ms < startMs);
+      const visibleDoseChanges = [
+        ...(priorChanges.length ? [{ ...priorChanges[priorChanges.length - 1], ms: startMs }] : []),
+        ...doseChanges.filter(c => c.ms >= startMs && c.ms <= endMs),
+      ];
+
+      // Pills live in a dedicated band above the chart (clear of the line
+      // entirely) and are linked to their dose-change point with a thin
+      // leader line. Placed left-to-right; a pill is nudged right of its
+      // ideal (dot-centered) position whenever it would overlap the
+      // previous one, so dense escalation periods don't collide.
+      const pillY = 3, pillH = 9, pillGap = 3;
+      let prevRight = -Infinity;
+      const pillPlacements = visibleDoseChanges.map(c => {
+        const dotX = xOf(c.ms), dotY = yOf(lbsAt(c.ms));
+        const color = colorForDose(c.doseMg);
+        const label = `${c.doseMg}mg`;
+        const pillW = 9 + label.length * 4.2;
+        let cx = Math.max(dotX, prevRight + pillGap + pillW / 2);
+        cx = Math.min(Math.max(cx, PAD.l + pillW / 2), PAD.l + cW - pillW / 2);
+        prevRight = cx + pillW / 2;
+        return { dotX, dotY, color, label, pillW, cx };
+      });
+
       // Stats
       const startLbs      = pts[0].lbs;
       const currentLbs    = pts[pts.length - 1].lbs;
@@ -1429,32 +1539,112 @@
       const pctGoal       = Math.min((totalLost / (startLbs - GOAL_LBS)) * 100, 100);
       const goalDateStr   = goalMs ? new Date(goalMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : '—';
 
+      const startDateStr = new Date(startMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+
       const stats = [
-        { label: 'Starting',    value: startLbs.toFixed(1) + ' lbs' },
+        { label: 'Starting',    value: startLbs.toFixed(1) + ' lbs', sub: startDateStr },
         { label: 'Goal',        value: GOAL_LBS + ' lbs' },
         { label: '% to Goal',   value: pctGoal.toFixed(1) + '%',   color: '#34c759' },
         { label: 'Lost',        value: totalLost.toFixed(1) + ' lbs', color: '#34c759' },
         { label: '% Body Wt',   value: pctBodyLost.toFixed(1) + '%',  color: '#34c759' },
       ];
 
+      // Renders the chart (header text + SVG) onto a canvas and shares it via
+      // the Web Share API (native share sheet) when available, falling back
+      // to a plain PNG download otherwise.
+      const shareChart = async () => {
+        if (!svgRef.current || sharing) return;
+        setSharing(true);
+        try {
+          const scale = 3, headerH = 54;
+          const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
+
+          // Explicit pixel width/height (not just viewBox) so the browser
+          // rasterizes the SVG at full target resolution up front, instead
+          // of rendering it small and stretching a blurry bitmap. The SVG's
+          // own <text> elements have no font-family set directly on them
+          // (they inherit it from the page's CSS while live in the DOM) —
+          // a standalone serialized copy has no access to that stylesheet,
+          // so it falls back to the browser's SVG default (serif). Embed an
+          // explicit <style> so the exported text matches the live page.
+          const svgClone = svgRef.current.cloneNode(true);
+          svgClone.setAttribute('width', VW * scale);
+          svgClone.setAttribute('height', VH * scale);
+          const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+          styleEl.textContent = `text { font-family: ${FONT}; }`;
+          svgClone.insertBefore(styleEl, svgClone.firstChild);
+          const svgString = new XMLSerializer().serializeToString(svgClone);
+          const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+
+          const img = new Image();
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = reject;
+            img.src = svgUrl;
+          });
+
+          const canvas = document.createElement('canvas');
+          canvas.width = VW * scale;
+          canvas.height = (VH + headerH) * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(scale, scale);
+          ctx.fillStyle = '#1c1c1e';
+          ctx.font = `700 13px ${FONT}`;
+          ctx.fillText('My Weight Trend', 14, 18);
+          ctx.fillStyle = '#34c759';
+          ctx.font = `700 10px ${FONT}`;
+          ctx.fillText(`↓ ${totalLost.toFixed(1)} lbs lost (${pctBodyLost.toFixed(1)}%) · ${pctGoal.toFixed(1)}% to goal`, 14, 34);
+          ctx.fillStyle = '#8e8e93';
+          ctx.font = `400 9px ${FONT}`;
+          ctx.fillText(`Since ${startDateStr}`, 14, 46);
+          ctx.drawImage(img, 0, headerH, VW, VH);
+
+          const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+          const file = new File([fileBlob], 'weight-trend.png', { type: 'image/png' });
+
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              files: [file],
+              title: 'My Weight Trend',
+              text: `Down ${totalLost.toFixed(1)} lbs since ${startDateStr}!`,
+            });
+          } else {
+            const url = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'weight-trend.png';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }
+        } catch (e) {
+          if (e.name !== 'AbortError') console.warn('[WeightChart] share failed:', e);
+        } finally {
+          setSharing(false);
+        }
+      };
+
       return (
         <div>
           {/* Stats header */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)',
                         borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
-            {stats.map(({ label, value, color }) => (
+            {stats.map(({ label, value, color, sub }) => (
               <div key={label} style={{ padding: '10px 4px', textAlign: 'center',
                                         borderRight: '.5px solid rgba(0,0,0,.05)' }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93',
                               textTransform: 'uppercase', letterSpacing: .4, marginBottom: 3 }}>{label}</div>
                 <div style={{ fontSize: 15, fontWeight: 700, color: color ?? '#1c1c1e',
                               fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                {sub && (
+                  <div style={{ fontSize: 10, color: '#aeaeb2', marginTop: 1 }}>{sub}</div>
+                )}
               </div>
             ))}
           </div>
 
           {/* Chart */}
-          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
 
             {/* Y grid lines */}
             {yTicks.map(v => (
@@ -1474,16 +1664,31 @@
             <line x1={tX1} y1={tY1} x2={tX2} y2={tY2}
                   stroke="#ff9500" strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
 
-            {/* Weight line */}
-            <polyline
-              points={pts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
-              fill="none" stroke="#4a90d9" strokeWidth="1.5" strokeLinejoin="round" />
-
-            {/* Weight dots */}
-            {pts.map(p => (
-              <circle key={p.ms} cx={xOf(p.ms)} cy={yOf(p.lbs)} r="2.5"
-                      fill="#4a90d9" stroke="#fff" strokeWidth="1" opacity="0.85" />
+            {/* Weight line — distinct color per weekly tirz dose */}
+            {doseSegments.map((seg, i) => (
+              <polyline key={i}
+                points={seg.pts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
+                fill="none" stroke={seg.dose == null ? '#4a90d9' : colorForDose(seg.dose)}
+                strokeWidth="1.5" strokeLinejoin="round" />
             ))}
+
+            {/* Weekly-dose-change markers — dot on the line, pill in the top
+                band (clear of the data), linked by a thin leader line */}
+            {pillPlacements.map((p, i) => {
+              const pillTopY = pillY + pillH;
+              return (
+                <g key={i}>
+                  <line x1={p.cx} y1={pillTopY} x2={p.dotX} y2={p.dotY}
+                        stroke={p.color} strokeWidth="0.6" opacity="0.5" />
+                  <circle cx={p.dotX} cy={p.dotY} r="2" fill={p.color} stroke="#fff" strokeWidth="0.8" />
+                  <g style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }}>
+                    <rect x={p.cx - p.pillW / 2} y={pillY} width={p.pillW} height={pillH} rx={pillH / 2} fill={p.color} />
+                    <text x={p.cx} y={pillY + pillH / 2 + 1.8} textAnchor="middle"
+                          fontSize="4" fontWeight="700" fill="#fff">{p.label}</text>
+                  </g>
+                </g>
+              );
+            })}
 
             {/* Today line */}
             <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH}
@@ -1572,12 +1777,25 @@
             )}
           </svg>
 
-          {/* Projection note */}
-          {goalMs && (
-            <div style={{ padding: '4px 14px 10px', fontSize: 11, color: '#8e8e93', textAlign: 'center' }}>
-              At current trend · goal reached <span style={{ color: '#34c759', fontWeight: 600 }}>{goalDateStr}</span>
-            </div>
-          )}
+          {/* Projection note + share */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        gap: 10, padding: '4px 14px 10px' }}>
+            {goalMs && (
+              <div style={{ fontSize: 11, color: '#8e8e93', textAlign: 'center' }}>
+                At current trend · goal reached <span style={{ color: '#34c759', fontWeight: 600 }}>{goalDateStr}</span>
+              </div>
+            )}
+            <button onClick={shareChart} disabled={sharing}
+                    style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+                             color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,
+                             padding: '4px 10px', cursor: sharing ? 'default' : 'pointer', opacity: sharing ? .6 : 1 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
+                   strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
+              </svg>
+              {sharing ? 'Preparing…' : 'Share'}
+            </button>
+          </div>
         </div>
       );
     }
@@ -2660,7 +2878,7 @@
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Weight Trend</div>
                   <div style={{ fontSize: 12, color: '#aeaeb2' }}>goal: {GOAL_LBS} lbs</div>
                 </div>
-                <WeightChart rows={rows} />
+                <WeightChart rows={rows} injections={injections} />
               </div>
 
               {/* Calorie Chart */}
@@ -2828,7 +3046,7 @@
                 )}
 
                 <div style={{ maxHeight: 440, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
-                {[...injections].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10).map((inj, i, arr) => (
+                {[...injections].sort((a, b) => b.date.localeCompare(a.date)).map((inj, i, arr) => (
                   <div key={inj.date}
                        style={{ display: 'flex', alignItems: 'center', padding: '10px 14px',
                                 borderBottom: i < arr.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>

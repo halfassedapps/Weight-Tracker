@@ -515,11 +515,24 @@
     };
     const today = () => new Date().toLocaleDateString('en-CA');
 
+    // Shared by CalorieChart and PkChart's range-selector dropdowns.
+    function windowDaysForRange(rangeMode, customDays) {
+      switch (rangeMode) {
+        case '7d': return 7;
+        case '14d': return 14;
+        case '30d': return 30;
+        case 'custom': return Math.max(0, Number(customDays) || 0);
+        default: return 0; // 'all'
+      }
+    }
+
     /* ─── Calorie Chart ──────────────────────────────────────────────────────── */
     function CalorieChart({ calorieData }) {
-      const [viewMode, setViewMode] = useState('30d');
+      const [rangeMode, setRangeMode] = useState('30d');
+      const [customDays, setCustomDays] = useState(30);
       const [windowOffset, setWindowOffset] = useState(0);
       const [tip, setTip] = useState(null);
+      const selectRange = (mode) => { setRangeMode(mode); setWindowOffset(0); };
 
       if (!calorieData || calorieData.length < 2) return null;
 
@@ -538,7 +551,7 @@
 
       // Window management — windowOffset is a page count (one full window per
       // click), matching the PK chart's Earlier/Later paging behavior.
-      const windowDays = viewMode === '30d' ? 30 : viewMode === '60d' ? 60 : 0;
+      const windowDays = windowDaysForRange(rangeMode, customDays);
       const refEnd = todayMs + STEP;
       const pageShift = windowOffset * windowDays * STEP;
       const visStartMs = windowDays ? refEnd - windowDays * STEP - pageShift : startMs;
@@ -548,7 +561,7 @@
 
       // Build data for view
       let pts = [];
-      if (viewMode === 'all') {
+      if (rangeMode === 'all') {
         const weeks = {};
         for (const d of sorted) {
           const dms = new Date(d.date + 'T00:00:00').getTime();
@@ -590,19 +603,36 @@
       const xOf = (ms) => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
       const yOf = (val) => PAD.t + cH - ((val - minVal) / rangeVal) * cH;
 
+      // Period summary stats — computed from the full daily series, not the
+      // possibly weekly-averaged `pts` (averaging-then-summing would misrepresent totals in 'all' mode).
+      const periodDaily = sorted.filter(d => {
+        const ms = new Date(d.date + 'T00:00:00').getTime();
+        return ms >= visStartMs && ms < visEndMs;
+      });
+      const totalConsumed = periodDaily.reduce((s, d) => s + (d.Calories || 0), 0);
+      const totalBurned = periodDaily.reduce((s, d) => s + (d.ActiveEnergy || 0), 0);
+      const netForPeriod = totalConsumed - totalBurned;
+
       return (
         <div>
           {/* Controls */}
-          <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px' }}>
-            {[['30d','30d'],['60d','60d'],['all','All']].map(([mode, label]) => (
-              <button key={mode} onClick={() => { setViewMode(mode); setWindowOffset(0); }}
-                      style={{ flex: 1, fontSize: 10, fontWeight: 600, padding: '4px 4px', borderRadius: 8,
-                               background: viewMode === mode ? '#4a90d9' : '#f2f2f7',
-                               color: viewMode === mode ? '#fff' : '#8e8e93',
-                               border: 'none', cursor: 'pointer', lineHeight: 1.2 }}>
-                {label}
-              </button>
-            ))}
+          <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px', alignItems: 'center' }}>
+            <select value={rangeMode} onChange={e => selectRange(e.target.value)}
+                    style={{ fontSize: 10, fontWeight: 600, padding: '5px 8px', borderRadius: 8,
+                             background: '#f2f2f7', color: '#3c3c43', border: 'none', outline: 'none', cursor: 'pointer' }}>
+              <option value="7d">7 Days</option>
+              <option value="14d">14 Days</option>
+              <option value="30d">Month</option>
+              <option value="all">All</option>
+              <option value="custom">Custom</option>
+            </select>
+            {rangeMode === 'custom' && (
+              <input type="number" min="1" step="1" value={customDays}
+                     onChange={e => setCustomDays(e.target.value)}
+                     placeholder="days"
+                     style={{ width: 56, fontSize: 10, fontWeight: 600, padding: '5px 6px', borderRadius: 8,
+                              border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' }} />
+            )}
           </div>
 
           {/* Scroll controls */}
@@ -719,6 +749,13 @@
             })()}
           </svg>
 
+          {/* Period stats */}
+          <div style={{ display: 'flex', padding: '8px 14px 4px', gap: 12, alignItems: 'flex-start' }}>
+            <PkStat label="Consumed" value={Math.round(totalConsumed).toLocaleString() + ' cal'} color="#4a90d9" />
+            <PkStat label="Burned" value={Math.round(totalBurned).toLocaleString() + ' cal'} color="#ff9500" />
+            <PkStat label="Net" value={(netForPeriod >= 0 ? '+' : '') + Math.round(netForPeriod).toLocaleString() + ' cal'} color="#8e73de" />
+          </div>
+
           {/* Legend */}
           <div style={{ padding: '4px 14px', fontSize: 9, color: '#8e8e93', display: 'flex', gap: 12 }}>
             <div><span style={{ display: 'inline-block', width: 10, height: 10, background: '#4a90d9', marginRight: 4 }}></span>Ingested</div>
@@ -740,8 +777,10 @@
       const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
-      const [viewMode,     setViewMode]     = useState('30d'); // '30d' | '60d' | 'all'
+      const [rangeMode,    setRangeMode]    = useState('30d'); // '7d' | '14d' | '30d' | 'all' | 'custom'
+      const [customDays,   setCustomDays]   = useState(30);
       const [windowOffset, setWindowOffset] = useState(0);
+      const selectRange = (mode) => { setRangeMode(mode); setWindowOffset(0); };
       const toggleSplit = () => {
         const next = !splitManual;
         setSplitManual(next);
@@ -755,7 +794,7 @@
       const todayMs = todayD.getTime();
       const endMs   = todayMs + 21 * 86400000;
 
-      const windowDays       = viewMode === '30d' ? 30 : viewMode === '60d' ? 60 : null;
+      const windowDays       = windowDaysForRange(rangeMode, customDays);
       const refEnd           = windowDays ? todayMs - windowOffset * windowDays * 86400000 : null;
       const visStartMs       = (() => {
         if (windowDays) return refEnd - windowDays * 86400000;
@@ -785,8 +824,8 @@
         return Object.values(weeks).map(w => ({ ms: w.ms, v: w.sum/w.n })).sort((a,b) => a.ms - b.ms);
       })();
       const displayPts = (() => {
-        const base = (viewMode === 'all' ? weeklyPkPts : visPts).filter(p => p.ms <= visEndMs);
-        if (viewMode !== 'all') return base;
+        const base = (rangeMode === 'all' ? weeklyPkPts : visPts).filter(p => p.ms <= visEndMs);
+        if (rangeMode !== 'all') return base;
         // Weekly midpoints can fall before visStartMs when the week's Sunday is in the
         // prior month. Filter those out and anchor the line at (visStartMs, 0) instead.
         const visible = base.filter(p => p.ms >= visStartMs);
@@ -796,7 +835,7 @@
       const yMax = maxV * 1.18; // 18% headroom so peaks don't touch the top border
 
       const VW = 360, VH = 190;
-      const PAD = { t: 18, r: 40, b: viewMode === 'all' ? 22 : 60, l: 36 };
+      const PAD = { t: 18, r: 40, b: rangeMode === 'all' ? 22 : 60, l: 36 };
       const cW  = VW - PAD.l - PAD.r;
       const cH  = VH - PAD.t - PAD.b;
 
@@ -823,9 +862,21 @@
         });
         return Object.values(weeks).map(w => ({ ms: w.ms, lbs: w.sum/w.n })).sort((a,b) => a.ms - b.ms);
       })();
-      const wPts = viewMode === 'all'
-        ? wWeeklyPts.filter(p => p.ms >= visStartMs)
-        : wAllPts.filter(p => p.ms >= visStartMs && p.ms <= Math.min(todayMs, visEndMs));
+      const wPts = (() => {
+        if (rangeMode !== 'all') {
+          return wAllPts.filter(p => p.ms >= visStartMs && p.ms <= Math.min(todayMs, visEndMs));
+        }
+        // Anchor the line at visStartMs (mirrors the PK line's anchor fix above) so it
+        // reaches the left edge whether the earliest weekly bucket's midpoint falls
+        // after visStartMs (weight logging started a few days into the month — the
+        // common case) or before it (week's Sunday in the prior month). Either way,
+        // hold flat at the nearest known weight rather than leaving a gap.
+        const visible = wWeeklyPts.filter(p => p.ms >= visStartMs);
+        if (!wWeeklyPts.length || (visible.length && visible[0].ms === visStartMs)) return visible;
+        const prior = wWeeklyPts.filter(p => p.ms < visStartMs);
+        const anchorLbs = prior.length ? prior[prior.length - 1].lbs : wWeeklyPts[0].lbs;
+        return [{ ms: visStartMs, lbs: anchorLbs }, ...visible];
+      })();
 
       // Interpolate weight at any ms for tooltip
       const interpW = (ms) => {
@@ -839,6 +890,36 @@
         if (!hi) return lo.lbs;
         return lo.lbs + (ms - lo.ms) / (hi.ms - lo.ms) * (hi.lbs - lo.lbs);
       };
+
+      // Period summary stats — average on-board level from the full-resolution
+      // `pts` (not `displayPts`, which is weekly-bucketed and zero-anchored in 'all' mode).
+      const periodPts = pts.filter(p => p.ms >= visStartMs && p.ms <= visEndMs);
+      const avgOnBoard = periodPts.length
+        ? periodPts.reduce((s, p) => s + p.v, 0) / periodPts.length
+        : 0;
+
+      // Weight change over the period, using the smoothed 7-day moving average
+      // (movAvg) for consistency with the rest of the app's trend calculations.
+      const wMaAllPts = (rows ?? [])
+        .map(r => ({ ms: new Date(r.date + 'T12:00:00').getTime(), ma: r.movAvg }))
+        .filter(p => p.ms >= startMs && p.ms <= todayMs && p.ma != null)
+        .sort((a, b) => a.ms - b.ms);
+      const interpMovAvg = (ms) => {
+        if (!wMaAllPts.length) return null;
+        let lo = null, hi = null;
+        for (const p of wMaAllPts) {
+          if (p.ms <= ms) lo = p; else if (!hi) hi = p;
+        }
+        if (!lo && !hi) return null;
+        if (!lo) return hi.ma;
+        if (!hi) return lo.ma;
+        return lo.ma + (ms - lo.ms) / (hi.ms - lo.ms) * (hi.ma - lo.ma);
+      };
+      const periodStartW = interpMovAvg(Math.max(visStartMs, startMs));
+      const periodEndW = interpMovAvg(Math.min(visEndMs, todayMs));
+      const periodWeightChange = (periodStartW != null && periodEndW != null)
+        ? periodEndW - periodStartW
+        : null;
 
       const xOf = ms => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
       const yOf = v  => PAD.t + cH - Math.min(v / yMax, 1) * cH;
@@ -968,18 +1049,25 @@
                              onSave={onSaveSchedule} onClose={() => setShowSchedule(false)} />}
 
           {/* View range selector */}
-          <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px' }}>
-            {[['30d','30 Days'],['60d','60 Days'],['all','All · Weekly']].map(([mode, label]) => (
-              <button key={mode} onClick={() => { setViewMode(mode); setWindowOffset(0); }}
-                      style={{ flex: 1, fontSize: 11, fontWeight: 600, padding: '5px 4px', borderRadius: 10,
-                               background: viewMode === mode ? '#4a90d9' : '#e5e5ea',
-                               color: viewMode === mode ? '#fff' : '#8e8e93',
-                               border: 'none', cursor: 'pointer', lineHeight: 1.3 }}>
-                {label}
-              </button>
-            ))}
+          <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px', alignItems: 'center' }}>
+            <select value={rangeMode} onChange={e => selectRange(e.target.value)}
+                    style={{ fontSize: 11, fontWeight: 600, padding: '5px 8px', borderRadius: 10,
+                             background: '#e5e5ea', color: '#3c3c43', border: 'none', outline: 'none', cursor: 'pointer' }}>
+              <option value="7d">7 Days</option>
+              <option value="14d">14 Days</option>
+              <option value="30d">Month</option>
+              <option value="all">All · Weekly</option>
+              <option value="custom">Custom</option>
+            </select>
+            {rangeMode === 'custom' && (
+              <input type="number" min="1" step="1" value={customDays}
+                     onChange={e => setCustomDays(e.target.value)}
+                     placeholder="days"
+                     style={{ width: 60, fontSize: 11, fontWeight: 600, padding: '5px 6px', borderRadius: 10,
+                              border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' }} />
+            )}
           </div>
-          {viewMode !== 'all' && (
+          {rangeMode !== 'all' && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                           padding: '0 14px 2px' }}>
               <button onClick={() => canScrollEarlier && setWindowOffset(o => o + 1)}
@@ -1008,11 +1096,11 @@
                onMouseMove={handleMouseMove}
                onMouseLeave={() => setTip(null)}>
 
-            {viewMode !== 'all' && xWeekTicks.map(ms => (
+            {rangeMode !== 'all' && xWeekTicks.map(ms => (
               <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
                     stroke="rgba(0,0,0,.08)" strokeWidth="0.6" />
             ))}
-            {viewMode === 'all' && monthTicks.map(({ ms }) => (
+            {rangeMode === 'all' && monthTicks.map(({ ms }) => (
               <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
                     stroke="rgba(0,0,0,.08)" strokeWidth="0.6" />
             ))}
@@ -1054,7 +1142,7 @@
             })}
 
             {/* Per-interval average bars; last segment split at today: solid past, dashed future */}
-            {viewMode !== 'all' && intervalAvgs.map((seg, i) => {
+            {rangeMode !== 'all' && intervalAvgs.map((seg, i) => {
               const x1  = Math.max(PAD.l, xOf(seg.startMs));
               const x2  = Math.min(PAD.l + cW, xOf(seg.endMs));
               if (x2 <= x1) return null;
@@ -1109,7 +1197,7 @@
               );
             })()}
 
-            {viewMode !== 'all' && sortedInj.filter(inj => {
+            {rangeMode !== 'all' && sortedInj.filter(inj => {
               const ms = new Date(inj.date + 'T12:00:00').getTime();
               return ms >= visStartMs && ms <= visEndMs;
             }).map(inj => {
@@ -1130,7 +1218,7 @@
               );
             })}
 
-            {viewMode !== 'all' && upcomingInjMs.map(ms => {
+            {rangeMode !== 'all' && upcomingInjMs.map(ms => {
               const nx = xOf(ms);
               if (nx < PAD.l || nx > PAD.l + cW) return null;
               return (
@@ -1162,7 +1250,7 @@
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
             <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
 
-            {viewMode === 'all' && monthTicks.map(({ ms, label }) => {
+            {rangeMode === 'all' && monthTicks.map(({ ms, label }) => {
               const gx = xOf(ms);
               const lx = Math.max(PAD.l + 16, Math.min(PAD.l + cW - 16, gx));
               return (
@@ -1212,6 +1300,14 @@
             <PkStat label="Pre-dose trough" value={troughLevel.toFixed(2) + ' mg'}
                     note={'(' + fmtShort(msToLocalDate(nextInjMs)) + ')'} color="#8e8e93" />
             <PkStat label="Half-life" value="5 days" color="#8e8e93" />
+          </div>
+          <div style={{ display: 'flex', padding: '0 14px 4px', gap: 12, alignItems: 'flex-start' }}>
+            <PkStat label="Avg on board (period)" value={avgOnBoard.toFixed(2) + ' mg'} color="#4a90d9" />
+            <PkStat label="Weight change (period)"
+                    value={periodWeightChange != null
+                      ? (periodWeightChange <= 0 ? '↓ ' : '↑ ') + Math.abs(periodWeightChange).toFixed(1) + ' lbs'
+                      : '—'}
+                    color={periodWeightChange != null && periodWeightChange <= 0 ? '#34c759' : '#ff3b30'} />
           </div>
           {(() => {
             const recent = (rows ?? []).find(r => r.twoWeekLoss != null);

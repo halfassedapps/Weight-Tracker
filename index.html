@@ -1415,6 +1415,18 @@
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
       const svgRef = useRef(null);
+      const [trendModes, setTrendModes] = useState(['current']); // ids of checked trend lines
+      const [trendMenuOpen, setTrendMenuOpen] = useState(false);
+      const [ratesFromToday, setRatesFromToday] = useState(false); // false: rate lines span from the starting date, like Current
+      const trendMenuRef = useRef(null);
+      useEffect(() => {
+        if (!trendMenuOpen) return;
+        const onPointerDown = e => {
+          if (trendMenuRef.current && !trendMenuRef.current.contains(e.target)) setTrendMenuOpen(false);
+        };
+        document.addEventListener('pointerdown', onPointerDown);
+        return () => document.removeEventListener('pointerdown', onPointerDown);
+      }, [trendMenuOpen]);
 
       const VW = 360, VH = 180;
       // Extra top padding reserves a dedicated band for dose-change pills,
@@ -1472,6 +1484,15 @@
       // changes are always clearly different, regardless of how close the
       // mg values are.
       const DOSE_PALETTE = ['#4a90d9', '#34c759', '#ff9500', '#ff3b30', '#b06dff', '#00c7be', '#ff2d55', '#5856d6', '#ffcc00', '#8e8e93'];
+      // Trend-line options for the checkbox dropdown — "current" is the existing
+      // regression line; the rest are hypothetical fixed weekly loss rates.
+      const TREND_OPTIONS = [
+        { id: 'current', label: 'Current', ratePerWeek: null, color: '#ff9500' },
+        { id: 'r1', label: '1 lb/wk', ratePerWeek: 1, color: '#5ac8fa' },
+        { id: 'r2', label: '2 lb/wk', ratePerWeek: 2, color: '#a2845e' },
+        { id: 'r3', label: '3 lb/wk', ratePerWeek: 3, color: '#bf5af2' },
+        { id: 'r4', label: '4 lb/wk', ratePerWeek: 4, color: '#1d4e89' },
+      ];
       const doseColorMap = new Map();
       doseChanges.forEach((c, i) => doseColorMap.set(c.doseMg, DOSE_PALETTE[i % DOSE_PALETTE.length]));
       const colorForDose = doseMg => doseColorMap.get(doseMg) ?? '#4a90d9';
@@ -1543,9 +1564,39 @@
         : goalDriftDays >  DRIFT_THRESH ? '#ff9500'
         : '#aeaeb2';
 
-      // Chart x range: start → goal + 2wk buffer (cap at 18 months)
-      const endMs = goalMs
-        ? Math.min(goalMs + 14 * 86400000, startMs + 548 * 86400000)
+      // Today's position on the current-trend regression line — used both as a
+      // possible anchor for the rate lines (see below) and on its own.
+      const anchorLbs = intcp + slope * ((todayMs - startMs) / 86400000);
+
+      // The 1-4 lb/wk hypothetical lines fan out from a single shared anchor
+      // point, either "today" (continuing the regression's current value forward)
+      // or the chart's starting date (intcp — the regression's value at day 0,
+      // exactly where the "Current" line itself begins), per the toggle below.
+      const ratesAnchorMs  = ratesFromToday ? todayMs : startMs;
+      const ratesAnchorLbs = ratesFromToday ? anchorLbs : intcp;
+
+      // Goal date for each rate-based line, independent of endMs/xOf/yOf (computed
+      // before the chart's x range so the range can expand to fit whichever
+      // checked line's goal lands furthest out).
+      const rateGoalMsById = {};
+      TREND_OPTIONS.forEach(opt => {
+        if (opt.id === 'current') return;
+        const slopePerDay = -opt.ratePerWeek / 7;
+        // Only project a goal date if there's still weight to lose at this rate —
+        // avoids a nonsensical "already reached" date when the anchor is at/below goal.
+        const goalDaysFixed = ratesAnchorLbs > GOAL_LBS ? (GOAL_LBS - ratesAnchorLbs) / slopePerDay : null;
+        rateGoalMsById[opt.id] = goalDaysFixed != null ? ratesAnchorMs + goalDaysFixed * 86400000 : null;
+      });
+
+      // Chart x range: start → latest checked line's goal + 2wk buffer (cap at 18
+      // months) — so a slower hypothetical rate line that reaches goal later than
+      // the current trend still fits on-chart instead of running off the edge.
+      const checkedGoalDates = trendModes
+        .map(id => id === 'current' ? goalMs : rateGoalMsById[id])
+        .filter(g => g != null);
+      const latestGoalMs = checkedGoalDates.length ? Math.max(...checkedGoalDates) : null;
+      const endMs = latestGoalMs
+        ? Math.min(latestGoalMs + 14 * 86400000, startMs + 548 * 86400000)
         : startMs + 180 * 86400000;
 
       // Y range: goal − 8 → starting weight + 5
@@ -1558,9 +1609,20 @@
       const todayX  = xOf(todayMs);
       const goalY   = yOf(GOAL_LBS);
 
-      // Trend line clipped to chart x bounds
-      const tX1 = PAD.l, tY1 = yOf(intcp);
-      const tX2 = PAD.l + cW, tY2 = yOf(intcp + slope * (endMs - startMs) / 86400000);
+      const TREND_LINES = trendModes.map(id => {
+        if (id === 'current') {
+          return { id, color: '#ff9500',
+            x1: PAD.l, y1: yOf(intcp),
+            x2: PAD.l + cW, y2: yOf(intcp + slope * (endMs - startMs) / 86400000),
+            goalMs };
+        }
+        const opt = TREND_OPTIONS.find(o => o.id === id);
+        const slopePerDay = -opt.ratePerWeek / 7;
+        return { id, color: opt.color,
+          x1: xOf(ratesAnchorMs), y1: yOf(ratesAnchorLbs),
+          x2: PAD.l + cW, y2: yOf(ratesAnchorLbs + slopePerDay * (endMs - ratesAnchorMs) / 86400000),
+          goalMs: rateGoalMsById[id] };
+      });
 
       // Monthly x-axis ticks
       const xTicks = [];
@@ -1739,6 +1801,39 @@
             ))}
           </div>
 
+          {/* Trend line picker */}
+          <div style={{ display: 'flex', padding: '8px 14px 4px', position: 'relative' }} ref={trendMenuRef}>
+            <button onClick={() => setTrendMenuOpen(v => !v)}
+                    style={{ fontSize: 10, fontWeight: 600, padding: '5px 8px', borderRadius: 8,
+                             background: '#f2f2f7', color: '#3c3c43', border: 'none', outline: 'none', cursor: 'pointer' }}>
+              Trend Lines{trendModes.length ? ` (${trendModes.length})` : ''} ▾
+            </button>
+            {trendMenuOpen && (
+              <div style={{ position: 'absolute', top: '100%', left: 14, marginTop: 4, zIndex: 10,
+                            background: '#fff', borderRadius: 10, boxShadow: '0 4px 16px rgba(0,0,0,.15)',
+                            padding: 8, minWidth: 130 }}>
+                {TREND_OPTIONS.map(opt => (
+                  <label key={opt.id}
+                         style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 4px',
+                                  fontSize: 11, color: '#3c3c43', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={trendModes.includes(opt.id)}
+                           onChange={() => setTrendModes(m =>
+                             m.includes(opt.id) ? m.filter(id => id !== opt.id) : [...m, opt.id])} />
+                    <span style={{ width: 8, height: 8, borderRadius: 4, background: opt.color, flexShrink: 0 }} />
+                    {opt.label}
+                  </label>
+                ))}
+                <div style={{ borderTop: '.5px solid rgba(0,0,0,.08)', margin: '4px 0' }} />
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 4px',
+                                 fontSize: 11, color: '#3c3c43', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={ratesFromToday}
+                         onChange={() => setRatesFromToday(v => !v)} />
+                  Start rate lines from today
+                </label>
+              </div>
+            )}
+          </div>
+
           {/* Chart */}
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
 
@@ -1756,9 +1851,11 @@
             <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(endMs) - todayX)} height={cH}
                   fill="rgba(0,0,0,.018)" />
 
-            {/* Trend line */}
-            <line x1={tX1} y1={tY1} x2={tX2} y2={tY2}
-                  stroke="#ff9500" strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
+            {/* Trend lines — one per checked mode */}
+            {TREND_LINES.map(t => (
+              <line key={t.id} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+                    stroke={t.color} strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
+            ))}
 
             {/* Weight line — distinct color per weekly tirz dose */}
             {doseSegments.map((seg, i) => (
@@ -1792,7 +1889,7 @@
             <text x={todayX + 3} y={PAD.t + 9} fontSize="5" fill="#ff6b35" fontWeight="600">today</text>
 
             {/* Projected goal marker */}
-            {goalMs && goalMs > todayMs && (
+            {trendModes.includes('current') && goalMs && goalMs > todayMs && (
               <g>
                 <line x1={xOf(goalMs)} y1={PAD.t} x2={xOf(goalMs)} y2={PAD.t + cH}
                       stroke="#34c759" strokeWidth="1" strokeDasharray="3,2" opacity="0.5" />
@@ -1873,14 +1970,23 @@
             )}
           </svg>
 
-          {/* Projection note + share */}
+          {/* Projection notes (one pill per checked trend line with a goal date) */}
+          {TREND_LINES.some(t => t.goalMs) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 6, padding: '4px 14px 0' }}>
+              {TREND_LINES.filter(t => t.goalMs).map(t => (
+                <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 10, fontWeight: 600,
+                                          color: '#8e8e93', background: '#f9f9f9', borderRadius: 10, padding: '3px 8px' }}>
+                  <span style={{ width: 6, height: 6, borderRadius: 3, background: t.color, flexShrink: 0 }} />
+                  {TREND_OPTIONS.find(o => o.id === t.id).label}
+                  <span style={{ color: t.color }}>{fmtGoalDate(t.goalMs)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Share */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        gap: 10, padding: '4px 14px 10px' }}>
-            {goalMs && (
-              <div style={{ fontSize: 11, color: '#8e8e93', textAlign: 'center' }}>
-                At current trend · goal reached <span style={{ color: '#34c759', fontWeight: 600 }}>{goalDateStr}</span>
-              </div>
-            )}
+                        gap: 10, padding: '6px 14px 10px' }}>
             <button onClick={shareChart} disabled={sharing}
                     style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
                              color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,

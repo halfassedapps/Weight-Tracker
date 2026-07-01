@@ -2062,32 +2062,38 @@
             {(() => {
               const SCAN_COLORS = ['#5c6bc0','#26a69a','#ef5350','#ab47bc','#ff7043'];
               const BAR_Y = PAD.t + cH + 4, BAR_H = 10;
-              return videos
+              const visibleScans = videos
                 .map(v => ({
                   ...v,
                   sMs: new Date(v.startDate + 'T12:00:00').getTime(),
                   eMs: new Date(v.endDate   + 'T12:00:00').getTime(),
                 }))
-                .filter(v => v.eMs >= startMs && v.sMs <= endMs)
-                .map((v, i) => {
-                  const x1   = Math.max(PAD.l, xOf(v.sMs));
-                  const x2   = Math.min(PAD.l + cW, xOf(v.eMs));
-                  const barW = Math.max(4, x2 - x1);
-                  const col  = SCAN_COLORS[i % SCAN_COLORS.length];
-                  return (
-                    <g key={v.startDate} style={{ cursor:'pointer' }}
-                       onClick={() => onPlayVideo && onPlayVideo(v)}>
-                      <rect x={x1} y={BAR_Y} width={barW} height={BAR_H}
-                            rx={BAR_H/2} fill={col} opacity="0.88" />
-                      {barW > 14 && <text x={x1+5} y={BAR_Y+BAR_H/2+3}
-                                          fontSize="7" fill="#fff">▶</text>}
-                      {barW > 44 && <text x={x1+15} y={BAR_Y+BAR_H/2+3}
-                                          fontSize="5" fontWeight="600" fill="#fff">
-                        {v.label || `${fmtShort(v.startDate)}–${fmtShort(v.endDate)}`}
-                      </text>}
-                    </g>
-                  );
-                });
+                .filter(v => v.eMs >= startMs && v.sMs <= endMs);
+              if (!visibleScans.length) return null;
+              return (
+                <g>
+                  {/* "Body Morph Videos" label in left margin, matching y-axis style */}
+                  <text x={PAD.l - 3} y={BAR_Y + 4} textAnchor="end"
+                        fontSize="3.5" fill="#aeaeb2">Body Morph</text>
+                  <text x={PAD.l - 3} y={BAR_Y + 8} textAnchor="end"
+                        fontSize="3.5" fill="#aeaeb2">Videos</text>
+                  {visibleScans.map((v, i) => {
+                    const x1   = Math.max(PAD.l, xOf(v.sMs));
+                    const x2   = Math.min(PAD.l + cW, xOf(v.eMs));
+                    const barW = Math.max(4, x2 - x1);
+                    const col  = SCAN_COLORS[i % SCAN_COLORS.length];
+                    return (
+                      <g key={v.startDate} style={{ cursor:'pointer' }}
+                         onClick={() => onPlayVideo && onPlayVideo(v)}>
+                        <rect x={x1} y={BAR_Y} width={barW} height={BAR_H}
+                              rx={BAR_H/2} fill={col} opacity="0.88" />
+                        {barW > 8 && <text x={x1 + barW/2} y={BAR_Y + BAR_H/2 + 3}
+                                           textAnchor="middle" fontSize="7" fill="#fff">▶</text>}
+                      </g>
+                    );
+                  })}
+                </g>
+              );
             })()}
 
             {/* Goal tooltip — rendered last so it sits above all other elements */}

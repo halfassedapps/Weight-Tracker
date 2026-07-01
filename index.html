@@ -2058,40 +2058,50 @@
               </g>
             ))}
 
-            {/* Body scan bars — single row just below tick marks, clickable */}
+            {/* Body scan bars — two rows: spanning clips on top, individual pills below */}
             {(() => {
               const SCAN_COLORS = ['#5c6bc0','#26a69a','#ef5350','#ab47bc','#ff7043'];
-              const BAR_Y = PAD.t + cH + 4, BAR_H = 10;
-              const visibleScans = videos
+              const BAR_H = 6, GAP = 2;
+              const SPAN_Y = PAD.t + cH + 4;
+              const PILL_Y = SPAN_Y + BAR_H + GAP;
+              const all = videos
                 .map(v => ({
                   ...v,
                   sMs: new Date(v.startDate + 'T12:00:00').getTime(),
                   eMs: new Date(v.endDate   + 'T12:00:00').getTime(),
                 }))
                 .filter(v => v.eMs >= startMs && v.sMs <= endMs);
-              if (!visibleScans.length) return null;
+              if (!all.length) return null;
+              // A clip that fully contains at least one other clip → spanning row (top)
+              const isSpan = v => all.some(o => o !== v && o.sMs >= v.sMs && o.eMs <= v.eMs);
+              const spans = all.filter(isSpan);
+              const pills = all.filter(v => !isSpan(v));
+              const renderBar = (v, i, y) => {
+                const x1   = Math.max(PAD.l, xOf(v.sMs));
+                const x2   = Math.min(PAD.l + cW, xOf(v.eMs));
+                const barW = Math.max(4, x2 - x1);
+                const col  = SCAN_COLORS[i % SCAN_COLORS.length];
+                return (
+                  <g key={v.startDate + y} style={{ cursor:'pointer' }}
+                     onClick={() => onPlayVideo && onPlayVideo(v)}>
+                    <rect x={x1} y={y} width={barW} height={BAR_H}
+                          rx={BAR_H/2} fill={col} opacity="0.85" />
+                    {barW > 8 && (
+                      <text x={x1 + barW/2} y={y + BAR_H/2 + 2}
+                            textAnchor="middle" fontSize="5" fill="#fff">▶</text>
+                    )}
+                  </g>
+                );
+              };
+              const labelY = SPAN_Y + (spans.length ? BAR_H + GAP/2 + BAR_H/2 : BAR_H/2);
               return (
                 <g>
-                  {/* "Body Morph Videos" label in left margin, matching y-axis style */}
-                  <text x={PAD.l - 3} y={BAR_Y + 4} textAnchor="end"
+                  <text x={PAD.l - 3} y={labelY - 1} textAnchor="end"
                         fontSize="3.5" fill="#aeaeb2">Body Morph</text>
-                  <text x={PAD.l - 3} y={BAR_Y + 8} textAnchor="end"
+                  <text x={PAD.l - 3} y={labelY + 4} textAnchor="end"
                         fontSize="3.5" fill="#aeaeb2">Videos</text>
-                  {visibleScans.map((v, i) => {
-                    const x1   = Math.max(PAD.l, xOf(v.sMs));
-                    const x2   = Math.min(PAD.l + cW, xOf(v.eMs));
-                    const barW = Math.max(4, x2 - x1);
-                    const col  = SCAN_COLORS[i % SCAN_COLORS.length];
-                    return (
-                      <g key={v.startDate} style={{ cursor:'pointer' }}
-                         onClick={() => onPlayVideo && onPlayVideo(v)}>
-                        <rect x={x1} y={BAR_Y} width={barW} height={BAR_H}
-                              rx={BAR_H/2} fill={col} opacity="0.88" />
-                        {barW > 8 && <text x={x1 + barW/2} y={BAR_Y + BAR_H/2 + 3}
-                                           textAnchor="middle" fontSize="7" fill="#fff">▶</text>}
-                      </g>
-                    );
-                  })}
+                  {spans.map((v, i) => renderBar(v, i, SPAN_Y))}
+                  {pills.map((v, i) => renderBar(v, spans.length + i, spans.length ? PILL_Y : SPAN_Y))}
                 </g>
               );
             })()}

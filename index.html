@@ -203,6 +203,28 @@
       };
     }
 
+    // Fetches MP4 files from the body-scans/ folder in the repo and parses
+    // dates + label from the filename: YYYY-MM-DD_YYYY-MM-DD[_Label].mp4
+    const BODY_SCANS_RE = /^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})(?:_(.+))?\.mp4$/i;
+    async function fetchBodyScans() {
+      try {
+        const res = await fetch(
+          `https://api.github.com/repos/${GIST_USER}/Weight-Tracker/contents/body-scans?ref=github-pages-gist`,
+          { headers: { Accept: 'application/vnd.github.v3+json' } }
+        );
+        if (!res.ok) return [];
+        const files = await res.json();
+        return files
+          .filter(f => BODY_SCANS_RE.test(f.name))
+          .map(f => {
+            const [, startDate, endDate, rawLabel] = f.name.match(BODY_SCANS_RE);
+            const label = rawLabel ? rawLabel.replace(/[-_]/g, ' ') : undefined;
+            return { startDate, endDate, label, url: f.download_url };
+          })
+          .sort((a, b) => a.startDate.localeCompare(b.startDate));
+      } catch { return []; }
+    }
+
     async function fetchGist(gistId, pat) {
       if (pat) {
         // Authenticated: use API (needed for writes + detecting missing file)
@@ -2095,6 +2117,116 @@
       );
     }
 
+    /* ─── Video Player Modal ─────────────────────────────────────────────────── */
+    function VideoPlayerModal({ video, onClose }) {
+      const startLabel = fmtShort(video.startDate);
+      const endLabel   = fmtShort(video.endDate);
+      return (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.72)',
+                      zIndex:1000, display:'flex', alignItems:'center',
+                      justifyContent:'center', padding:16 }}
+             onClick={onClose}>
+          <div style={{ background:'#000', borderRadius:14, overflow:'hidden',
+                        width:'100%', maxWidth:400, boxShadow:'0 24px 64px rgba(0,0,0,.5)' }}
+               onClick={e => e.stopPropagation()}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                          padding:'10px 14px', background:'#1c1c1e' }}>
+              <div style={{ fontSize:13, fontWeight:600, color:'#fff' }}>
+                {video.label || 'Body Scan'} · {startLabel} – {endLabel}
+              </div>
+              <button onClick={onClose}
+                      style={{ background:'none', border:'none', color:'#aeaeb2',
+                               fontSize:20, cursor:'pointer', lineHeight:1, padding:'0 4px' }}>✕</button>
+            </div>
+            {/* ZOZO videos are portrait (540×960) — constrain by height, not width */}
+            <video src={video.url} controls autoPlay playsInline
+                   style={{ display:'block', margin:'0 auto', width:'auto', height:'auto',
+                            maxWidth:'100%', maxHeight:'75vh' }} />
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Body Scan Timeline ─────────────────────────────────────────────────── */
+    function BodyScanTimeline({ rows, videos, onPlayVideo }) {
+      if (!videos.length) return null;
+
+      const VW = 360;
+      const PAD = { l: 38, r: 14, t: 8, b: 28 };
+      const cW = VW - PAD.l - PAD.r;
+      const BAR_H = 18, LANE_GAP = 4;
+
+      const pts = [...rows].reverse();
+      const startMs = pts.length ? new Date(pts[0].date + 'T12:00:00').getTime() : Date.now();
+      const todayMs = new Date().setHours(12,0,0,0);
+      const endMs   = todayMs + 14 * 86400000;
+      const xOf = ms => PAD.l + (ms - startMs) / (endMs - startMs) * cW;
+
+      // Pack clips into lanes to avoid overlap
+      const sorted = [...videos].sort((a,b) => a.startDate.localeCompare(b.startDate));
+      const lanes = [];
+      const placed = sorted.map(v => {
+        const sMs = new Date(v.startDate + 'T12:00:00').getTime();
+        const eMs = new Date(v.endDate + 'T12:00:00').getTime();
+        let lane = lanes.findIndex(laneEnd => laneEnd < sMs - 86400000);
+        if (lane === -1) { lane = lanes.length; lanes.push(eMs); }
+        else { lanes[lane] = eMs; }
+        return { ...v, sMs, eMs, lane };
+      });
+
+      const numLanes = Math.max(1, lanes.length);
+      const svgH = PAD.t + numLanes * (BAR_H + LANE_GAP) - LANE_GAP + PAD.b;
+
+      const xTicks = [];
+      const td = new Date(startMs); td.setDate(1); td.setMonth(td.getMonth()+1);
+      while (td.getTime() <= endMs) { xTicks.push(td.getTime()); td.setMonth(td.getMonth()+1); }
+
+      const COLORS = ['#5c6bc0','#26a69a','#ef5350','#ab47bc','#ff7043'];
+
+      return (
+        <div style={{ background:'#fff', borderRadius:14, margin:'0 0 12px',
+                      overflow:'hidden', border:'.5px solid rgba(0,0,0,.06)' }}>
+          <div style={{ padding:'10px 14px 4px' }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'#1c1c1e' }}>Body Scans</div>
+          </div>
+          <svg viewBox={`0 0 ${VW} ${svgH}`}
+               style={{ width:'100%', height:'auto', display:'block' }}>
+            {xTicks.map(ms => (
+              <g key={ms}>
+                <line x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={svgH - PAD.b}
+                      stroke="rgba(0,0,0,.05)" strokeWidth="0.8" />
+                <text x={xOf(ms)} y={svgH - PAD.b + 10} textAnchor="middle"
+                      fontSize="5" fill="#aeaeb2">
+                  {new Date(ms).toLocaleDateString('en-US', { month:'short' })}
+                </text>
+              </g>
+            ))}
+            {placed.map((v, i) => {
+              const x1    = Math.max(PAD.l, xOf(v.sMs));
+              const x2    = Math.min(PAD.l + cW, xOf(v.eMs));
+              const y     = PAD.t + v.lane * (BAR_H + LANE_GAP);
+              const color = COLORS[i % COLORS.length];
+              const barW  = Math.max(4, x2 - x1);
+              return (
+                <g key={v.startDate} style={{ cursor:'pointer' }}
+                   onClick={() => onPlayVideo && onPlayVideo(v)}>
+                  <rect x={x1} y={y} width={barW} height={BAR_H} rx={BAR_H/2}
+                        fill={color} opacity="0.85" />
+                  <text x={x1 + 9} y={y + BAR_H/2 + 3.5} fontSize="9" fill="#fff">▶</text>
+                  {barW > 40 && (
+                    <text x={x1 + 20} y={y + BAR_H/2 + 3.5} fontSize="6.5" fontWeight="600"
+                          fill="#fff">
+                      {v.label || `${fmtShort(v.startDate)} – ${fmtShort(v.endDate)}`}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      );
+    }
+
     function GistPanel({ gistOk, gistMsg, onSave, onLogout, style }) {
       const [open, setOpen] = React.useState(false);
       const [pat,  setPat]  = React.useState(() => localStorage.getItem(LS_GIST_PAT_KEY) ?? '');
@@ -2593,6 +2725,8 @@
       const [calories,    setCalories]    = useState(() =>
         Object.values(lsLoadCaloriesRaw()).sort((a, b) => a.date.localeCompare(b.date))
       );
+      const [videos,      setVideos]      = useState([]);
+      const [playingVideo, setPlayingVideo] = useState(null);
       const [error,      setError]      = useState('');
       const [dragging,   setDragging]   = useState(false);
       const [showInj,    setShowInj]    = useState(false);
@@ -2729,7 +2863,7 @@
           await patchGist(GIST_ID, pat, rows, meta, injections, newSched, calories);
           setGistOk(true); setGistMsg('');
         } catch (e) { setGistOk(false); setGistMsg(e.message); }
-      }, [rows, meta, injections, calories]);
+      }, [rows, meta, injections, calories, videos]);
 
       // Admin logout
       const adminLogout = useCallback(() => {
@@ -2983,6 +3117,12 @@
         writeToGist(rows, meta, next);
       }, [injections, rows, meta]);
 
+      // Load body scan videos from the body-scans/ folder in the repo.
+      // Filename drives everything — no form, no Gist storage needed.
+      useEffect(() => {
+        fetchBodyScans().then(scans => { if (scans.length) setVideos(scans); });
+      }, []);
+
       const deleteRow = useCallback((date) => {
         const daily = rows.filter(r => r.date !== date).map(r => ({ date: r.date, wKg: r.wKg }));
         const newLogbook = computeLogbook(daily);
@@ -3015,6 +3155,8 @@
 
       return (
         <div style={{ minHeight: '100vh', background: '#f2f2f7' }}>
+
+          {playingVideo && <VideoPlayerModal video={playingVideo} onClose={() => setPlayingVideo(null)} />}
 
           {/* ── Nav ── */}
           <div style={{ position: 'sticky', top: 0, zIndex: 20,
@@ -3172,6 +3314,13 @@
                 </div>
                 <WeightChart rows={rows} injections={injections} />
               </div>
+
+              {/* Body Scan Timeline */}
+              <BodyScanTimeline
+                rows={rows}
+                videos={videos}
+                onPlayVideo={setPlayingVideo}
+              />
 
               {/* Calorie Chart */}
               {calories.length > 0 && (

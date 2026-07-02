@@ -763,15 +763,18 @@
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', overflow: 'hidden' }}
                onMouseMove={(e) => {
                  const rect = e.currentTarget.getBoundingClientRect();
-                 const svg = e.currentTarget;
                  const x = (e.clientX - rect.left) / rect.width * VW;
                  if (x < PAD.l || x > PAD.l + cW) { setTip(null); return; }
-                 const frac = (x - PAD.l) / cW;
-                 const idx = Math.round(frac * (pts.length - 1));
-                 if (idx >= 0 && idx < pts.length) {
-                   const p = pts[idx];
-                   setTip({ idx, ...p });
-                 }
+                 // Convert cursor x back to a timestamp, then find the nearest
+                 // data point by time — avoids index-space vs time-space mismatch
+                 // that caused the hit zone to appear shifted right.
+                 const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
+                 let idx = 0, minDist = Infinity;
+                 pts.forEach((p, i) => {
+                   const d = Math.abs(p.ms - targetMs);
+                   if (d < minDist) { minDist = d; idx = i; }
+                 });
+                 setTip({ idx, ...pts[idx] });
                }}
                onMouseLeave={() => setTip(null)}>
             {/* Bars: ingested (blue) and burned (orange) — touching, no inner gap,

@@ -835,7 +835,7 @@
                         stroke="rgba(28,28,30,.25)" strokeWidth="1" />
                   <rect x={tx} y={ty} width={TW} height={TH} rx={3} fill="#1c1c1e" opacity="0.9" />
                   <text x={tx + TW / 2} y={ty + 7} textAnchor="middle" fontSize="4.5" fill="#aeaeb2">
-                    {tip.date.slice(5)}
+                    {(d => `${d.wd} ${d.mo} ${d.day}`)(fmtDate(tip.date))}
                   </text>
                   <text x={tx + TW / 2} y={ty + 15} textAnchor="middle" fontSize="5.5" fontWeight="600">
                     <tspan fill="#6cb2ff">🍔{parseInt(tip.Calories)}</tspan>
@@ -1385,7 +1385,7 @@
               const flipLeft = tip.x > PAD.l + cW * 0.65;
               const tx = flipLeft ? tip.x - TW - 5 : tip.x + 5;
               const ty = Math.max(PAD.t, Math.min(tip.y - TH / 2, PAD.t + cH - TH));
-              const { mo, day } = fmtDate(tip.dateStr);
+              const { mo, day, wd } = fmtDate(tip.dateStr);
               let row = ty + 7;
               return (
                 <g style={{ pointerEvents: 'none' }}>
@@ -1394,7 +1394,7 @@
                   <circle cx={tip.x} cy={tip.y} r="3" fill="#4a90d9" stroke="#fff" strokeWidth="1" />
                   <rect x={tx} y={ty} width={TW} height={TH} rx={TR}
                         fill="rgba(28,28,30,.88)" />
-                  <text x={tx + 5} y={row} fontSize="5" fill="rgba(255,255,255,.55)">{mo} {day}</text>
+                  <text x={tx + 5} y={row} fontSize="5" fill="rgba(255,255,255,.55)">{wd} {mo} {day}</text>
                   <text x={tx + 5} y={row += 8} fontSize="7.5" fontWeight="700" fill="#fff"
                         fontVariantNumeric="tabular-nums">{tip.level.toFixed(2)} mg</text>
                   {tip.wLbs != null && (

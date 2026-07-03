@@ -908,6 +908,12 @@
       const [selectedDate, setSelectedDate] = useState(null);
       const [sharing, setSharing] = useState(false);
       const svgRef = useRef(null);
+      const rideCardsRef = useRef(null);
+      useEffect(() => {
+        if (selectedDate && rideCardsRef.current) {
+          rideCardsRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }, [selectedDate]);
       const selectRange = mode => { setRangeMode(mode); setWindowOffset(0); setSelectedDate(null); };
 
       const sorted = Object.values(ridesData)
@@ -1051,7 +1057,7 @@
 
           {/* Chart */}
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`}
-               style={{ width:'100%', height:'auto', display:'block', overflow:'hidden' }}
+               style={{ width:'100%', height:'auto', display:'block', overflow:'hidden', cursor:'pointer' }}
                onMouseMove={e => {
                  const rect = e.currentTarget.getBoundingClientRect();
                  const x = (e.clientX - rect.left) / rect.width * VW;
@@ -1061,7 +1067,18 @@
                  pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
                  setTip({ ...pts[idx], x });
                }}
-               onMouseLeave={() => setTip(null)}>
+               onMouseLeave={() => setTip(null)}
+               onClick={e => {
+                 // Click anywhere in chart finds nearest data point — bars are too thin to click precisely
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const x = (e.clientX - rect.left) / rect.width * VW;
+                 if (x < PAD.l || x > PAD.l + cW || pts.length === 0) return;
+                 const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
+                 let idx = 0, minDist = Infinity;
+                 pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
+                 const date = pts[idx].date;
+                 setSelectedDate(d => d === date ? null : date);
+               }}>
 
             {/* Y grid + labels */}
             {yTicks.map(v => (
@@ -1085,9 +1102,7 @@
               return (
                 <rect key={p.date}
                       x={x - barW / 2} y={yOf(mins)} width={barW} height={PAD.t + cH - yOf(mins)}
-                      fill="#4a90d9" opacity="0.8"
-                      style={{ cursor:'pointer' }}
-                      onClick={() => setSelectedDate(d => d === p.date ? null : p.date)} />
+                      fill="#4a90d9" opacity="0.8" />
               );
             })}
 
@@ -1137,7 +1152,7 @@
                     {hrN ? <tspan fill="#ff375f">♥ {Math.round(hr/hrN)} bpm</tspan> : <tspan>— bpm</tspan>}
                   </text>
                   <text x={tx+5} y={row+=9} fontSize="5" fill="rgba(255,255,255,.4)">
-                    {tip.rides.length} {tip.rides.length === 1 ? 'activity' : 'activities'} · tap to open
+                    {tip.rides.length} {tip.rides.length === 1 ? 'activity' : 'activities'}
                   </text>
                 </g>
               );
@@ -1151,9 +1166,9 @@
             <PkStat label="Calories" value={Math.round(totalCal).toLocaleString() + ' cal'} color="#8e73de" />
           </div>
 
-          {/* Ride cards — visible after tapping a bar */}
+          {/* Ride cards — visible after clicking a bar */}
           {selectedDate && ridesData[selectedDate] && (
-            <div style={{ padding:'8px 14px 12px', borderTop:'.5px solid rgba(0,0,0,.06)' }}>
+            <div ref={rideCardsRef} style={{ padding:'8px 14px 12px', borderTop:'.5px solid rgba(0,0,0,.06)' }}>
               <div style={{ fontSize:11, fontWeight:600, color:'#8e8e93', marginBottom:8 }}>
                 {(d => `${d.wd} ${d.mo} ${d.day}`)(fmtDate(selectedDate))}
               </div>
@@ -1175,14 +1190,14 @@
                       {r.hr  ? ` · ♥ ${Math.round(r.hr)} bpm` : ''}
                     </div>
                     {actUrl ? (
-                      <button onClick={() => window.open(actUrl, '_blank')}
-                              style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:12,
-                                       fontWeight:600, color:'#4a90d9', background:'#e8f0ff',
-                                       border:'none', borderRadius:8, padding:'5px 12px', cursor:'pointer' }}>
+                      <a href={actUrl} target="_blank" rel="noopener noreferrer"
+                         style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:12,
+                                  fontWeight:600, color:'#4a90d9', background:'#e8f0ff',
+                                  borderRadius:8, padding:'5px 12px', textDecoration:'none' }}>
                         Open on Intervals.icu ↗
-                      </button>
+                      </a>
                     ) : (
-                      <span style={{ fontSize:11, color:'#aeaeb2' }}>id: {String(r.id)} (no link)</span>
+                      <span style={{ fontSize:11, color:'#aeaeb2' }}>No link (id: {String(r.id)})</span>
                     )}
                   </div>
                 );

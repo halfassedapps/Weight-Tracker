@@ -31,9 +31,10 @@
     const LS_GIST_PAT_KEY  = 'weight-tracker-gist-pat';
     const LS_SPLIT_KEY     = 'weight-tracker-split-dose';
     const LS_VIAL_CONC_KEY = 'weight-tracker-vial-conc';
-    const LS_INTERVALS_KEY = 'weight-tracker-intervals-config';
-    const LS_CALORIE_KEY = 'weight-tracker-calories';
-    const LS_INTERVALS_CAL_KEY = 'weight-tracker-intervals-calories';
+    const LS_INTERVALS_KEY       = 'weight-tracker-intervals-config';
+    const LS_CALORIE_KEY         = 'weight-tracker-calories';
+    const LS_INTERVALS_CAL_KEY   = 'weight-tracker-intervals-calories';
+    const LS_INTERVALS_RIDES_KEY = 'weight-tracker-intervals-rides';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     function lastImportIsToday() {
       const name = localStorage.getItem(LS_LAST_CSV_KEY) ?? '';
@@ -273,14 +274,27 @@
       const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
       if (!res.ok) throw new Error(`intervals.icu ${res.status}`);
       const activities = await res.json();
-      const map = {};
+      const calMap   = {};
+      const ridesMap = {};
       for (const a of activities) {
         const date = (a.start_date_local || '').slice(0, 10);
+        if (!date) continue;
         const cal  = a.calories;
-        if (!date || cal == null) continue;
-        map[date] = (map[date] ?? 0) + cal;
+        if (cal != null) calMap[date] = (calMap[date] ?? 0) + cal;
+        const dur  = a.moving_time || a.elapsed_time || 0;
+        const dist = a.distance || 0;
+        const pwr  = a.average_watts ?? null;
+        const hr   = a.average_heartrate ?? null;
+        if (!ridesMap[date]) ridesMap[date] = { date, totalDurSecs: 0, totalDistM: 0, totalCal: 0, rides: [] };
+        ridesMap[date].totalDurSecs += dur;
+        ridesMap[date].totalDistM   += dist;
+        ridesMap[date].totalCal     += (cal || 0);
+        ridesMap[date].rides.push({
+          id: a.id, name: a.name || 'Activity', sport: a.sport || '',
+          durSecs: dur, distM: dist, cal: cal || 0, pwr, hr,
+        });
       }
-      return map;
+      return { calMap, ridesMap };
     }
 
     /* ─── CSV parser ─────────────────────────────────────────────────────────── */
@@ -874,6 +888,293 @@
                     style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
                              color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,
                              padding: '4px 10px', cursor: sharing ? 'default' : 'pointer', opacity: sharing ? .6 : 1 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
+                   strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
+              </svg>
+              {sharing ? 'Preparing…' : 'Share'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Rides Chart ────────────────────────────────────────────────────────── */
+    function RidesChart({ ridesData }) {
+      const [rangeMode, setRangeMode] = useState('30d');
+      const [customDays, setCustomDays] = useState(30);
+      const [windowOffset, setWindowOffset] = useState(0);
+      const [tip, setTip] = useState(null);
+      const [selectedDate, setSelectedDate] = useState(null);
+      const [sharing, setSharing] = useState(false);
+      const svgRef = useRef(null);
+      const selectRange = mode => { setRangeMode(mode); setWindowOffset(0); setSelectedDate(null); };
+
+      const sorted = Object.values(ridesData)
+        .filter(d => d.totalDurSecs > 0)
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      if (sorted.length === 0) return null;
+
+      const VW = 360, VH = 140;
+      const PAD = { t: 10, r: 8, b: 28, l: 40 };
+      const cW = VW - PAD.l - PAD.r;
+      const cH = VH - PAD.t - PAD.b;
+      const STEP = 86400000;
+
+      const todayMs = new Date().setHours(0, 0, 0, 0);
+      const startMs = new Date(sorted[0].date + 'T00:00:00').getTime();
+
+      const windowDays = windowDaysForRange(rangeMode, customDays);
+      const refEnd = todayMs + STEP;
+      const pageShift = windowOffset * windowDays * STEP;
+      const visStartMs = windowDays ? refEnd - windowDays * STEP - pageShift : startMs;
+      const visEndMs   = windowDays ? refEnd - pageShift : todayMs + STEP;
+      const canScrollEarlier = windowDays && startMs < visStartMs;
+      const canScrollLater   = windowDays && windowOffset > 0;
+
+      const pts = sorted.filter(d => {
+        const ms = new Date(d.date + 'T00:00:00').getTime();
+        return ms >= visStartMs && ms < visEndMs;
+      }).map(d => ({ ...d, ms: new Date(d.date + 'T00:00:00').getTime() }));
+
+      const periodData = sorted.filter(d => {
+        const ms = new Date(d.date + 'T00:00:00').getTime();
+        return ms >= visStartMs && ms < visEndMs;
+      });
+      const totalDurSecs = periodData.reduce((s, d) => s + d.totalDurSecs, 0);
+      const totalDistMi  = periodData.reduce((s, d) => s + d.totalDistM, 0) / 1609.34;
+      const totalCal     = periodData.reduce((s, d) => s + d.totalCal, 0);
+      const periodRangeStr = `${fmtShort(msToLocalDate(visStartMs))} – ${fmtShort(msToLocalDate(Math.min(todayMs, visEndMs)))}`;
+
+      const fmtDur = secs => {
+        const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+      };
+
+      const maxMins = Math.max(...pts.map(p => p.totalDurSecs / 60), 1);
+      const yMax = maxMins * 1.15;
+
+      const xOf = ms  => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
+      const yOf = min => PAD.t + cH - (min / yMax) * cH;
+
+      const slotW = cW / Math.max(1, pts.length);
+      const barW  = Math.max(0.5, Math.min(4, slotW * 0.6));
+
+      // Y-axis labels in h:mm or mm format
+      const yTicks = [];
+      const tickStep = yMax > 180 ? 60 : yMax > 60 ? 30 : 15;
+      for (let v = 0; v <= yMax; v += tickStep) yTicks.push(v);
+
+      // Share
+      const shareChart = async () => {
+        if (!svgRef.current || sharing) return;
+        setSharing(true);
+        try {
+          const scale = 3, headerH = 54;
+          const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
+          const svgClone = svgRef.current.cloneNode(true);
+          svgClone.setAttribute('width', VW * scale);
+          svgClone.setAttribute('height', VH * scale);
+          const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+          styleEl.textContent = `text { font-family: ${FONT}; }`;
+          svgClone.insertBefore(styleEl, svgClone.firstChild);
+          const svgString = new XMLSerializer().serializeToString(svgClone);
+          const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+          const img = new Image();
+          await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = svgUrl; });
+          const canvas = document.createElement('canvas');
+          canvas.width = VW * scale; canvas.height = (VH + headerH) * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(scale, scale);
+          ctx.fillStyle = '#1c1c1e'; ctx.font = `700 13px ${FONT}`;
+          ctx.fillText('My Rides', 14, 18);
+          ctx.fillStyle = '#4a90d9'; ctx.font = `700 10px ${FONT}`;
+          ctx.fillText(`${fmtDur(totalDurSecs)} · ${totalDistMi.toFixed(1)} mi · ${Math.round(totalCal).toLocaleString()} cal`, 14, 34);
+          ctx.fillStyle = '#8e8e93'; ctx.font = `400 9px ${FONT}`;
+          ctx.fillText(periodRangeStr, 14, 46);
+          ctx.drawImage(img, 0, headerH, VW, VH);
+          const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+          const file = new File([fileBlob], 'rides.png', { type: 'image/png' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'My Rides', text: `${fmtDur(totalDurSecs)} · ${totalDistMi.toFixed(1)} mi · ${periodRangeStr}` });
+          } else {
+            const url = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'rides.png';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }
+        } catch (e) { if (e.name !== 'AbortError') console.warn('[RidesChart] share failed:', e); }
+        finally { setSharing(false); }
+      };
+
+      return (
+        <div>
+          {/* Controls */}
+          <div style={{ display:'flex', gap:6, padding:'8px 14px 4px', alignItems:'center' }}>
+            <select value={rangeMode} onChange={e => selectRange(e.target.value)}
+                    style={{ fontSize:10, fontWeight:600, padding:'5px 8px', borderRadius:8,
+                             background:'#f2f2f7', color:'#3c3c43', border:'none', outline:'none', cursor:'pointer' }}>
+              <option value="7d">7 Days</option>
+              <option value="14d">14 Days</option>
+              <option value="30d">Month</option>
+              <option value="all">All</option>
+              <option value="custom">Custom</option>
+            </select>
+            {rangeMode === 'custom' && (
+              <input type="number" min="1" step="1" value={customDays}
+                     onChange={e => setCustomDays(e.target.value)} placeholder="days"
+                     style={{ width:56, fontSize:10, fontWeight:600, padding:'5px 6px', borderRadius:8,
+                              border:'1px solid #d1d1d6', background:'#f9f9f9', color:'#1c1c1e', outline:'none' }} />
+            )}
+          </div>
+
+          {/* Earlier/Later */}
+          {windowDays !== 0 && (
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+                          padding:'0 14px 2px', fontSize:9, color:'#aeaeb2' }}>
+              <button onClick={() => canScrollEarlier && setWindowOffset(o => o + 1)} disabled={!canScrollEarlier}
+                      style={{ fontSize:9, fontWeight:600, padding:'2px 8px', borderRadius:6,
+                               background: canScrollEarlier ? '#e5e5ea' : 'transparent',
+                               color: canScrollEarlier ? '#3c3c43' : '#c7c7cc',
+                               border:'none', cursor: canScrollEarlier ? 'pointer' : 'default' }}>← Earlier</button>
+              <span>{new Date(visStartMs).toISOString().slice(5,10)} – {new Date(Math.min(todayMs, visEndMs)).toISOString().slice(5,10)}</span>
+              <button onClick={() => canScrollLater && setWindowOffset(o => o - 1)} disabled={!canScrollLater}
+                      style={{ fontSize:9, fontWeight:600, padding:'2px 8px', borderRadius:6,
+                               background: canScrollLater ? '#e5e5ea' : 'transparent',
+                               color: canScrollLater ? '#3c3c43' : '#c7c7cc',
+                               border:'none', cursor: canScrollLater ? 'pointer' : 'default' }}>Later →</button>
+            </div>
+          )}
+
+          {/* Chart */}
+          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`}
+               style={{ width:'100%', height:'auto', display:'block', overflow:'hidden' }}
+               onMouseMove={e => {
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const x = (e.clientX - rect.left) / rect.width * VW;
+                 if (x < PAD.l || x > PAD.l + cW || pts.length === 0) { setTip(null); return; }
+                 const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
+                 let idx = 0, minDist = Infinity;
+                 pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
+                 setTip({ ...pts[idx], x });
+               }}
+               onMouseLeave={() => setTip(null)}>
+
+            {/* Y grid + labels */}
+            {yTicks.map(v => (
+              <g key={v}>
+                <line x1={PAD.l} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)}
+                      stroke="rgba(0,0,0,.05)" strokeWidth="0.5" />
+                <text x={PAD.l - 3} y={yOf(v) + 2} textAnchor="end" fontSize="7" fill="#aeaeb2">
+                  {v >= 60 ? `${Math.floor(v/60)}h` : `${v}m`}
+                </text>
+              </g>
+            ))}
+
+            {/* Axes */}
+            <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+            <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+
+            {/* Bars */}
+            {pts.map(p => {
+              const x = xOf(p.ms);
+              const mins = p.totalDurSecs / 60;
+              return (
+                <rect key={p.date}
+                      x={x - barW / 2} y={yOf(mins)} width={barW} height={PAD.t + cH - yOf(mins)}
+                      fill="#4a90d9" opacity="0.8"
+                      style={{ cursor:'pointer' }}
+                      onClick={() => setSelectedDate(d => d === p.date ? null : p.date)} />
+              );
+            })}
+
+            {/* X labels */}
+            {pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / 5)) === 0).map(p => (
+              <text key={p.date} x={xOf(p.ms)} y={PAD.t + cH + 10} textAnchor="middle"
+                    fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
+            ))}
+
+            {/* Tooltip */}
+            {tip && pts.length > 0 && (() => {
+              const TW = 90, TH = 57, TR = 3;
+              const tx = Math.max(PAD.l, Math.min(tip.x - TW / 2, PAD.l + cW - TW));
+              const ty = PAD.t + 2;
+              const { wd, mo, day } = fmtDate(tip.date);
+              const pwr = tip.rides.reduce((s, r) => r.pwr ? s + r.pwr : s, 0);
+              const pwrN = tip.rides.filter(r => r.pwr).length;
+              const hr  = tip.rides.reduce((s, r) => r.hr ? s + r.hr : s, 0);
+              const hrN = tip.rides.filter(r => r.hr).length;
+              let row = ty + 7;
+              return (
+                <g style={{ pointerEvents:'none' }}>
+                  <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH}
+                        stroke="rgba(28,28,30,.25)" strokeWidth="1" />
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.9)" />
+                  <text x={tx+5} y={row} fontSize="5" fill="rgba(255,255,255,.5)">{wd} {mo} {day}</text>
+                  <text x={tx+5} y={row+=9} fontSize="6.5" fontWeight="700" fill="#fff">{fmtDur(tip.totalDurSecs)}</text>
+                  <text x={tx+5} y={row+=9} fontSize="6" fill="#aeaeb2">
+                    <tspan fill="#6cb2ff">⬡ {(tip.totalDistM/1609.34).toFixed(1)} mi</tspan>
+                    <tspan fill="#48484a">  </tspan>
+                    <tspan fill="#ffb04d">🔥{Math.round(tip.totalCal)}</tspan>
+                  </text>
+                  <text x={tx+5} y={row+=9} fontSize="6" fill="#aeaeb2">
+                    {pwrN ? <tspan fill="#bf5af2">⚡{Math.round(pwr/pwrN)}W</tspan> : <tspan>— W</tspan>}
+                    <tspan fill="#48484a">  </tspan>
+                    {hrN ? <tspan fill="#ff375f">♥ {Math.round(hr/hrN)} bpm</tspan> : <tspan>— bpm</tspan>}
+                  </text>
+                  <text x={tx+5} y={row+=9} fontSize="5" fill="rgba(255,255,255,.4)">
+                    {tip.rides.length} {tip.rides.length === 1 ? 'activity' : 'activities'} · tap to open
+                  </text>
+                </g>
+              );
+            })()}
+          </svg>
+
+          {/* Period stats */}
+          <div style={{ display:'flex', padding:'8px 14px 4px', gap:12, alignItems:'flex-start' }}>
+            <PkStat label="Time" value={fmtDur(totalDurSecs)} color="#4a90d9" />
+            <PkStat label="Distance" value={totalDistMi.toFixed(1) + ' mi'} color="#ff9500" />
+            <PkStat label="Calories" value={Math.round(totalCal).toLocaleString() + ' cal'} color="#8e73de" />
+          </div>
+
+          {/* Ride link cards (tap a bar to open) */}
+          {selectedDate && ridesData[selectedDate] && (
+            <div style={{ padding:'8px 14px 12px', borderTop:'.5px solid rgba(0,0,0,.06)' }}>
+              <div style={{ fontSize:11, fontWeight:600, color:'#8e8e93', marginBottom:6 }}>
+                {(d => `${d.wd} ${d.mo} ${d.day}`)(fmtDate(selectedDate))} · {ridesData[selectedDate].rides.length} {ridesData[selectedDate].rides.length === 1 ? 'activity' : 'activities'}
+              </div>
+              {ridesData[selectedDate].rides.map((r, i) => (
+                <a key={r.id || i}
+                   href={r.id ? `https://intervals.icu/activities/${r.id}` : 'https://intervals.icu'}
+                   target="_blank" rel="noopener noreferrer"
+                   style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                            padding:'8px 0', textDecoration:'none',
+                            borderBottom: i < ridesData[selectedDate].rides.length - 1 ? '.5px solid rgba(0,0,0,.05)' : 'none' }}>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:600, color:'#1c1c1e' }}>
+                      {r.sport && r.sport !== 'Ride' ? `[${r.sport}] ` : ''}{r.name}
+                    </div>
+                    <div style={{ fontSize:11, color:'#8e8e93', marginTop:2 }}>
+                      {fmtDur(r.durSecs)} · {(r.distM / 1609.34).toFixed(1)} mi · 🔥{Math.round(r.cal)} cal
+                      {r.pwr ? ` · ⚡${Math.round(r.pwr)}W` : ''}
+                      {r.hr  ? ` · ♥ ${Math.round(r.hr)} bpm` : ''}
+                    </div>
+                  </div>
+                  <span style={{ fontSize:16, color:'#4a90d9', marginLeft:8 }}>↗</span>
+                </a>
+              ))}
+            </div>
+          )}
+
+          {/* Share */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'6px 14px 10px' }}>
+            <button onClick={shareChart} disabled={sharing}
+                    style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600,
+                             color:'#4a90d9', background:'#f0f6ff', border:'none', borderRadius:12,
+                             padding:'4px 10px', cursor: sharing ? 'default' : 'pointer', opacity: sharing ? .6 : 1 }}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
                    strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
@@ -2799,6 +3100,9 @@
       const [intervalsCalories, setIntervalsCalories] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_INTERVALS_CAL_KEY) || '{}'); } catch (_) { return {}; }
       });
+      const [intervalRides, setIntervalRides] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_RIDES_KEY) || '{}'); } catch (_) { return {}; }
+      });
       const [intervalsMsg,      setIntervalsMsg]      = useState('');
       const inputRef  = useRef();
       const msgTimer  = useRef();
@@ -2960,15 +3264,18 @@
         const newest = msToLocalDate(Date.now());
         setIntervalsMsg('Syncing…');
         try {
-          const fetched = await fetchIntervalsCalories(cfg.apiKey, cfg.athleteId, oldest, newest);
-          const merged = { ...intervalsCalories, ...fetched };
-          setIntervalsCalories(merged);
-          try { localStorage.setItem(LS_INTERVALS_CAL_KEY, JSON.stringify(merged)); } catch (_) {}
+          const { calMap, ridesMap } = await fetchIntervalsCalories(cfg.apiKey, cfg.athleteId, oldest, newest);
+          const mergedCal   = { ...intervalsCalories, ...calMap };
+          const mergedRides = { ...intervalRides,     ...ridesMap };
+          setIntervalsCalories(mergedCal);
+          setIntervalRides(mergedRides);
+          try { localStorage.setItem(LS_INTERVALS_CAL_KEY,   JSON.stringify(mergedCal));   } catch (_) {}
+          try { localStorage.setItem(LS_INTERVALS_RIDES_KEY, JSON.stringify(mergedRides)); } catch (_) {}
           setIntervalsMsg('');
         } catch (e) {
           setIntervalsMsg(e.message);
         }
-      }, [calories, intervalsCalories]);
+      }, [calories, intervalsCalories, intervalRides]);
 
       const saveIntervalsConfig = useCallback((apiKey, athleteId) => {
         const cfg = { apiKey, athleteId };
@@ -2980,8 +3287,10 @@
       const disconnectIntervals = useCallback(() => {
         localStorage.removeItem(LS_INTERVALS_KEY);
         localStorage.removeItem(LS_INTERVALS_CAL_KEY);
+        localStorage.removeItem(LS_INTERVALS_RIDES_KEY);
         setIntervalsCfg(null);
         setIntervalsCalories({});
+        setIntervalRides({});
         setIntervalsMsg('');
       }, []);
 
@@ -3377,6 +3686,17 @@
                   <div style={{ padding: '0 14px 8px' }}>
                     <CalorieChart calorieData={calorieDataForChart} />
                   </div>
+                </div>
+              )}
+
+              {/* Rides Chart */}
+              {Object.keys(intervalRides).length > 0 && (
+                <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
+                              border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
+                  <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Rides</div>
+                  </div>
+                  <RidesChart ridesData={intervalRides} />
                 </div>
               )}
 

@@ -1159,10 +1159,11 @@
               </div>
               {ridesData[selectedDate].rides.map((r, i) => {
                 // intervals.icu activity URLs use an 'i' prefix: /activities/i162107047
-                const actId  = r.id ? (String(r.id).startsWith('i') ? r.id : `i${r.id}`) : null;
+                const actId  = r.id ? (String(r.id).startsWith('i') ? String(r.id) : `i${r.id}`) : null;
                 const actUrl = actId ? `https://intervals.icu/activities/${actId}` : null;
+                console.log('[RidesChart] ride', i, 'id:', r.id, '→ url:', actUrl);
                 return (
-                  <div key={r.id || i}
+                  <div key={String(r.id || i)}
                        style={{ padding:'10px 12px', borderRadius:10, background:'#f9f9f9',
                                 marginBottom: i < ridesData[selectedDate].rides.length - 1 ? 8 : 0 }}>
                     <div style={{ fontSize:13, fontWeight:600, color:'#1c1c1e', marginBottom:3 }}>
@@ -1174,15 +1175,14 @@
                       {r.hr  ? ` · ♥ ${Math.round(r.hr)} bpm` : ''}
                     </div>
                     {actUrl ? (
-                      <a href={actUrl} target="_blank" rel="noopener noreferrer"
-                         style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:12,
-                                  fontWeight:600, color:'#4a90d9', background:'#e8f0ff',
-                                  border:'none', borderRadius:8, padding:'5px 12px',
-                                  textDecoration:'none', cursor:'pointer' }}>
+                      <button onClick={() => window.open(actUrl, '_blank')}
+                              style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:12,
+                                       fontWeight:600, color:'#4a90d9', background:'#e8f0ff',
+                                       border:'none', borderRadius:8, padding:'5px 12px', cursor:'pointer' }}>
                         Open on Intervals.icu ↗
-                      </a>
+                      </button>
                     ) : (
-                      <span style={{ fontSize:11, color:'#aeaeb2' }}>No link available</span>
+                      <span style={{ fontSize:11, color:'#aeaeb2' }}>id: {String(r.id)} (no link)</span>
                     )}
                   </div>
                 );

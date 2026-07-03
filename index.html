@@ -283,8 +283,8 @@
         if (cal != null) calMap[date] = (calMap[date] ?? 0) + cal;
         const dur  = a.moving_time || a.elapsed_time || 0;
         const dist = a.distance || 0;
-        const pwr  = a.average_watts ?? null;
-        const hr   = a.average_heartrate ?? null;
+        const pwr  = a.average_watts ?? a.weighted_average_watts ?? a.average_power ?? null;
+        const hr   = a.average_heartrate ?? a.average_heart_rate ?? null;
         if (!ridesMap[date]) ridesMap[date] = { date, totalDurSecs: 0, totalDistM: 0, totalCal: 0, rides: [] };
         ridesMap[date].totalDurSecs += dur;
         ridesMap[date].totalDistM   += dist;
@@ -1091,11 +1091,22 @@
               );
             })}
 
-            {/* X labels */}
-            {pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / 5)) === 0).map(p => (
-              <text key={p.date} x={xOf(p.ms)} y={PAD.t + cH + 10} textAnchor="middle"
-                    fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
-            ))}
+            {/* X labels — calendar ticks spaced by time, not by ride-data density */}
+            {(() => {
+              const winMs = visEndMs - visStartMs;
+              const tickMs = winMs > 60 * STEP ? 14 * STEP
+                           : winMs > 20 * STEP ?  7 * STEP
+                           :                       3 * STEP;
+              const first = Math.ceil(visStartMs / tickMs) * tickMs;
+              const ticks = [];
+              for (let ms = first; ms <= visEndMs; ms += tickMs) ticks.push(ms);
+              return ticks.map(ms => (
+                <text key={ms} x={xOf(ms)} y={PAD.t + cH + 10} textAnchor="middle"
+                      fontSize="7" fill="#aeaeb2">
+                  {new Date(ms).toISOString().slice(5,10)}
+                </text>
+              ));
+            })()}
 
             {/* Tooltip */}
             {tip && pts.length > 0 && (() => {
@@ -3257,7 +3268,11 @@
         if (!cfg?.apiKey || !cfg?.athleteId) return;
         const rows = (calRows && calRows.length > 0) ? calRows : calories;
         if (!rows.length) return;
-        const hasCache = Object.keys(intervalsCalories).length > 0;
+        // Rides cache is checked separately — it was added later than calorie cache,
+        // so existing calorie history doesn't imply rides history exists.
+        const hasCalCache   = Object.keys(intervalsCalories).length > 0;
+        const hasRidesCache = Object.keys(intervalRides).length > 0;
+        const hasCache = hasCalCache && hasRidesCache;
         const earliest = [...rows].map(d => d.date).sort()[0];
         const recentCutoff = msToLocalDate(Date.now() - REFRESH_WINDOW_DAYS * 86400000);
         const oldest = hasCache ? recentCutoff : earliest;

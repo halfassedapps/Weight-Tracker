@@ -274,12 +274,6 @@
       const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
       if (!res.ok) throw new Error(`intervals.icu ${res.status}`);
       const activities = await res.json();
-      // Log first activity's keys to help identify correct field names
-      if (activities.length > 0) {
-        const sample = activities.find(a => a.start_date_local) || activities[0];
-        console.log('[intervals.icu] sample activity keys:', Object.keys(sample));
-        console.log('[intervals.icu] sample activity:', JSON.stringify(sample, null, 2));
-      }
       const calMap   = {};
       const ridesMap = {};
       for (const a of activities) {
@@ -289,10 +283,8 @@
         if (cal != null) calMap[date] = (calMap[date] ?? 0) + cal;
         const dur  = a.moving_time || a.elapsed_time || 0;
         const dist = a.distance || 0;
-        // Try every known power field name across intervals.icu / Strava conventions
-        const pwr  = a.average_watts ?? a.weighted_average_watts ?? a.average_power
-                  ?? a.normalized_power ?? a.watts ?? a.np ?? null;
-        const hr   = a.average_heartrate ?? a.average_heart_rate ?? null;
+        const pwr  = a.icu_average_watts ?? a.average_watts ?? null;
+        const hr   = a.average_heartrate ?? null;
         if (!ridesMap[date]) ridesMap[date] = { date, totalDurSecs: 0, totalDistM: 0, totalCal: 0, rides: [] };
         ridesMap[date].totalDurSecs += dur;
         ridesMap[date].totalDistM   += dist;

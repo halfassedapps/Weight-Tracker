@@ -1159,32 +1159,42 @@
             <PkStat label="Calories" value={Math.round(totalCal).toLocaleString() + ' cal'} color="#8e73de" />
           </div>
 
-          {/* Ride link cards (tap a bar to open) */}
+          {/* Ride cards — visible after tapping a bar */}
           {selectedDate && ridesData[selectedDate] && (
             <div style={{ padding:'8px 14px 12px', borderTop:'.5px solid rgba(0,0,0,.06)' }}>
-              <div style={{ fontSize:11, fontWeight:600, color:'#8e8e93', marginBottom:6 }}>
-                {(d => `${d.wd} ${d.mo} ${d.day}`)(fmtDate(selectedDate))} · {ridesData[selectedDate].rides.length} {ridesData[selectedDate].rides.length === 1 ? 'activity' : 'activities'}
+              <div style={{ fontSize:11, fontWeight:600, color:'#8e8e93', marginBottom:8 }}>
+                {(d => `${d.wd} ${d.mo} ${d.day}`)(fmtDate(selectedDate))}
               </div>
-              {ridesData[selectedDate].rides.map((r, i) => (
-                <a key={r.id || i}
-                   href={r.id ? `https://intervals.icu/activities/${r.id}` : 'https://intervals.icu'}
-                   target="_blank" rel="noopener noreferrer"
-                   style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-                            padding:'8px 0', textDecoration:'none',
-                            borderBottom: i < ridesData[selectedDate].rides.length - 1 ? '.5px solid rgba(0,0,0,.05)' : 'none' }}>
-                  <div>
-                    <div style={{ fontSize:13, fontWeight:600, color:'#1c1c1e' }}>
-                      {r.sport && r.sport !== 'Ride' ? `[${r.sport}] ` : ''}{r.name}
+              {ridesData[selectedDate].rides.map((r, i) => {
+                // intervals.icu activity URLs use an 'i' prefix: /activities/i162107047
+                const actId  = r.id ? (String(r.id).startsWith('i') ? r.id : `i${r.id}`) : null;
+                const actUrl = actId ? `https://intervals.icu/activities/${actId}` : null;
+                return (
+                  <div key={r.id || i}
+                       style={{ padding:'10px 12px', borderRadius:10, background:'#f9f9f9',
+                                marginBottom: i < ridesData[selectedDate].rides.length - 1 ? 8 : 0 }}>
+                    <div style={{ fontSize:13, fontWeight:600, color:'#1c1c1e', marginBottom:3 }}>
+                      {r.sport && r.sport !== 'Ride' && r.sport !== 'VirtualRide' ? `${r.sport} · ` : ''}{r.name}
                     </div>
-                    <div style={{ fontSize:11, color:'#8e8e93', marginTop:2 }}>
+                    <div style={{ fontSize:11, color:'#8e8e93', marginBottom:8 }}>
                       {fmtDur(r.durSecs)} · {(r.distM / 1609.34).toFixed(1)} mi · 🔥{Math.round(r.cal)} cal
                       {r.pwr ? ` · ⚡${Math.round(r.pwr)}W` : ''}
                       {r.hr  ? ` · ♥ ${Math.round(r.hr)} bpm` : ''}
                     </div>
+                    {actUrl ? (
+                      <a href={actUrl} target="_blank" rel="noopener noreferrer"
+                         style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:12,
+                                  fontWeight:600, color:'#4a90d9', background:'#e8f0ff',
+                                  border:'none', borderRadius:8, padding:'5px 12px',
+                                  textDecoration:'none', cursor:'pointer' }}>
+                        Open on Intervals.icu ↗
+                      </a>
+                    ) : (
+                      <span style={{ fontSize:11, color:'#aeaeb2' }}>No link available</span>
+                    )}
                   </div>
-                  <span style={{ fontSize:16, color:'#4a90d9', marginLeft:8 }}>↗</span>
-                </a>
-              ))}
+                );
+              })}
             </div>
           )}
 

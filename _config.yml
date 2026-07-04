@@ -1,0 +1,8 @@
+# Exclude large video files from the Jekyll Pages build.
+# The body-scans/ MP4s are served via raw.githubusercontent.com
+# (via the GitHub Contents API download_url), not through Pages,
+# so they don't need to be in _site/ — keeping deploys fast and small.
+exclude:
+  - body-scans/
+  - watcher/
+  - weight-data-from-gist.json

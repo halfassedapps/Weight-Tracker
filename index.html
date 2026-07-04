@@ -1869,6 +1869,7 @@
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
+      const [scanTip, setScanTip] = useState(null); // hovered body scan entry
       const svgRef = useRef(null);
       const [trendModes, setTrendModes] = useState(['current']); // ids of checked trend lines
       const [trendMenuOpen, setTrendMenuOpen] = useState(false);
@@ -2423,7 +2424,9 @@
                 const col  = SCAN_COLORS[i % SCAN_COLORS.length];
                 return (
                   <g key={v.startDate + y} style={{ cursor:'pointer' }}
-                     onClick={() => onPlayVideo && onPlayVideo(v)}>
+                     onClick={() => onPlayVideo && onPlayVideo(v)}
+                     onMouseEnter={() => setScanTip({ v, x1, x2, barW, y })}
+                     onMouseLeave={() => setScanTip(null)}>
                     <rect x={x1} y={y} width={barW} height={BAR_H}
                           rx={BAR_H/2} fill={col} opacity="0.85" />
                     {barW > 8 && (
@@ -2442,6 +2445,28 @@
                         fontSize="3.5" fill="#aeaeb2">Videos</text>
                   {spans.map((v, i) => renderBar(v, i, SPAN_Y))}
                   {pills.map((v, i) => renderBar(v, spans.length + i, spans.length ? PILL_Y : SPAN_Y))}
+                </g>
+              );
+            })()}
+
+            {/* Scan bar hover tooltip */}
+            {scanTip && (() => {
+              const { v, x1, x2, barW } = scanTip;
+              const label = `▶  Play ZOZO Fit Body Morph`;
+              const sub   = `${fmtShort(v.startDate)} – ${fmtShort(v.endDate)}`;
+              const TW = 132, TH = 24, TR = 4;
+              const cx = x1 + barW / 2;
+              const tx = Math.max(PAD.l, Math.min(cx - TW / 2, PAD.l + cW - TW));
+              const SPAN_Y = PAD.t + cH + 4;
+              const ty = SPAN_Y - TH - 3;
+              return (
+                <g style={{ pointerEvents:'none' }}>
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR}
+                        fill="rgba(28,28,30,.92)" />
+                  <text x={tx + TW/2} y={ty + 9} textAnchor="middle"
+                        fontSize="5.5" fontWeight="600" fill="#fff">{label}</text>
+                  <text x={tx + TW/2} y={ty + 18} textAnchor="middle"
+                        fontSize="5" fill="rgba(255,255,255,.55)">{sub}</text>
                 </g>
               );
             })()}

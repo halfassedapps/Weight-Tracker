@@ -427,7 +427,8 @@
       });
     }
 
-    const TIRZ_SCHEDULE = [1, 1.25, 2, 2.25, 2.5, 3, 3.5, 4, 5, 6, 7.5, 10, 12.5, 15];
+    const MAX_DOSE_MG = 15;
+    const DOSE_STEP_MG = 0.5;
 
     function doseGuidance(twoWeekLbs) {
       if (twoWeekLbs == null) return null;
@@ -441,12 +442,10 @@
     function recommendedDose(currentDoseMg, twoWeekLbs) {
       const g = doseGuidance(twoWeekLbs);
       if (!g) return null;
-      const idx = TIRZ_SCHEDULE.findIndex(d => Math.abs(d - currentDoseMg) < 0.01);
       if (g.action === 'increase') {
-        const nextDose = idx !== -1 && idx < TIRZ_SCHEDULE.length - 1
-          ? TIRZ_SCHEDULE[idx + 1]
-          : null;
-        return { dose: nextDose, g };
+        const next = Math.round((currentDoseMg + DOSE_STEP_MG) * 10) / 10;
+        const dose = next <= MAX_DOSE_MG ? next : null; // null = already at max
+        return { dose, g };
       }
       return { dose: currentDoseMg, g };
     }
@@ -1776,7 +1775,7 @@
             const nextInjDate = new Date(nextInjMs);
             const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
             const subtext = g.action === 'increase'
-              ? 'Progress below 3 lbs/2wk — advance to next dose'
+              ? `Progress below 3 lbs/2wk — increase by ${DOSE_STEP_MG} mg`
               : g.action === 'stay'
               ? 'Weight loss on track — hold current dose'
               : g.action === 'monitor'

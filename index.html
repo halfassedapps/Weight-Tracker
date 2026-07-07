@@ -2692,7 +2692,7 @@
         const yestMs  = new Date(rows[i+1].date + 'T12:00:00').getTime();
         if (todayMs - yestMs !== 86400000) continue; // must be consecutive calendar days
         const dow   = new Date(rows[i].date + 'T12:00:00').getDay();
-        const delta = rows[i+1].lbs - rows[i].lbs;   // positive = lost weight today vs yesterday
+        const delta = rows[i].lbs - rows[i+1].lbs;   // negative = lost weight (today < yesterday)
         dayDeltas[dow].push(delta);
       }
 
@@ -2727,9 +2727,9 @@
       return (
         <div>
           <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width:'100%', height:'auto', display:'block' }}>
-            {/* Y-axis labels */}
+            {/* Y-axis labels: positive = gain (top), negative = loss (bottom) */}
             <text x={PAD.l-3} y={PAD.t+5} textAnchor="end" fontSize="5" fill="#aeaeb2">
-              {maxAbs.toFixed(2)}
+              +{maxAbs.toFixed(2)}
             </text>
             <text x={PAD.l-3} y={zeroY+2} textAnchor="end" fontSize="5" fill="#aeaeb2">0</text>
             <text x={PAD.l-3} y={PAD.t+cH-1} textAnchor="end" fontSize="5" fill="#aeaeb2">
@@ -2757,17 +2757,17 @@
               );
               const y   = yOf(b.avg);
               const h   = Math.max(1, Math.abs(zeroY - y));
-              const top = b.avg >= 0 ? y : zeroY;
-              const col = b.avg >= 0 ? '#34c759' : '#ff9500';
-              const txtCol = b.avg >= 0 ? '#1a7f3c' : '#c0392b';
+              const top = b.avg < 0 ? zeroY : y;     // loss (neg) bar goes below zero
+              const col = b.avg < 0 ? '#34c759' : '#ff9500'; // loss=green, gain=orange
+              const txtCol = b.avg < 0 ? '#1a7f3c' : '#c0392b';
               return (
                 <g key={b.dow}>
                   <rect x={xOf(i)-barW/2} y={top} width={barW} height={h}
                         rx={2} fill={col} opacity="0.82" />
                   {h > 7 && (
-                    <text x={xOf(i)} y={b.avg >= 0 ? top-2 : top+h+6}
+                    <text x={xOf(i)} y={b.avg < 0 ? top+h+6 : top-2}
                           textAnchor="middle" fontSize="4.5" fontWeight="600" fill={txtCol}>
-                      {b.avg >= 0 ? '−' : '+'}{Math.abs(b.avg).toFixed(2)}
+                      {b.avg > 0 ? '+' : ''}{b.avg.toFixed(2)}
                     </text>
                   )}
                   <text x={xOf(i)} y={PAD.t+cH+11} textAnchor="middle"

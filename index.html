@@ -1868,7 +1868,8 @@
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
-      const [scanTip, setScanTip] = useState(null); // hovered body scan entry
+      const [scanTip, setScanTip] = useState(null);       // hovered body scan bar
+      const [trendLineTip, setTrendLineTip] = useState(null); // hovered trend line { label, goalMs, x, y }
       const svgRef = useRef(null);
       const [trendModes, setTrendModes] = useState(['current']); // ids of checked trend lines
       const [trendMenuOpen, setTrendMenuOpen] = useState(false);
@@ -2291,6 +2292,11 @@
 
           {/* Chart */}
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+            <defs>
+              <clipPath id="wc-chart-area">
+                <rect x={PAD.l} y={PAD.t} width={cW} height={cH} />
+              </clipPath>
+            </defs>
 
             {/* Y grid lines */}
             {yTicks.map(v => (
@@ -2306,11 +2312,27 @@
             <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(endMs) - todayX)} height={cH}
                   fill="rgba(0,0,0,.018)" />
 
-            {/* Trend lines — one per checked mode */}
-            {TREND_LINES.map(t => (
-              <line key={t.id} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
-                    stroke={t.color} strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
-            ))}
+            {/* Trend lines — clipped to chart area, hoverable for goal date */}
+            <g clipPath="url(#wc-chart-area)">
+              {TREND_LINES.map(t => {
+                const opt = TREND_OPTIONS.find(o => o.id === t.id);
+                const mx = (t.x1 + t.x2) / 2;
+                const slope = (t.y2 - t.y1) / (t.x2 - t.x1 || 1);
+                const my = t.y1 + slope * (mx - t.x1);
+                return (
+                  <line key={t.id} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+                        stroke={t.color} strokeWidth="4" strokeDasharray="6,3" opacity="0"
+                        style={{ cursor:'crosshair' }}
+                        onMouseEnter={() => setTrendLineTip({ label: opt?.label ?? t.id, goalMs: t.goalMs, x: mx, y: my })}
+                        onMouseLeave={() => setTrendLineTip(null)} />
+                );
+              })}
+              {TREND_LINES.map(t => (
+                <line key={`${t.id}-vis`} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+                      stroke={t.color} strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7"
+                      style={{ pointerEvents:'none' }} />
+              ))}
+            </g>
 
             {/* Weight line — distinct color per weekly tirz dose */}
             {doseSegments.map((seg, i) => (
@@ -2466,6 +2488,26 @@
                         fontSize="5.5" fontWeight="600" fill="#fff">{label}</text>
                   <text x={tx + TW/2} y={ty + 18} textAnchor="middle"
                         fontSize="5" fill="rgba(255,255,255,.55)">{sub}</text>
+                </g>
+              );
+            })()}
+
+            {/* Trend line hover tooltip */}
+            {trendLineTip && (() => {
+              const TW = 120, TH = 26, TR = 4;
+              const tx = Math.max(PAD.l, Math.min(trendLineTip.x - TW / 2, PAD.l + cW - TW));
+              const ty = Math.max(PAD.t + 2, trendLineTip.y - TH - 6);
+              const dateStr = trendLineTip.goalMs
+                ? new Date(trendLineTip.goalMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
+                : null;
+              return (
+                <g style={{ pointerEvents:'none' }}>
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
+                  <text x={tx + TW/2} y={ty + 9} textAnchor="middle"
+                        fontSize="5.5" fontWeight="600" fill="#fff">{trendLineTip.label}</text>
+                  <text x={tx + TW/2} y={ty + 19} textAnchor="middle" fontSize="5" fill="rgba(255,255,255,.55)">
+                    {dateStr ? `Goal: ${dateStr}` : 'Beyond chart range'}
+                  </text>
                 </g>
               );
             })()}

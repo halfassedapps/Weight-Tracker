@@ -30,7 +30,8 @@
     const LS_LAST_CSV_KEY = 'weight-tracker-last-csv';
     const LS_GIST_PAT_KEY  = 'weight-tracker-gist-pat';
     const LS_SPLIT_KEY     = 'weight-tracker-split-dose';
-    const LS_VIAL_CONC_KEY = 'weight-tracker-vial-conc';
+    const LS_VIAL_CONC_KEY    = 'weight-tracker-vial-conc';
+    const LS_SYRINGE_UNITS_KEY = 'weight-tracker-syringe-units';
     const LS_INTERVALS_KEY       = 'weight-tracker-intervals-config';
     const LS_CALORIE_KEY         = 'weight-tracker-calories';
     const LS_INTERVALS_CAL_KEY   = 'weight-tracker-intervals-calories';
@@ -1228,9 +1229,6 @@
       const [splitManual, setSplitManual] = useState(
         () => localStorage.getItem(LS_SPLIT_KEY) === 'true'
       );
-      const [showCalc,     setShowCalc]     = useState(false);
-      const [calcInitDose, setCalcInitDose] = useState(2.25);
-      const [showSchedule, setShowSchedule] = useState(false);
       const [sharing,      setSharing]      = useState(false);
       const svgRef = useRef(null);
       const [rangeMode,    setRangeMode]    = useState('30d'); // '7d' | '14d' | '30d' | 'all' | 'custom'
@@ -1546,9 +1544,7 @@
 
       return (
         <div>
-          {showCalc && <DoseCalculatorModal initialDose={calcInitDose} initialConc={12.5} onClose={() => setShowCalc(false)} />}
-          {showSchedule && <InjScheduleModal schedule={injSchedule} isAdmin={isAdmin}
-                             onSave={onSaveSchedule} onClose={() => setShowSchedule(false)} />}
+
 
           {/* View range selector */}
           <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px', alignItems: 'center' }}>
@@ -1811,100 +1807,6 @@
                       : '—'}
                     color={periodWeightChange != null && periodWeightChange <= 0 ? '#34c759' : '#ff3b30'} />
           </div>
-          {(() => {
-            const recent = (rows ?? []).find(r => r.twoWeekLoss != null);
-            if (!recent || weeklyDose == null) return null;
-            const rec = recommendedDose(weeklyDose, recent.twoWeekLoss);
-            if (!rec) return null;
-            const { dose, g } = rec;
-            const recWeekly  = dose != null ? dose : weeklyDose;
-            const perInjMg   = isSplitDose ? recWeekly / 2 : recWeekly;
-            const lossSign = recent.twoWeekLoss >= 0 ? '↓' : '↑';
-            const nextInjDate = new Date(nextInjMs);
-            const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
-            const subtext = g.action === 'increase'
-              ? `Progress below 3 lbs/2wk — increase by ${DOSE_STEP_MG} mg`
-              : g.action === 'stay'
-              ? 'Weight loss on track — hold current dose'
-              : g.action === 'monitor'
-              ? 'Strong loss — stay put; drop down if >5 lbs next 2 wks too'
-              : g.action === 'contact'
-              ? 'Unusually rapid loss — consult your prescriber'
-              : 'Weight moving up — hold and reassess';
-            return (
-              <div style={{ margin: '0 14px 12px' }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
-                              letterSpacing: .6, marginBottom: 6 }}>Next Dose Recommendation</div>
-                <div style={{ padding: '12px 14px', borderRadius: 10,
-                              background: g.bg, border: `1px solid ${g.color}33` }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                  {/* Dose pill */}
-                  <div style={{ textAlign: 'center', minWidth: 72 }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: g.color, textTransform: 'uppercase',
-                                  letterSpacing: .4, marginBottom: 3 }}>
-                      {g.action === 'increase' ? 'Increase to' : g.action === 'contact' ? 'Hold at' : 'Stay at'}
-                    </div>
-                    <div style={{ fontSize: 22, fontWeight: 800, color: g.color, lineHeight: 1,
-                                  fontVariantNumeric: 'tabular-nums' }}>
-                      {recWeekly} mg
-                    </div>
-                    <div style={{ fontSize: 11, color: g.color, opacity: .75, marginTop: 2 }}>
-                      {injPerWeek > 1 ? `${recWeekly / injPerWeek} mg × ${injPerWeek}/wk` : 'per week'}
-                    </div>
-                    {g.action === 'increase' && dose == null && (
-                      <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>
-                    )}
-                  </div>
-                  {/* Divider */}
-                  <div style={{ width: 1, alignSelf: 'stretch', background: `${g.color}33` }} />
-                  {/* Detail */}
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 3 }}>
-                      {g.label}
-                    </div>
-                    <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{subtext}</div>
-                    <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
-                      2-wk loss: {lossSign}{Math.abs(recent.twoWeekLoss).toFixed(1)} lbs &nbsp;·&nbsp;
-                      current: {weeklyDose} mg/wk{isSplitDose ? ` (${sortedInj[sortedInj.length-1].doseMg} mg × 2)` : ''}
-                    </div>
-                    <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 3 }}>
-                      Your next injection is planned for {nextInjLabel}.
-                    </div>
-                  </div>
-                  </div>{/* end flex row */}
-                  {/* Schedule pill — opens config modal */}
-                  <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 12, color: '#8e8e93' }}>Injection schedule</span>
-                    <button onClick={() => setShowSchedule(true)}
-                            style={{ fontSize: 13, fontWeight: 700, padding: '5px 14px', borderRadius: 20,
-                                     background: '#4a90d9', color: '#fff',
-                                     border: 'none', cursor: 'pointer', lineHeight: 1.3 }}>
-                      {scheduleActive
-                        ? [...injSchedule].sort((a,b)=>a.day-b.day).map(s=>SCHED_DAYS_LNG[s.day]).join(' · ')
-                        : (isSplitDose ? '2× / week' : '1× / week')}
-                    </button>
-                  </div>
-                  {/* Syringe draw-up graphic */}
-                  <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${g.color}22` }}>
-                    <div style={{ display: 'flex', alignItems: 'center',
-                                  justifyContent: 'space-between', marginBottom: 4 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: g.color,
-                                    textTransform: 'uppercase', letterSpacing: .4 }}>
-                        {isSplitDose ? 'Draw up per injection' : 'Draw up'} · 12.5 mg/mL vial
-                      </div>
-                      <button onClick={() => { setCalcInitDose(perInjMg); setShowCalc(true); }}
-                              style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12,
-                                       background: `${g.color}18`, color: g.color,
-                                       border: `1px solid ${g.color}33`, cursor: 'pointer' }}>
-                        Calculator
-                      </button>
-                    </div>
-                    <SyringeGraphic doseMg={perInjMg} concentration={12.5} color={g.color} />
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
 
           {/* Share */}
           <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'6px 14px 10px' }}>
@@ -1918,6 +1820,166 @@
               </svg>
               {sharing ? 'Preparing…' : 'Share'}
             </button>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
+    // Standalone component for the dose recommendation, calculator, and syringe.
+    // Extracted from PkChart so it can live in the "Dosing" tab independently.
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule }) {
+      const [showCalc,     setShowCalc]     = useState(false);
+      const [calcInitDose, setCalcInitDose] = useState(2.25);
+      const [showSchedule, setShowSchedule] = useState(false);
+      const [vialConc, setVialConc] = useState(
+        () => Math.max(parseFloat(localStorage.getItem(LS_VIAL_CONC_KEY) || '12.5'), 0.1)
+      );
+      const handleVialConc = v => {
+        const n = Math.max(parseFloat(v) || 12.5, 0.1);
+        setVialConc(n);
+        try { localStorage.setItem(LS_VIAL_CONC_KEY, String(n)); } catch (_) {}
+      };
+      const [syringeUnits, setSyringeUnits] = useState(
+        () => parseInt(localStorage.getItem(LS_SYRINGE_UNITS_KEY) || '100', 10)
+      );
+      const handleSyringeUnits = v => {
+        const n = parseInt(v, 10);
+        setSyringeUnits(n);
+        try { localStorage.setItem(LS_SYRINGE_UNITS_KEY, String(n)); } catch (_) {}
+      };
+
+      if (!injections || injections.length === 0) return null;
+
+      const sortedInj = [...injections].sort((a, b) => a.date.localeCompare(b.date));
+      const lastInj   = sortedInj[sortedInj.length - 1];
+      const lastInjMs = new Date(lastInj.date + 'T12:00:00').getTime();
+
+      let injInterval = 7;
+      if (sortedInj.length >= 2) {
+        const a = new Date(sortedInj[sortedInj.length - 2].date + 'T12:00:00').getTime();
+        const b = new Date(lastInj.date + 'T12:00:00').getTime();
+        injInterval = (b - a) / 86400000;
+      }
+      const splitManual  = localStorage.getItem(LS_SPLIT_KEY) === 'true';
+      const scheduleActive = injSchedule && injSchedule.length > 0;
+      const isSplitDose    = scheduleActive ? injSchedule.length >= 2 : (splitManual || injInterval < 5);
+      const injPerWeek     = scheduleActive ? injSchedule.length : (isSplitDose ? 2 : 1);
+      const weeklyDose     = isSplitDose ? lastInj.doseMg * 2 : lastInj.doseMg;
+
+      const nextInjMs = scheduleActive
+        ? (nextScheduledMs(lastInjMs, injSchedule) ?? lastInjMs + injInterval * 86400000)
+        : lastInjMs + injInterval * 86400000;
+
+      const recent = (rows ?? []).find(r => r.twoWeekLoss != null);
+      if (!recent || weeklyDose == null) return null;
+      const rec = recommendedDose(weeklyDose, recent.twoWeekLoss);
+      if (!rec) return null;
+
+      const { dose, g } = rec;
+      const recWeekly  = dose != null ? dose : weeklyDose;
+      const perInjMg   = isSplitDose ? recWeekly / 2 : recWeekly;
+      const lossSign   = recent.twoWeekLoss >= 0 ? '↓' : '↑';
+      const nextInjDate  = new Date(nextInjMs);
+      const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
+      const subtext = g.action === 'increase'
+        ? `Progress below 3 lbs/2wk — increase by ${DOSE_STEP_MG} mg`
+        : g.action === 'stay'    ? 'Weight loss on track — hold current dose'
+        : g.action === 'monitor' ? 'Strong loss — stay put; drop down if >5 lbs next 2 wks too'
+        : g.action === 'contact' ? 'Unusually rapid loss — consult your prescriber'
+        : 'Weight moving up — hold and reassess';
+
+      return (
+        <div>
+          {showCalc && <DoseCalculatorModal initialDose={calcInitDose} initialConc={vialConc} onClose={() => setShowCalc(false)} />}
+          {showSchedule && <InjScheduleModal schedule={injSchedule} isAdmin={isAdmin}
+                             onSave={onSaveSchedule} onClose={() => setShowSchedule(false)} />}
+
+          <div style={{ margin: '0 0 12px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
+                          letterSpacing: .6, marginBottom: 6 }}>Next Dose Recommendation</div>
+            <div style={{ padding: '12px 14px', borderRadius: 10,
+                          background: g.bg, border: `1px solid ${g.color}33` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ textAlign: 'center', minWidth: 72 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: g.color, textTransform: 'uppercase',
+                                letterSpacing: .4, marginBottom: 3 }}>
+                    {g.action === 'increase' ? 'Increase to' : g.action === 'contact' ? 'Hold at' : 'Stay at'}
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: g.color, lineHeight: 1,
+                                fontVariantNumeric: 'tabular-nums' }}>{recWeekly} mg</div>
+                  <div style={{ fontSize: 11, color: g.color, opacity: .75, marginTop: 2 }}>
+                    {injPerWeek > 1 ? `${recWeekly / injPerWeek} mg × ${injPerWeek}/wk` : 'per week'}
+                  </div>
+                  {g.action === 'increase' && dose == null && (
+                    <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>
+                  )}
+                </div>
+                <div style={{ width: 1, alignSelf: 'stretch', background: `${g.color}33` }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 3 }}>{g.label}</div>
+                  <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{subtext}</div>
+                  <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
+                    2-wk loss: {lossSign}{Math.abs(recent.twoWeekLoss).toFixed(1)} lbs &nbsp;·&nbsp;
+                    current: {weeklyDose} mg/wk{isSplitDose ? ` (${lastInj.doseMg} mg × 2)` : ''}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 3 }}>
+                    Your next injection is planned for {nextInjLabel}.
+                  </div>
+                </div>
+              </div>
+              {/* Schedule */}
+              <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: '#8e8e93' }}>Injection schedule</span>
+                <button onClick={() => setShowSchedule(true)}
+                        style={{ fontSize: 13, fontWeight: 700, padding: '5px 14px', borderRadius: 20,
+                                 background: '#4a90d9', color: '#fff', border: 'none', cursor: 'pointer', lineHeight: 1.3 }}>
+                  {scheduleActive
+                    ? [...injSchedule].sort((a,b)=>a.day-b.day).map(s=>SCHED_DAYS_LNG[s.day]).join(' · ')
+                    : (isSplitDose ? '2× / week' : '1× / week')}
+                </button>
+              </div>
+              {/* Syringe draw-up */}
+              <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${g.color}22` }}>
+                {/* Vial config row */}
+                <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8, flexWrap:'wrap' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <span style={{ fontSize:11, color:'#8e8e93', fontWeight:600 }}>Vial concentration</span>
+                    <input type="number" step="0.5" min="0.5" value={vialConc}
+                           onChange={e => handleVialConc(e.target.value)}
+                           style={{ width:68, fontSize:13, fontWeight:600, padding:'3px 8px', borderRadius:8,
+                                    border:'1px solid #d1d1d6', background:'#f9f9f9',
+                                    color:'#1c1c1e', outline:'none', textAlign:'center' }} />
+                    <span style={{ fontSize:11, color:'#8e8e93' }}>mg/mL</span>
+                  </div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <span style={{ fontSize:11, color:'#8e8e93', fontWeight:600 }}>Syringe</span>
+                    <select value={syringeUnits} onChange={e => handleSyringeUnits(e.target.value)}
+                            style={{ fontSize:13, fontWeight:600, padding:'3px 8px', borderRadius:8,
+                                     border:'1px solid #d1d1d6', background:'#f9f9f9',
+                                     color:'#1c1c1e', outline:'none', cursor:'pointer' }}>
+                      <option value="30">30 units</option>
+                      <option value="60">60 units</option>
+                      <option value="100">100 units</option>
+                    </select>
+                  </div>
+                </div>
+                {/* Draw-up header + calculator button */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: g.color,
+                                textTransform: 'uppercase', letterSpacing: .4 }}>
+                    {isSplitDose ? 'Draw up per injection' : 'Draw up'}
+                  </div>
+                  <button onClick={() => { setCalcInitDose(perInjMg); setShowCalc(true); }}
+                          style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12,
+                                   background: `${g.color}18`, color: g.color,
+                                   border: `1px solid ${g.color}33`, cursor: 'pointer' }}>
+                    Calculator
+                  </button>
+                </div>
+                <SyringeGraphic doseMg={perInjMg} concentration={vialConc} color={g.color} maxUnits={syringeUnits} />
+              </div>
+            </div>
           </div>
         </div>
       );
@@ -3007,19 +3069,21 @@
       );
     }
 
-    function SyringeGraphic({ doseMg, concentration = 12.5, color = '#4a90d9' }) {
+    function SyringeGraphic({ doseMg, concentration = 12.5, color = '#4a90d9', maxUnits = 100 }) {
       const units = doseMg > 0 ? Math.round(doseMg / concentration * 100 * 10) / 10 : 0;
       const ml    = doseMg > 0 ? (doseMg / concentration).toFixed(2) : '—';
-      const pct   = Math.min(units / 100, 1);
+      const syringeMax = maxUnits;
+      const pct   = Math.min(units / syringeMax, 1);
       const uid   = `syr${Math.round(doseMg*1000)}_${Math.round(concentration*100)}`;
 
       const VW = 360, VH = 108;
       const bx = 80, by = 42, bw = 210, bh = 28;
       const ncy   = by + bh / 2;
       const fillW = pct * bw;
-      // Gasket always sits inside the barrel; clamp left edge at least 2px in
-      const gaskR = Math.max(bx + 12, bx + fillW);
-      const gaskL = gaskR - 10;
+      // Gasket left edge (face touching liquid) aligns with the dose mark.
+      // The gasket extends rightward from there, which is anatomically correct.
+      const gaskL = Math.max(bx + 2, bx + fillW);
+      const gaskR = gaskL + 10;
 
       return (
         <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
@@ -3066,20 +3130,20 @@
                 fill="rgba(255,255,255,.58)" clipPath={`url(#${uid}c)`} />
 
           {/* ── Tick marks from top edge down ── */}
-          {Array.from({ length: 21 }, (_, i) => i * 5).map(u => {
-            const tx  = bx + (u / 100) * bw;
-            const big = u % 20 === 0, med = u % 10 === 0;
+          {Array.from({ length: syringeMax / 5 + 1 }, (_, i) => i * 5).map(u => {
+            const tx  = bx + (u / syringeMax) * bw;
+            const big = u % (syringeMax / 3 < 10 ? 10 : 20) === 0, med = u % 10 === 0;
             const h   = big ? 12 : med ? 8 : 5;
             return (
               <line key={u} x1={tx} y1={by} x2={tx} y2={by + h}
-                    stroke={u / 100 < pct ? 'rgba(255,255,255,.78)' : '#9898b2'}
+                    stroke={u / syringeMax < pct ? 'rgba(255,255,255,.78)' : '#9898b2'}
                     strokeWidth={big ? 1.4 : med ? 1.0 : 0.65} />
             );
           })}
 
           {/* ── Number labels above barrel ── */}
-          {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(u => (
-            <text key={u} x={bx + (u / 100) * bw} y={by - 4}
+          {Array.from({ length: syringeMax / 10 }, (_, i) => (i + 1) * 10).map(u => (
+            <text key={u} x={bx + (u / syringeMax) * bw} y={by - 4}
                   textAnchor="middle" fontSize={7.5} fill="#9090a8">{u}</text>
           ))}
 
@@ -3142,6 +3206,7 @@
       const concMgMl = Math.max(parseFloat(conc) || 12.5, 0.1);
       const units    = doseMg > 0 ? Math.round(doseMg / concMgMl * 100 * 10) / 10 : 0;
       const ml       = doseMg > 0 ? (doseMg / concMgMl).toFixed(2) : '—';
+      const syringeMax = parseInt(localStorage.getItem(LS_SYRINGE_UNITS_KEY) || '100', 10);
 
       return (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
@@ -3186,7 +3251,8 @@
             </div>
 
             {/* Syringe */}
-            <SyringeGraphic doseMg={doseMg} concentration={concMgMl} color="#4a90d9" />
+            <SyringeGraphic doseMg={doseMg} concentration={concMgMl} color="#4a90d9"
+                            maxUnits={parseInt(localStorage.getItem(LS_SYRINGE_UNITS_KEY) || '100', 10)} />
 
             {/* Result */}
             <div style={{ marginTop: 16, textAlign: 'center', padding: '14px 12px',
@@ -3200,7 +3266,7 @@
                     <span style={{ fontSize: 16, color: '#8e8e93', marginLeft: 16 }}>{ml} mL</span>
                   </div>
                   <div style={{ fontSize: 12, color: '#aeaeb2', marginTop: 4 }}>
-                    on 100-unit insulin syringe
+                    on {syringeMax}-unit insulin syringe
                   </div>
                 </>
               ) : (
@@ -3347,6 +3413,7 @@
       );
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
+      const [activeTab,  setActiveTab]   = useState('weight');
       const [error,      setError]      = useState('');
       const [dragging,   setDragging]   = useState(false);
       const [showInj,    setShowInj]    = useState(false);
@@ -3834,6 +3901,21 @@
               </div>
               <input ref={inputRef} type="file" accept=".csv,.txt,.json" style={{ display: 'none' }} onChange={onInput} />
             </div>
+            {/* Tab pills — part of the sticky header so they never scroll away */}
+            {!loading && rows.length > 0 && (
+              <div style={{ display:'flex', gap:6, padding:'0 12px 8px',
+                            overflowX:'auto', WebkitOverflowScrolling:'touch' }}>
+                {[['weight','Weight'],['tirz','Tirzepatide'],['dosing','Dosing'],['activity','Activity']].map(([id,label]) => (
+                  <button key={id} onClick={() => setActiveTab(id)}
+                          style={{ flexShrink:0, fontSize:13, fontWeight:600, padding:'6px 18px',
+                                   borderRadius:20, border:'none', cursor:'pointer', whiteSpace:'nowrap',
+                                   background: activeTab===id ? '#4a90d9' : '#e5e5ea',
+                                   color:      activeTab===id ? '#fff' : '#3c3c43' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* ── Loading ── */}
@@ -3918,24 +4000,29 @@
 
           {/* ── Logbook ── */}
           {!loading && rows.length > 0 && (
-            <div style={{ padding: '12px 12px 32px' }}>
+            <div>
 
+              <div style={{ padding:'12px 12px 32px' }}>
 
-              {/* PK Chart */}
-              <div style={{ borderRadius: 18, background: '#fff', border: '.5px solid rgba(0,0,0,.08)',
-                            marginBottom: 10, overflow: 'hidden' }}>
-                <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)',
-                              display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#4a90d9',
-                                textTransform: 'uppercase', letterSpacing: .6 }}>
-                    Tirzepatide · Drug on Board
+              {/* ── TIRZEPATIDE TAB ── */}
+              <div style={{ display: activeTab==='tirz' ? undefined : 'none' }}>
+                <div style={{ borderRadius: 18, background: '#fff', border: '.5px solid rgba(0,0,0,.08)',
+                              marginBottom: 10, overflow: 'hidden' }}>
+                  <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#4a90d9',
+                                  textTransform: 'uppercase', letterSpacing: .6 }}>
+                      Tirzepatide · Drug on Board
+                    </div>
+                    <div style={{ fontSize: 12, color: '#aeaeb2' }}>t½ = 5 d · tpeak = 36 h</div>
                   </div>
-                  <div style={{ fontSize: 12, color: '#aeaeb2' }}>t½ = 5 d · tpeak = 36 h</div>
+                  <PkChart injections={injections} rows={rows} isAdmin={isAdmin}
+                           injSchedule={injSchedule} onSaveSchedule={saveInjSchedule} />
                 </div>
-                <PkChart injections={injections} rows={rows} isAdmin={isAdmin}
-                         injSchedule={injSchedule} onSaveSchedule={saveInjSchedule} />
               </div>
 
+              {/* ── WEIGHT TAB ── */}
+              <div style={{ display: activeTab==='weight' ? undefined : 'none' }}>
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
@@ -3948,6 +4035,9 @@
                              videos={videos} onPlayVideo={setPlayingVideo} />
               </div>
 
+              </div>{/* end weight tab inner content */}
+              {/* ── ACTIVITY TAB ── */}
+              <div style={{ display: activeTab==='activity' ? undefined : 'none' }}>
               {/* Calorie Chart */}
               {calories.length > 0 && (
                 <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
@@ -3972,6 +4062,10 @@
                 </div>
               )}
 
+              </div>{/* end activity tab */}
+
+              {/* ── Back in weight tab: Weight Change + Logbook ── */}
+              <div style={{ display: activeTab==='weight' ? undefined : 'none' }}>
               {/* Weight Change by Day of Week */}
               {rows.length >= 2 && (
                 <div style={{ borderRadius:18, overflow:'hidden', background:'#fff',
@@ -4089,6 +4183,12 @@
               </div>
 
               <Summary rows={rows} />
+              </div>{/* end weight tab */}
+
+              {/* ── DOSING TAB ── */}
+              <div style={{ display: activeTab==='dosing' ? undefined : 'none' }}>
+                <DosePanel rows={rows} injections={injections} injSchedule={injSchedule}
+                           isAdmin={isAdmin} onSaveSchedule={saveInjSchedule} />
 
               {/* Injection log */}
               <div style={{ marginTop: 10, borderRadius: 18, background: '#fff',
@@ -4160,6 +4260,9 @@
                 </div>
               </div>
 
+              </div>{/* end dosing tab */}
+
+              {/* ── Admin settings (outside tabs) ── */}
               {isAdmin ? (
                 <>
                   <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
@@ -4191,6 +4294,7 @@
               )}
 
               {error && <ErrBox msg={error} />}
+              </div>{/* end inner padding div */}
             </div>
           )}
         </div>

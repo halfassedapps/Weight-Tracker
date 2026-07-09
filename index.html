@@ -1496,7 +1496,7 @@
       };
 
       // Tooltip box dimensions
-      const TW = 52, TR = 4;
+      const TW = 62, TR = 4;
 
       const shareChart = async () => {
         if (!svgRef.current || sharing) return;
@@ -1764,12 +1764,14 @@
 
             {/* Hover tooltip */}
             {tip && (() => {
+              const startLbs = rows && rows.length ? rows[rows.length - 1].lbs : null;
+              const lostLbs  = (tip.wLbs != null && startLbs != null) ? tip.wLbs - startLbs : null;
               const TH = 18 + (tip.wLbs != null ? 9 : 0) + (tip.segAvg != null ? 9 : 0);
               const flipLeft = tip.x > PAD.l + cW * 0.65;
               const tx = flipLeft ? tip.x - TW - 5 : tip.x + 5;
               const ty = Math.max(PAD.t, Math.min(tip.y - TH / 2, PAD.t + cH - TH));
               const { mo, day, wd } = fmtDate(tip.dateStr);
-              let row = ty + 7;
+              let row = ty + 6;
               return (
                 <g style={{ pointerEvents: 'none' }}>
                   <line x1={tip.x} y1={PAD.t} x2={tip.x} y2={PAD.t + cH}
@@ -1782,7 +1784,9 @@
                         fontVariantNumeric="tabular-nums">{tip.level.toFixed(2)} mg</text>
                   {tip.wLbs != null && (
                     <text x={tx + 5} y={row += 9} fontSize="6.5" fill="#34c759"
-                          fontVariantNumeric="tabular-nums">{tip.wLbs.toFixed(1)} lbs</text>
+                          fontVariantNumeric="tabular-nums">
+                      {tip.wLbs.toFixed(1)}{lostLbs != null ? ` / ${lostLbs.toFixed(1)}` : ''}
+                    </text>
                   )}
                   {tip.segAvg != null && (
                     <text x={tx + 5} y={row += 9} fontSize="6.5" fill="#b06dff"

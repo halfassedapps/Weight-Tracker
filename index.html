@@ -1998,6 +1998,7 @@
       const [sharing, setSharing] = useState(false);
       const [scanTip, setScanTip] = useState(null);       // hovered body scan bar
       const [trendLineTip, setTrendLineTip] = useState(null); // hovered trend line { label, goalMs, x, y }
+      const [weightTip, setWeightTip] = useState(null);   // hovered weight line { ms, lbs, dateStr }
       const svgRef = useRef(null);
       const [trendModes, setTrendModes] = useState(['current']); // ids of checked trend lines
       const [trendMenuOpen, setTrendMenuOpen] = useState(false);
@@ -2421,7 +2422,17 @@
           </div>
 
           {/* Chart */}
-          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+               onMouseMove={e => {
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const svgX = (e.clientX - rect.left) / rect.width * VW;
+                 if (svgX < PAD.l || svgX > PAD.l + cW) { setWeightTip(null); return; }
+                 const ms = startMs + (svgX - PAD.l) / cW * (endMs - startMs);
+                 let best = pts[0], minD = Infinity;
+                 pts.forEach(p => { const d = Math.abs(p.ms - ms); if (d < minD) { minD = d; best = p; } });
+                 setWeightTip({ ms: best.ms, lbs: best.lbs, dateStr: msToLocalDate(best.ms) });
+               }}
+               onMouseLeave={() => setWeightTip(null)}>
             <defs>
               <clipPath id="wc-chart-area">
                 <rect x={PAD.l} y={PAD.t} width={cW} height={cH} />
@@ -2622,19 +2633,46 @@
               );
             })()}
 
+            {/* Weight line hover tooltip */}
+            {weightTip && !trendLineTip && (() => {
+              const startLbs = pts.length ? pts[0].lbs : null;
+              const lost = startLbs != null ? weightTip.lbs - startLbs : null;
+              const { wd, mo, day } = fmtDate(weightTip.dateStr);
+              const wx = xOf(weightTip.ms);
+              const wy = yOf(weightTip.lbs);
+              const TW = 68, TH = 28, TR = 4;
+              const tx = Math.max(PAD.l, Math.min(wx - TW / 2, PAD.l + cW - TW));
+              const ty = Math.max(PAD.t + 2, wy - TH - 6);
+              return (
+                <g style={{ pointerEvents:'none' }}>
+                  <circle cx={wx} cy={wy} r="3" fill="#fff" stroke={lbsAt(weightTip.ms) ? '#4a90d9' : '#4a90d9'} strokeWidth="1.5" />
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
+                  <text x={tx + TW/2} y={ty + 8} textAnchor="middle"
+                        fontSize="4.5" fill="rgba(255,255,255,.55)">{wd} {mo} {day}</text>
+                  <text x={tx + TW/2} y={ty + 20} textAnchor="middle"
+                        fontSize="6.5" fontWeight="600" fill="#34c759" fontVariantNumeric="tabular-nums">
+                    {weightTip.lbs.toFixed(1)}{lost != null ? ` / ${lost.toFixed(1)}` : ''}
+                  </text>
+                </g>
+              );
+            })()}
+
             {/* Trend line hover tooltip */}
             {trendLineTip && (() => {
-              const TW = 120, TH = 26, TR = 4;
+              const TW = 130, TH = 26, TR = 4;
               const tx = Math.max(PAD.l, Math.min(trendLineTip.x - TW / 2, PAD.l + cW - TW));
               const ty = Math.max(PAD.t + 2, trendLineTip.y - TH - 6);
               const dateStr = trendLineTip.goalMs
                 ? new Date(trendLineTip.goalMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
                 : null;
+              const trendLabel = trendLineTip.label === 'Current'
+                ? 'Current Trend'
+                : `${trendLineTip.label} trend`;
               return (
                 <g style={{ pointerEvents:'none' }}>
                   <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
                   <text x={tx + TW/2} y={ty + 9} textAnchor="middle"
-                        fontSize="5.5" fontWeight="600" fill="#fff">{trendLineTip.label}</text>
+                        fontSize="5.5" fontWeight="600" fill="#fff">{trendLabel}</text>
                   <text x={tx + TW/2} y={ty + 19} textAnchor="middle" fontSize="5" fill="rgba(255,255,255,.55)">
                     {dateStr ? `Goal: ${dateStr}` : 'Beyond chart range'}
                   </text>

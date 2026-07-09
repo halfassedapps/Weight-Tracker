@@ -2179,8 +2179,10 @@
         ? Math.min(latestGoalMs + 14 * 86400000, startMs + 548 * 86400000)
         : startMs + 180 * 86400000;
 
-      // Y range: goal − 8 → starting weight + 5
-      const maxLbs = Math.max(...rys) + 5;
+      // Y range: full history max → goal - 8.
+      // Using only the regression window (rys) caused historical dose-change
+      // dots to render above the SVG when the user has lost significant weight.
+      const maxLbs = Math.max(...pts.map(p => p.lbs)) + 5;
       const minLbs = GOAL_LBS - 8;
 
       const xOf = ms  => PAD.l + (ms - startMs) / (endMs - startMs) * cW;

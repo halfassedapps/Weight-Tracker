@@ -1290,7 +1290,7 @@
       // Include visPts (full visible PK trajectory including near-future from current dose)
       // so the y-scale isn't clipped when a recent dose increase raises future peaks.
       const maxV = Math.max(...displayPts.map(p => p.v), ...visPts.map(p => p.v), 0.01);
-      const yMax = maxV * 1.25; // 25% headroom — slightly more to accommodate rising dose projections
+      const yMax = maxV * 1.5; // 50% headroom so scheduled-injection projected peaks don't touch the top
 
       const VW = 360, VH = 190;
       const PAD = { t: 18, r: 40, b: rangeMode === 'all' ? 22 : 60, l: 36 };

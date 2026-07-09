@@ -1231,6 +1231,8 @@
       const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
+      const [sharing,      setSharing]      = useState(false);
+      const svgRef = useRef(null);
       const [rangeMode,    setRangeMode]    = useState('30d'); // '7d' | '14d' | '30d' | 'all' | 'custom'
       const [customDays,   setCustomDays]   = useState(30);
       const [windowOffset, setWindowOffset] = useState(0);
@@ -1285,8 +1287,10 @@
         const visible = base.filter(p => p.ms >= visStartMs);
         return visible.length < base.length ? [{ ms: visStartMs, v: 0 }, ...visible] : visible;
       })();
-      const maxV = Math.max(...displayPts.map(p => p.v), 0.01);
-      const yMax = maxV * 1.18; // 18% headroom so peaks don't touch the top border
+      // Include visPts (full visible PK trajectory including near-future from current dose)
+      // so the y-scale isn't clipped when a recent dose increase raises future peaks.
+      const maxV = Math.max(...displayPts.map(p => p.v), ...visPts.map(p => p.v), 0.01);
+      const yMax = maxV * 1.25; // 25% headroom — slightly more to accommodate rising dose projections
 
       const VW = 360, VH = 190;
       const PAD = { t: 18, r: 40, b: rangeMode === 'all' ? 22 : 60, l: 36 };
@@ -1496,6 +1500,50 @@
       // Tooltip box dimensions
       const TW = 52, TR = 4;
 
+      const shareChart = async () => {
+        if (!svgRef.current || sharing) return;
+        setSharing(true);
+        try {
+          const scale = 3, headerH = 48;
+          const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
+          const svgClone = svgRef.current.cloneNode(true);
+          svgClone.setAttribute('width', VW * scale);
+          svgClone.setAttribute('height', VH * scale);
+          const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+          styleEl.textContent = `text { font-family: ${FONT}; }`;
+          svgClone.insertBefore(styleEl, svgClone.firstChild);
+          const svgString = new XMLSerializer().serializeToString(svgClone);
+          const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+          const img = new Image();
+          await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = svgUrl; });
+          const canvas = document.createElement('canvas');
+          canvas.width = VW * scale; canvas.height = (VH + headerH) * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(scale, scale);
+          ctx.fillStyle = '#1c1c1e'; ctx.font = `700 13px ${FONT}`;
+          ctx.fillText('Tirzepatide · Drug on Board', 14, 18);
+          ctx.fillStyle = '#4a90d9'; ctx.font = `700 10px ${FONT}`;
+          ctx.fillText(`On board now: ${curLevel.toFixed(2)} mg · Weekly dose: ${weeklyDose} mg`, 14, 34);
+          ctx.fillStyle = '#8e8e93'; ctx.font = `400 9px ${FONT}`;
+          ctx.fillText(`Trough: ${troughLevel.toFixed(2)} mg · ${fmtShort(msToLocalDate(nextInjMs))}`, 14, 44);
+          ctx.drawImage(img, 0, headerH, VW, VH);
+          const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+          const file = new File([fileBlob], 'tirz-on-board.png', { type: 'image/png' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'Tirzepatide · Drug on Board',
+              text: `On board now: ${curLevel.toFixed(2)} mg · ${weeklyDose} mg/wk` });
+          } else {
+            const url = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'tirz-on-board.png';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }
+        } catch (e) { if (e.name !== 'AbortError') console.warn('[PkChart] share failed:', e); }
+        finally { setSharing(false); }
+      };
+
       return (
         <div>
           {showCalc && <DoseCalculatorModal initialDose={calcInitDose} initialConc={12.5} onClose={() => setShowCalc(false)} />}
@@ -1546,7 +1594,7 @@
             </div>
           )}
 
-          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair', overflow: 'hidden' }}
+          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair', overflow: 'hidden' }}
                onMouseMove={handleMouseMove}
                onMouseLeave={() => setTip(null)}>
 
@@ -1857,6 +1905,20 @@
               </div>
             );
           })()}
+
+          {/* Share */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'6px 14px 10px' }}>
+            <button onClick={shareChart} disabled={sharing}
+                    style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600,
+                             color:'#4a90d9', background:'#f0f6ff', border:'none', borderRadius:12,
+                             padding:'4px 10px', cursor: sharing ? 'default' : 'pointer', opacity: sharing ? .6 : 1 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
+                   strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
+              </svg>
+              {sharing ? 'Preparing…' : 'Share'}
+            </button>
+          </div>
         </div>
       );
     }

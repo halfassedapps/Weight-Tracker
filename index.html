@@ -3869,9 +3869,9 @@
                 <div style={{ fontSize: 13, color: '#8e8e93', marginTop: 1, minHeight: 14 }}>
                   {autoMsg ? (
                     <span style={{ color: '#34c759' }}>{autoMsg}</span>
-                  ) : meta ? (
+                  ) : meta && rows.length > 0 ? (
                     <>
-                      {rows.length} entries · lbs{meta.source ? ` · ${meta.source}` : ''}
+                      {rows.length} days logged · {fmtShort(rows[rows.length - 1].date)} – {fmtShort(rows[0].date)}
                     </>
                   ) : null}
                 </div>

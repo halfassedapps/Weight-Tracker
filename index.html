@@ -2973,7 +2973,7 @@
 
     /* ─── Weight Loss Per Dose ──────────────────────────────────────────────── */
     function DoseWeightLossChart({ rows, injections }) {
-      const [hoveredIdx, setHoveredIdx] = useState(null);
+      const [hoveredDose, setHoveredDose] = useState(null);
       if (!rows || rows.length < 2 || !injections || injections.length < 2) return null;
 
       const DOSE_PALETTE = ['#4a90d9','#34c759','#ff9500','#ff3b30','#b06dff','#00c7be','#ff2d55','#5856d6','#ffcc00','#8e8e93'];
@@ -3047,22 +3047,22 @@
           d: `M ${cx} ${cy} L ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)} Z` };
       });
 
-      const hov = hoveredIdx !== null ? slices[hoveredIdx] : null;
+      const hov = hoveredDose != null ? slices.find(s => s.doseMg === hoveredDose) : null;
 
       return (
         <div style={{ display:'flex', justifyContent:'center', alignItems:'flex-start',
                       padding:'12px 14px 16px', gap:24, flexWrap:'wrap' }}>
           {/* Pie chart — no perimeter labels, hover tooltip in center */}
           <svg viewBox="0 0 280 280" style={{ width:240, flexShrink:0, cursor:'default' }}
-               onMouseLeave={() => setHoveredIdx(null)}>
+               onMouseLeave={() => setHoveredDose(null)}>
             {slices.map((s) => (
               <path key={s.i} d={s.d}
                     fill={s.color}
                     stroke="#fff" strokeWidth="1.5"
-                    opacity={hov && hov.i !== s.i ? 0.55 : 1}
+                    opacity={hov && hov.doseMg !== s.doseMg ? 0.55 : 1}
                     style={{ cursor:'pointer', transition:'opacity .15s' }}
-                    onMouseEnter={() => setHoveredIdx(s.i)}
-                    onClick={() => setHoveredIdx(v => v === s.i ? null : s.i)} />
+                    onMouseEnter={() => setHoveredDose(s.doseMg)}
+                    onClick={() => setHoveredDose(v => v === s.doseMg ? null : s.doseMg)} />
             ))}
             {/* Center tooltip on hover */}
             {hov && (
@@ -3094,10 +3094,10 @@
               <tbody>
                 {dosePeriods.map((p, i) => (
                   <tr key={i} style={{ borderBottom:'.5px solid rgba(0,0,0,.06)',
-                                       background: hoveredIdx === i ? `${p.color}12` : 'transparent',
+                                       background: hoveredDose === p.doseMg ? `${p.color}12` : 'transparent',
                                        cursor:'pointer' }}
-                      onMouseEnter={() => setHoveredIdx(i)}
-                      onMouseLeave={() => setHoveredIdx(null)}>
+                      onMouseEnter={() => setHoveredDose(p.doseMg)}
+                      onMouseLeave={() => setHoveredDose(null)}>
                     <td style={{ padding:'6px 16px 6px 0' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                         <span style={{ width:10, height:10, borderRadius:'50%', background:p.color, flexShrink:0 }} />

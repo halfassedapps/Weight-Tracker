@@ -2953,6 +2953,138 @@
       );
     }
 
+    /* ─── Weight Loss Per Dose ──────────────────────────────────────────────── */
+    function DoseWeightLossChart({ rows, injections }) {
+      if (!rows || rows.length < 2 || !injections || injections.length < 2) return null;
+
+      const DOSE_PALETTE = ['#4a90d9','#34c759','#ff9500','#ff3b30','#b06dff','#00c7be','#ff2d55','#5856d6','#ffcc00','#8e8e93'];
+
+      // Build oldest-first pts array for weight interpolation
+      const pts = [...rows].reverse().map(r => ({
+        ms: new Date(r.date + 'T12:00:00').getTime(), lbs: r.lbs
+      }));
+      const lbsAt = ms => {
+        if (!pts.length) return null;
+        if (ms <= pts[0].ms) return pts[0].lbs;
+        if (ms >= pts[pts.length-1].ms) return pts[pts.length-1].lbs;
+        for (let i = 0; i < pts.length-1; i++) {
+          if (ms >= pts[i].ms && ms <= pts[i+1].ms) {
+            const f = (ms - pts[i].ms) / (pts[i+1].ms - pts[i].ms);
+            return pts[i].lbs + (pts[i+1].lbs - pts[i].lbs) * f;
+          }
+        }
+        return pts[pts.length-1].lbs;
+      };
+
+      // Compute weekly dose periods (same algorithm as WeightChart)
+      const sortedInj = [...injections].sort((a,b) => a.date.localeCompare(b.date));
+      const weekStartMs = ms => { const d = new Date(ms); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()); return d.getTime(); };
+      const weekGroups = {};
+      for (const inj of sortedInj) {
+        const ms = new Date(inj.date + 'T12:00:00').getTime();
+        const wk = weekStartMs(ms);
+        if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms };
+        weekGroups[wk].doseMg += inj.doseMg;
+        weekGroups[wk].firstMs = Math.min(weekGroups[wk].firstMs, ms);
+      }
+      const weeklyCycles = Object.values(weekGroups)
+        .sort((a,b) => a.firstMs - b.firstMs)
+        .map(g => ({ startMs: g.firstMs, doseMg: Math.round(g.doseMg * 1000) / 1000 }));
+      const doseChanges = [];
+      let prevDose = null;
+      for (const c of weeklyCycles) {
+        if (c.doseMg !== prevDose) { doseChanges.push({ ms: c.startMs, doseMg: c.doseMg }); prevDose = c.doseMg; }
+      }
+      if (doseChanges.length < 2) return null;
+
+      const todayMs = new Date().setHours(12,0,0,0);
+      const dosePeriods = doseChanges.map((dc, i) => {
+        const endMs = i < doseChanges.length - 1 ? doseChanges[i+1].ms : todayMs;
+        const startW = lbsAt(dc.ms);
+        const endW   = lbsAt(endMs);
+        const lostLbs = startW != null && endW != null ? Math.max(0, startW - endW) : 0;
+        return { doseMg: dc.doseMg, lostLbs, color: DOSE_PALETTE[i % DOSE_PALETTE.length] };
+      }).filter(p => p.lostLbs > 0);
+
+      if (!dosePeriods.length) return null;
+      const totalLost = dosePeriods.reduce((s, p) => s + p.lostLbs, 0);
+      if (totalLost <= 0) return null;
+
+      // Pie chart geometry
+      const cx = 80, cy = 90, r = 60;
+      let angle = -Math.PI / 2;
+      const slices = dosePeriods.map(p => {
+        const fraction = p.lostLbs / totalLost;
+        const startA = angle;
+        angle += fraction * 2 * Math.PI;
+        const endA = angle;
+        const midA = (startA + endA) / 2;
+        const large = fraction > 0.5 ? 1 : 0;
+        const x1 = cx + r * Math.cos(startA), y1 = cy + r * Math.sin(startA);
+        const x2 = cx + r * Math.cos(endA),   y2 = cy + r * Math.sin(endA);
+        const lx = cx + (r + 16) * Math.cos(midA), ly = cy + (r + 16) * Math.sin(midA);
+        return { ...p, d: `M ${cx} ${cy} L ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)} Z`, fraction, lx, ly };
+      });
+
+      return (
+        <div style={{ display:'flex', alignItems:'flex-start', padding:'12px 14px 14px', gap:16 }}>
+          {/* Pie chart */}
+          <svg viewBox="0 0 160 180" style={{ width:160, flexShrink:0 }}>
+            {slices.map((s, i) => (
+              <path key={i} d={s.d} fill={s.color} stroke="#fff" strokeWidth="1.5" />
+            ))}
+            {slices.filter(s => s.fraction >= 0.05).map((s, i) => (
+              <g key={i}>
+                <text x={s.lx} y={s.ly - 3} textAnchor="middle" fontSize="6.5" fontWeight="700" fill="#3c3c43">
+                  {s.doseMg}
+                </text>
+                <text x={s.lx} y={s.ly + 5} textAnchor="middle" fontSize="5.5" fill="#8e8e93">
+                  {(s.fraction * 100).toFixed(1)}%
+                </text>
+              </g>
+            ))}
+          </svg>
+
+          {/* Data table */}
+          <div style={{ flex:1, overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead>
+                <tr style={{ borderBottom:'1.5px solid rgba(0,0,0,.1)' }}>
+                  <th style={{ textAlign:'left', padding:'4px 8px 6px 0', fontSize:11, fontWeight:700,
+                               color:'#8e8e93', textTransform:'uppercase', letterSpacing:.4 }}>Dose</th>
+                  <th style={{ textAlign:'right', padding:'4px 0 6px 8px', fontSize:11, fontWeight:700,
+                               color:'#8e8e93', textTransform:'uppercase', letterSpacing:.4 }}>lbs lost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dosePeriods.map((p, i) => (
+                  <tr key={i} style={{ borderBottom:'.5px solid rgba(0,0,0,.06)' }}>
+                    <td style={{ padding:'7px 8px 7px 0', display:'flex', alignItems:'center', gap:8 }}>
+                      <span style={{ width:10, height:10, borderRadius:'50%', background:p.color,
+                                     flexShrink:0, display:'inline-block' }} />
+                      <span style={{ fontWeight:600, color:'#1c1c1e' }}>{p.doseMg} mg</span>
+                    </td>
+                    <td style={{ textAlign:'right', padding:'7px 0 7px 8px', fontWeight:600,
+                                 color:'#1c1c1e', fontVariantNumeric:'tabular-nums' }}>
+                      {p.lostLbs.toFixed(1)}
+                    </td>
+                  </tr>
+                ))}
+                <tr style={{ borderTop:'1.5px solid rgba(0,0,0,.1)' }}>
+                  <td style={{ padding:'6px 8px 4px 0', fontSize:12, color:'#8e8e93',
+                               paddingLeft:18 }}>Total</td>
+                  <td style={{ textAlign:'right', padding:'6px 0 4px 8px', fontWeight:700,
+                               color:'#1c1c1e', fontVariantNumeric:'tabular-nums' }}>
+                    {totalLost.toFixed(1)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
+
     function GistPanel({ gistOk, gistMsg, onSave, onLogout, style }) {
       const [open, setOpen] = React.useState(false);
       const [pat,  setPat]  = React.useState(() => localStorage.getItem(LS_GIST_PAT_KEY) ?? '');
@@ -4078,6 +4210,20 @@
                 <WeightChart rows={rows} injections={injections}
                              videos={videos} onPlayVideo={setPlayingVideo} />
               </div>
+
+              {/* Weight Loss Per Dose */}
+              {injections.length >= 2 && (
+                <div style={{ borderRadius:18, overflow:'hidden', background:'#fff',
+                              border:'.5px solid rgba(0,0,0,.08)', marginBottom:10 }}>
+                  <div style={{ padding:'10px 14px 4px', borderBottom:'.5px solid rgba(0,0,0,.06)' }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:'#1c1c1e' }}>Weight Loss per Dose</div>
+                    <div style={{ fontSize:10, color:'#8e8e93', marginTop:2 }}>
+                      lbs lost during each dose period
+                    </div>
+                  </div>
+                  <DoseWeightLossChart rows={rows} injections={injections} />
+                </div>
+              )}
 
               </div>{/* end weight tab inner content */}
               {/* ── ACTIVITY TAB ── */}

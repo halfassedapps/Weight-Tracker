@@ -2448,6 +2448,9 @@
                  const ms = startMs + (svgX - PAD.l) / cW * (endMs - startMs);
                  let best = pts[0], minD = Infinity;
                  pts.forEach(p => { const d = Math.abs(p.ms - ms); if (d < minD) { minD = d; best = p; } });
+                 // Only show tip when cursor is within 2 days of the nearest logged point
+                 // — prevents phantom tooltip when hovering empty future space.
+                 if (minD > 2 * 86400000) { setWeightTip(null); return; }
                  setWeightTip({ ms: best.ms, lbs: best.lbs, dateStr: msToLocalDate(best.ms) });
                }}
                onMouseLeave={() => setWeightTip(null)}>
@@ -2663,7 +2666,10 @@
               const ty = Math.max(PAD.t + 2, wy - TH - 6);
               return (
                 <g style={{ pointerEvents:'none' }}>
-                  <circle cx={wx} cy={wy} r="3" fill="#fff" stroke={lbsAt(weightTip.ms) ? '#4a90d9' : '#4a90d9'} strokeWidth="1.5" />
+                  {/* Crosshair — smaller and less obtrusive than a filled circle */}
+                  <line x1={wx-5} y1={wy} x2={wx+5} y2={wy} stroke="#34c759" strokeWidth="1.2" />
+                  <line x1={wx} y1={wy-5} x2={wx} y2={wy+5} stroke="#34c759" strokeWidth="1.2" />
+                  <circle cx={wx} cy={wy} r="1.8" fill="#34c759" />
                   <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
                   <text x={tx + TW/2} y={ty + 8} textAnchor="middle"
                         fontSize="4.5" fill="rgba(255,255,255,.55)">{wd} {mo} {day}</text>

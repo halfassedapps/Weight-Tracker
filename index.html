@@ -2398,12 +2398,12 @@
               <select value={trendDays} onChange={e => setTrendDays(Number(e.target.value))}
                       style={{ fontSize:10, fontWeight:600, padding:'4px 6px', borderRadius:8,
                                background:'#f2f2f7', color:'#3c3c43', border:'none', outline:'none', cursor:'pointer' }}>
-                <option value={14}>2 wks</option>
-                <option value={21}>3 wks</option>
-                <option value={30}>1 mo</option>
-                <option value={42}>6 wks</option>
-                <option value={90}>3 mo</option>
-                <option value={0}>All</option>
+                <option value={14}>Last 2 weeks</option>
+                <option value={21}>Last 3 weeks</option>
+                <option value={30}>Last month</option>
+                <option value={42}>Last 6 weeks</option>
+                <option value={90}>Last 3 months</option>
+                <option value={0}>All time</option>
               </select>
             </div>
           <div style={{ position: 'relative' }} ref={trendMenuRef}>

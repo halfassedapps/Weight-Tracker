@@ -3018,19 +3018,25 @@
       const dosePeriods = doseChanges.map((dc, i) => {
         const endMs = i < doseChanges.length - 1 ? doseChanges[i+1].ms : todayMs;
         const startW = lbsAt(dc.ms), endW = lbsAt(endMs);
-        const lostLbs = startW != null && endW != null ? Math.max(0, startW - endW) : 0;
+        // Allow negative (weight gained during a period) — clipping to 0 inflates
+        // the total vs the actual net weight change.
+        const lostLbs = startW != null && endW != null ? startW - endW : 0;
         return { doseMg: dc.doseMg, lostLbs, color: DOSE_PALETTE[i % DOSE_PALETTE.length] };
-      }).filter(p => p.lostLbs > 0);
+      });
 
       if (!dosePeriods.length) return null;
+      // Pie only shows periods where weight was lost; table shows all
+      const pieSlices = dosePeriods.filter(p => p.lostLbs > 0);
       const totalLost = dosePeriods.reduce((s, p) => s + p.lostLbs, 0);
+      if (pieSlices.length === 0) return null;
       if (totalLost <= 0) return null;
 
       // Pie geometry — 40% larger than previous (85 → 119), centered
       const cx = 140, cy = 140, r = 119;
       let angle = -Math.PI / 2;
-      const slices = dosePeriods.map((p, i) => {
-        const fraction = p.lostLbs / totalLost;
+      const totalPieLost = pieSlices.reduce((s, p) => s + p.lostLbs, 0);
+      const slices = pieSlices.map((p, i) => {
+        const fraction = p.lostLbs / totalPieLost;
         const startA = angle;
         angle += fraction * 2 * Math.PI;
         const endA = angle;
@@ -3099,8 +3105,9 @@
                       </div>
                     </td>
                     <td style={{ textAlign:'right', padding:'6px 0', fontWeight:600,
-                                 color:'#1c1c1e', fontVariantNumeric:'tabular-nums' }}>
-                      {p.lostLbs.toFixed(1)}
+                                 color: p.lostLbs < 0 ? '#ff3b30' : '#1c1c1e',
+                                 fontVariantNumeric:'tabular-nums' }}>
+                      {p.lostLbs >= 0 ? p.lostLbs.toFixed(1) : `+${Math.abs(p.lostLbs).toFixed(1)}`}
                     </td>
                   </tr>
                 ))}

@@ -3173,7 +3173,7 @@
       );
     }
 
-    function IntervalsPanel({ connected, msg, onSave, onRefresh, onDisconnect, style }) {
+    function IntervalsPanel({ connected, msg, onSave, onRefresh, onResync, onDisconnect, style }) {
       const [open,      setOpen]      = React.useState(false);
       const [apiKey,    setApiKey]    = React.useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null')?.apiKey ?? ''; } catch (_) { return ''; }
@@ -3225,6 +3225,14 @@
                           style={{ padding: '10px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
                                    border: 'none', cursor: 'pointer', background: '#f2f2f7', color: '#1c1c1e' }}>
                     Refresh
+                  </button>
+                )}
+                {connected && (
+                  <button onClick={onResync}
+                          title="Clears the cached ride data and re-fetches everything from intervals.icu — use when an activity was updated or re-uploaded"
+                          style={{ padding: '10px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                                   border: 'none', cursor: 'pointer', background: '#fff8ee', color: '#ff9500' }}>
+                    Re-sync rides
                   </button>
                 )}
                 {connected && (
@@ -3832,6 +3840,16 @@
         }
       }, [calories, intervalsCalories, intervalRides]);
 
+      // Clears only the rides cache then forces a full re-fetch from the beginning
+      // of the weight data — useful when an activity was updated on intervals.icu
+      // (e.g. a recovered/re-uploaded file) and the stale cached values need refreshing.
+      const resyncRides = useCallback(() => {
+        localStorage.removeItem(LS_INTERVALS_RIDES_KEY);
+        setIntervalRides({});
+        setIntervalsMsg('Re-syncing rides…');
+        setTimeout(() => refreshIntervals(), 50); // let state flush first
+      }, [refreshIntervals]);
+
       const saveIntervalsConfig = useCallback((apiKey, athleteId) => {
         const cfg = { apiKey, athleteId };
         localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(cfg));
@@ -4187,7 +4205,7 @@
               </div>
 
               <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
-              <IntervalsPanel connected={!!intervalsCfg} msg={intervalsMsg} onSave={saveIntervalsConfig} onRefresh={refreshIntervals} onDisconnect={disconnectIntervals} style={{ marginTop: 10 }} />
+              <IntervalsPanel connected={!!intervalsCfg} msg={intervalsMsg} onSave={saveIntervalsConfig} onRefresh={refreshIntervals} onResync={resyncRides} onDisconnect={disconnectIntervals} style={{ marginTop: 10 }} />
 
               {/* Set export folder */}
               {hasFSA && (
@@ -4496,7 +4514,7 @@
               {isAdmin ? (
                 <>
                   <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
-                  <IntervalsPanel connected={!!intervalsCfg} msg={intervalsMsg} onSave={saveIntervalsConfig} onRefresh={refreshIntervals} onDisconnect={disconnectIntervals} style={{ marginTop: 10 }} />
+                  <IntervalsPanel connected={!!intervalsCfg} msg={intervalsMsg} onSave={saveIntervalsConfig} onRefresh={refreshIntervals} onResync={resyncRides} onDisconnect={disconnectIntervals} style={{ marginTop: 10 }} />
 
                   {/* Export folder control */}
                   {hasFSA && (

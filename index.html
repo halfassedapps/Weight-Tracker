@@ -1996,9 +1996,11 @@
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
-      const [scanTip, setScanTip] = useState(null);       // hovered body scan bar
-      const [trendLineTip, setTrendLineTip] = useState(null); // hovered trend line { label, goalMs, x, y }
-      const [weightTip, setWeightTip] = useState(null);   // hovered weight line { ms, lbs, dateStr }
+      const [scanTip, setScanTip] = useState(null);
+      const [trendLineTip, setTrendLineTip] = useState(null);
+      const [weightTip, setWeightTip] = useState(null);
+      // Regression window for the Current Trend line. 0 = all data.
+      const [trendDays, setTrendDays] = useState(21);
       const svgRef = useRef(null);
       const [trendModes, setTrendModes] = useState(['current']); // ids of checked trend lines
       const [trendMenuOpen, setTrendMenuOpen] = useState(false);
@@ -2097,11 +2099,10 @@
       const todayD   = new Date(); todayD.setHours(12,0,0,0);
       const todayMs  = todayD.getTime();
 
-      // Rolling 21-day regression window (falls back to all data if fewer points)
-      const TREND_DAYS = 21;
-      const cutoffMs   = todayMs - TREND_DAYS * 86400000;
-      const rPts = pts.filter(p => p.ms >= cutoffMs);
-      const regPts = rPts.length >= 4 ? rPts : pts;
+      // Regression window driven by trendDays selector (0 = all data)
+      const cutoffMs = trendDays > 0 ? todayMs - trendDays * 86400000 : 0;
+      const rPts     = trendDays > 0 ? pts.filter(p => p.ms >= cutoffMs) : pts;
+      const regPts   = rPts.length >= 4 ? rPts : pts;
 
       const n     = regPts.length;
       const rxs   = regPts.map(p => (p.ms - startMs) / 86400000);
@@ -2116,10 +2117,12 @@
       const goalDays = slope < 0 ? (GOAL_LBS - intcp) / slope : null;
       const goalMs   = goalDays != null ? startMs + goalDays * 86400000 : null;
 
-      // Goal date drift: compare to projection from 7 days ago
+      // Goal date drift: compare to projection from 7 days ago (same window)
       const prevToMs     = todayMs - 7 * 86400000;
-      const prevCutoffMs = prevToMs - TREND_DAYS * 86400000;
-      const prevRPts     = pts.filter(p => p.ms >= prevCutoffMs && p.ms <= prevToMs);
+      const prevCutoffMs = trendDays > 0 ? prevToMs - trendDays * 86400000 : 0;
+      const prevRPts     = trendDays > 0
+        ? pts.filter(p => p.ms >= prevCutoffMs && p.ms <= prevToMs)
+        : pts.filter(p => p.ms <= prevToMs);
       const prevRegPts   = prevRPts.length >= 4 ? prevRPts : pts.filter(p => p.ms <= prevToMs);
       let goalDriftDays = null;
       let prevGoalMs    = null;
@@ -2388,8 +2391,22 @@
             ))}
           </div>
 
-          {/* Trend line picker */}
-          <div style={{ display: 'flex', padding: '8px 14px 4px', position: 'relative' }} ref={trendMenuRef}>
+          {/* Trend period selector + Trend line picker */}
+          <div style={{ display:'flex', gap:8, padding:'8px 14px 4px', alignItems:'center', flexWrap:'wrap' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ fontSize:10, fontWeight:600, color:'#8e8e93' }}>Trend period</span>
+              <select value={trendDays} onChange={e => setTrendDays(Number(e.target.value))}
+                      style={{ fontSize:10, fontWeight:600, padding:'4px 6px', borderRadius:8,
+                               background:'#f2f2f7', color:'#3c3c43', border:'none', outline:'none', cursor:'pointer' }}>
+                <option value={14}>2 wks</option>
+                <option value={21}>3 wks</option>
+                <option value={30}>1 mo</option>
+                <option value={42}>6 wks</option>
+                <option value={90}>3 mo</option>
+                <option value={0}>All</option>
+              </select>
+            </div>
+          <div style={{ position: 'relative' }} ref={trendMenuRef}>
             <button onClick={() => setTrendMenuOpen(v => !v)}
                     style={{ fontSize: 10, fontWeight: 600, padding: '5px 8px', borderRadius: 8,
                              background: '#f2f2f7', color: '#3c3c43', border: 'none', outline: 'none', cursor: 'pointer' }}>
@@ -2420,6 +2437,7 @@
               </div>
             )}
           </div>
+          </div>{/* end trend controls row */}
 
           {/* Chart */}
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}
@@ -3008,8 +3026,8 @@
       const totalLost = dosePeriods.reduce((s, p) => s + p.lostLbs, 0);
       if (totalLost <= 0) return null;
 
-      // Larger pie geometry — no perimeter labels
-      const cx = 100, cy = 100, r = 85;
+      // Pie geometry — 40% larger than previous (85 → 119), centered
+      const cx = 140, cy = 140, r = 119;
       let angle = -Math.PI / 2;
       const slices = dosePeriods.map((p, i) => {
         const fraction = p.lostLbs / totalLost;
@@ -3026,9 +3044,10 @@
       const hov = hoveredIdx !== null ? slices[hoveredIdx] : null;
 
       return (
-        <div style={{ display:'flex', alignItems:'flex-start', padding:'12px 14px 16px', gap:24, flexWrap:'wrap' }}>
-          {/* Pie chart — larger, no perimeter labels, hover tooltip in center */}
-          <svg viewBox="0 0 200 200" style={{ width:200, flexShrink:0, cursor:'default' }}
+        <div style={{ display:'flex', justifyContent:'center', alignItems:'flex-start',
+                      padding:'12px 14px 16px', gap:24, flexWrap:'wrap' }}>
+          {/* Pie chart — no perimeter labels, hover tooltip in center */}
+          <svg viewBox="0 0 280 280" style={{ width:240, flexShrink:0, cursor:'default' }}
                onMouseLeave={() => setHoveredIdx(null)}>
             {slices.map((s) => (
               <path key={s.i} d={s.d}
@@ -3042,13 +3061,13 @@
             {/* Center tooltip on hover */}
             {hov && (
               <g pointerEvents="none">
-                <circle cx={cx} cy={cy} r={42} fill="rgba(28,28,30,.88)" />
-                <text x={cx} y={cy - 12} textAnchor="middle" fontSize="11" fontWeight="800"
+                <circle cx={cx} cy={cy} r={58} fill="rgba(28,28,30,.88)" />
+                <text x={cx} y={cy - 17} textAnchor="middle" fontSize="15" fontWeight="800"
                       fill={hov.color}>{hov.doseMg} mg</text>
-                <text x={cx} y={cy + 4} textAnchor="middle" fontSize="9" fill="rgba(255,255,255,.65)">
+                <text x={cx} y={cy + 3} textAnchor="middle" fontSize="11" fill="rgba(255,255,255,.65)">
                   {(hov.fraction * 100).toFixed(1)}% of loss
                 </text>
-                <text x={cx} y={cy + 17} textAnchor="middle" fontSize="10" fontWeight="700" fill="#fff">
+                <text x={cx} y={cy + 20} textAnchor="middle" fontSize="13" fontWeight="700" fill="#fff">
                   {hov.lostLbs.toFixed(1)} lbs
                 </text>
               </g>

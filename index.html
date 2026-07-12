@@ -1371,8 +1371,10 @@
         if (!hi) return lo.ma;
         return lo.ma + (ms - lo.ms) / (hi.ms - lo.ms) * (hi.ma - lo.ma);
       };
-      const periodStartW = interpMovAvg(Math.max(visStartMs, startMs));
-      const periodEndW = interpMovAvg(Math.min(visEndMs, todayMs));
+      // Use raw weight interpolation (interpW) to match the tooltip's calculation
+      // — interpMovAvg uses the 7-day smoothed series which diverges by ~1 lb.
+      const periodStartW = interpW(Math.max(visStartMs, startMs));
+      const periodEndW   = interpW(Math.min(visEndMs, todayMs));
       const periodWeightChange = (periodStartW != null && periodEndW != null)
         ? periodEndW - periodStartW
         : null;

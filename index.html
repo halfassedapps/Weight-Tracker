@@ -190,18 +190,19 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [] }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsCfg = null }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
         .sort((a, b) => b.date.localeCompare(a.date))
         .filter(e => { if (seen.has(e.date)) return false; seen.add(e.date); return true; });
       return {
-        logbook:     daily.length ? computeLogbook(daily) : [],
-        meta:        meta ?? { metric: 'Weight', source: '' },
-        injections:  injections.filter(i => i.date && i.doseMg),
-        injSchedule: Array.isArray(injSchedule) ? injSchedule : [],
-        calories:    Array.isArray(calories) ? calories.filter(c => c.date) : [],
+        logbook:      daily.length ? computeLogbook(daily) : [],
+        meta:         meta ?? { metric: 'Weight', source: '' },
+        injections:   injections.filter(i => i.date && i.doseMg),
+        injSchedule:  Array.isArray(injSchedule) ? injSchedule : [],
+        calories:     Array.isArray(calories) ? calories.filter(c => c.date) : [],
+        intervalsCfg: intervalsCfg && intervalsCfg.apiKey && intervalsCfg.athleteId ? intervalsCfg : null,
       };
     }
 
@@ -248,14 +249,16 @@
       }
     }
 
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = []) {
-      const content = JSON.stringify({
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], intervalsCfg = null) {
+      const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule,
         injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
         calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy }) => ({ date, Calories, ActiveEnergy, BasalEnergy })),
-      }, null, 2);
+      };
+      if (intervalsCfg?.apiKey && intervalsCfg?.athleteId) payload.intervalsCfg = { apiKey: intervalsCfg.apiKey, athleteId: intervalsCfg.athleteId };
+      const content = JSON.stringify(payload, null, 2);
       const res = await fetch(`https://api.github.com/gists/${gistId}`, {
         method: 'PATCH',
         headers: {
@@ -3686,8 +3689,10 @@
       const writeToGist = async (newRows, newMeta, newInj, newCalories = calories) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) return;
+        let icuCfg = null;
+        try { icuCfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) {}
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, injSchedule, newCalories);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, injSchedule, newCalories, icuCfg);
           setGistOk(true); setGistMsg('');
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
@@ -3704,7 +3709,7 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
@@ -3717,10 +3722,17 @@
                 setRows(newLogbook); setMeta(m); setInjections(inj);
                 lsSave(newLogbook, m); lsSaveInjections(inj);
                 if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
+                // Restore intervals config on new/reset device
+                if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
+                  localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
+                  setIntervalsCfg(gistIcuCfg);
+                }
               } else {
                 // View-only: show gist data directly
                 setRows(logbook); setMeta(m); setInjections(inj);
                 if (gistCals) setCalories(gistCals);
+                // Use intervals config from gist so anyone can see ride data
+                if (gistIcuCfg) setIntervalsCfg(prev => prev ?? gistIcuCfg);
               }
               setGistOk(!!pat);
             }
@@ -3744,11 +3756,15 @@
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
+            if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
+              localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
+              setIntervalsCfg(gistIcuCfg);
+            }
             setGistOk(true); setGistMsg('');
             showMsg('Gist connected ✓');
           }
@@ -3766,11 +3782,15 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
+            if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
+              localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
+              setIntervalsCfg(gistIcuCfg);
+            }
           }
           setMsg('');
         } catch (e) { setMsg(e.message); }
@@ -3862,8 +3882,15 @@
         const cfg = { apiKey, athleteId };
         localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(cfg));
         setIntervalsCfg(cfg);
+        // Persist to gist so any viewer (phone, other device) gets ride data
+        (async () => {
+          const pat = localStorage.getItem(LS_GIST_PAT_KEY);
+          if (pat) {
+            try { await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, cfg); } catch (_) {}
+          }
+        })();
         refreshIntervals();
-      }, [refreshIntervals]);
+      }, [refreshIntervals, rows, meta, injections, injSchedule, calories]);
 
       const disconnectIntervals = useCallback(() => {
         localStorage.removeItem(LS_INTERVALS_KEY);

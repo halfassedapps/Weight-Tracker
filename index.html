@@ -2272,9 +2272,11 @@
       // leader line. Placed left-to-right; a pill is nudged right of its
       // ideal (dot-centered) position whenever it would overlap the
       // previous one, so dense escalation periods don't collide.
-      const pillY = 3, pillH = 9, pillGap = 3;
+      // Two rows: when a pill would push too far right in row 0, it drops to row 1.
+      const pillH = 6, pillGap = 2;
+      const ROW_Y = [2, 2 + pillH + 2];  // row 0 top, row 1 top
       const currentWkMs = weekStartMs(Date.now());
-      let prevRight = -Infinity;
+      const prevRight = [-Infinity, -Infinity];
       const pillPlacements = visibleDoseChanges.map((c, idx, arr) => {
         const dotX = xOf(c.ms), dotY = yOf(lbsAt(c.ms));
         const color = colorForDose(c.doseMg);
@@ -2284,11 +2286,16 @@
           ? Math.round(c.doseMg * 2 * 1000) / 1000
           : c.doseMg;
         const dosePart = `${displayDose}mg`;
-        const pillW = 9 + dosePart.length * 4.2 + 10;
-        let cx = Math.max(dotX, prevRight + pillGap + pillW / 2);
-        cx = Math.min(Math.max(cx, PAD.l + pillW / 2), PAD.l + cW - pillW / 2);
-        prevRight = cx + pillW / 2;
-        return { dotX, dotY, color, dosePart, pillW, cx };
+        const pillW = 7 + dosePart.length * 2.2 + 8;
+        // Pick whichever row places this pill closest to its ideal dot x
+        let bestRow = 0, bestCx = Infinity;
+        for (let row = 0; row < 2; row++) {
+          const minCx = prevRight[row] + pillGap + pillW / 2;
+          const cx = Math.min(Math.max(Math.max(dotX, minCx), PAD.l + pillW / 2), PAD.l + cW - pillW / 2);
+          if (cx < bestCx) { bestCx = cx; bestRow = row; }
+        }
+        prevRight[bestRow] = bestCx + pillW / 2;
+        return { dotX, dotY, color, dosePart, pillW, cx: bestCx, rowY: ROW_Y[bestRow] };
       });
 
       // Stats
@@ -2518,23 +2525,20 @@
 
             {/* Weekly-dose-change markers — dot on the line, pill in the top
                 band (clear of the data), linked by a thin leader line */}
-            {pillPlacements.map((p, i) => {
-              const pillTopY = pillY + pillH;
-              return (
-                <g key={i}>
-                  <line x1={p.cx} y1={pillTopY} x2={p.dotX} y2={p.dotY}
-                        stroke={p.color} strokeWidth="0.6" opacity="0.5" />
-                  <circle cx={p.dotX} cy={p.dotY} r="2" fill={p.color} stroke="#fff" strokeWidth="0.8" />
-                  <g style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }}>
-                    <rect x={p.cx - p.pillW / 2} y={pillY} width={p.pillW} height={pillH} rx={pillH / 2} fill={p.color} />
-                    <text x={p.cx} y={pillY + pillH / 2 + 1.8} textAnchor="middle"
-                          fontSize="4" fontWeight="700" fill="#fff">
-                      {p.dosePart}<tspan fontSize="3" fontWeight="600"> /wk</tspan>
-                    </text>
-                  </g>
+            {pillPlacements.map((p, i) => (
+              <g key={i}>
+                <line x1={p.cx} y1={p.rowY + pillH} x2={p.dotX} y2={p.dotY}
+                      stroke={p.color} strokeWidth="0.6" opacity="0.5" />
+                <circle cx={p.dotX} cy={p.dotY} r="2" fill={p.color} stroke="#fff" strokeWidth="0.8" />
+                <g style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.2))' }}>
+                  <rect x={p.cx - p.pillW / 2} y={p.rowY} width={p.pillW} height={pillH} rx={pillH / 2} fill={p.color} />
+                  <text x={p.cx} y={p.rowY + pillH / 2 + 1.2} textAnchor="middle"
+                        fontSize="3.2" fontWeight="700" fill="#fff">
+                    {p.dosePart}<tspan fontSize="2.5" fontWeight="600"> /wk</tspan>
+                  </text>
                 </g>
-              );
-            })}
+              </g>
+            ))}
 
             {/* Today line */}
             <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH}

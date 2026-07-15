@@ -3027,17 +3027,26 @@
 
       const sortedInj = [...injections].sort((a,b) => a.date.localeCompare(b.date));
       const weekStartMs = ms => { const d = new Date(ms); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()); return d.getTime(); };
+      const currentWkMs = weekStartMs(Date.now());
       const weekGroups = {};
       for (const inj of sortedInj) {
         const ms = new Date(inj.date + 'T12:00:00').getTime();
         const wk = weekStartMs(ms);
-        if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms };
+        if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms, count: 0 };
         weekGroups[wk].doseMg += inj.doseMg;
         weekGroups[wk].firstMs = Math.min(weekGroups[wk].firstMs, ms);
+        weekGroups[wk].count++;
       }
       const weeklyCycles = Object.values(weekGroups)
         .sort((a,b) => a.firstMs - b.firstMs)
-        .map(g => ({ startMs: g.firstMs, doseMg: Math.round(g.doseMg * 1000) / 1000 }));
+        .map((g, i, arr) => {
+          const doseMg = Math.round(g.doseMg * 1000) / 1000;
+          const isLast = i === arr.length - 1;
+          const effectiveDose = (isLast && weekStartMs(g.firstMs) === currentWkMs && g.count === 1)
+            ? Math.round(doseMg * 2 * 1000) / 1000
+            : doseMg;
+          return { startMs: g.firstMs, doseMg: effectiveDose };
+        });
       const doseChanges = [];
       let prevDose = null;
       for (const c of weeklyCycles) {

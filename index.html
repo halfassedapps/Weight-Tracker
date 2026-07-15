@@ -2619,8 +2619,10 @@
                 }))
                 .filter(v => v.eMs >= startMs && v.sMs <= endMs);
               if (!all.length) return null;
-              // A clip that fully contains at least one other clip → spanning row (top)
-              const isSpan = v => all.some(o => o !== v && o.sMs >= v.sMs && o.eMs <= v.eMs);
+              // Span row = contains others AND is not itself contained by something larger
+              const isSpan = v =>
+                all.some(o => o !== v && o.sMs >= v.sMs && o.eMs <= v.eMs) &&
+                !all.some(o => o !== v && o.sMs <= v.sMs && o.eMs >= v.eMs);
               const spans = all.filter(isSpan);
               const pills = all.filter(v => !isSpan(v));
               const renderBar = (v, i, y) => {

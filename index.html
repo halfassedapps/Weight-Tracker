@@ -2064,12 +2064,19 @@
         for (const c of weeklyCycles) { if (c.startMs <= ms) d = c.doseMg; else break; }
         return d;
       };
+      const currentWkMs = weekStartMs(Date.now());
       const doseChanges = [];
       { let prevDose = null;
-        for (const c of weeklyCycles) {
-          if (c.doseMg !== prevDose) {
+        for (let i = 0; i < weeklyCycles.length; i++) {
+          const c = weeklyCycles[i];
+          const isLast = i === weeklyCycles.length - 1;
+          // Project partial current week to full weekly dose before comparing
+          const effectiveDose = (isLast && weekStartMs(c.startMs) === currentWkMs && c.count === 1)
+            ? Math.round(c.doseMg * 2 * 1000) / 1000
+            : c.doseMg;
+          if (effectiveDose !== prevDose) {
             doseChanges.push({ ms: c.startMs, doseMg: c.doseMg, count: c.count, date: msToLocalDate(c.startMs) });
-            prevDose = c.doseMg;
+            prevDose = effectiveDose;
           }
         }
       }
@@ -2275,7 +2282,6 @@
       // Two rows: when a pill would push too far right in row 0, it drops to row 1.
       const pillH = 6, pillGap = 2;
       const ROW_Y = [2, 2 + pillH + 2];  // row 0 top, row 1 top
-      const currentWkMs = weekStartMs(Date.now());
       const prevRight = [-Infinity, -Infinity];
       const pillPlacements = visibleDoseChanges.map((c, idx, arr) => {
         const dotX = xOf(c.ms), dotY = yOf(lbsAt(c.ms));

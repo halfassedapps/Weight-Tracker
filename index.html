@@ -2056,27 +2056,30 @@
         weekGroups[wk].firstMs = Math.min(weekGroups[wk].firstMs, ms);
         weekGroups[wk].count++;
       }
+      const currentWkMs = weekStartMs(Date.now());
+      // Project a partial current week (1 injection so far) to its full weekly dose
+      // so the line color and pill don't show a phantom dose change mid-week.
       const weeklyCycles = Object.values(weekGroups)
         .sort((a, b) => a.firstMs - b.firstMs)
-        .map(g => ({ startMs: g.firstMs, doseMg: Math.round(g.doseMg * 1000) / 1000, count: g.count }));
+        .map((g, i, arr) => {
+          const doseMg = Math.round(g.doseMg * 1000) / 1000;
+          const isLast = i === arr.length - 1;
+          const effectiveDose = (isLast && weekStartMs(g.firstMs) === currentWkMs && g.count === 1)
+            ? Math.round(doseMg * 2 * 1000) / 1000
+            : doseMg;
+          return { startMs: g.firstMs, doseMg: effectiveDose, count: g.count };
+        });
       const doseAt = ms => {
         let d = null;
         for (const c of weeklyCycles) { if (c.startMs <= ms) d = c.doseMg; else break; }
         return d;
       };
-      const currentWkMs = weekStartMs(Date.now());
       const doseChanges = [];
       { let prevDose = null;
-        for (let i = 0; i < weeklyCycles.length; i++) {
-          const c = weeklyCycles[i];
-          const isLast = i === weeklyCycles.length - 1;
-          // Project partial current week to full weekly dose before comparing
-          const effectiveDose = (isLast && weekStartMs(c.startMs) === currentWkMs && c.count === 1)
-            ? Math.round(c.doseMg * 2 * 1000) / 1000
-            : c.doseMg;
-          if (effectiveDose !== prevDose) {
+        for (const c of weeklyCycles) {
+          if (c.doseMg !== prevDose) {
             doseChanges.push({ ms: c.startMs, doseMg: c.doseMg, count: c.count, date: msToLocalDate(c.startMs) });
-            prevDose = effectiveDose;
+            prevDose = c.doseMg;
           }
         }
       }
@@ -2286,12 +2289,8 @@
       const pillPlacements = visibleDoseChanges.map((c, idx, arr) => {
         const dotX = xOf(c.ms), dotY = yOf(lbsAt(c.ms));
         const color = colorForDose(c.doseMg);
-        const isLastPill = idx === arr.length - 1;
-        const isCurrentWk = weekStartMs(c.ms) === currentWkMs;
-        const displayDose = (isLastPill && isCurrentWk && c.count === 1)
-          ? Math.round(c.doseMg * 2 * 1000) / 1000
-          : c.doseMg;
-        const dosePart = `${displayDose}mg`;
+        // doseMg is already the effective projected weekly dose (partial week handled upstream)
+        const dosePart = `${c.doseMg}mg`;
         const pillW = 7 + dosePart.length * 2.2 + 8;
         // Pick whichever row places this pill closest to its ideal dot x
         let bestRow = 0, bestCx = Infinity;

@@ -2220,14 +2220,14 @@
           return { id, color: '#ff9500',
             x1: PAD.l, y1: yOf(intcp),
             x2: PAD.l + cW, y2: yOf(intcp + slope * (endMs - startMs) / 86400000),
-            goalMs };
+            goalMs, lbsPerWeek: slope * -7 };
         }
         const opt = TREND_OPTIONS.find(o => o.id === id);
         const slopePerDay = -opt.ratePerWeek / 7;
         return { id, color: opt.color,
           x1: xOf(ratesAnchorMs), y1: yOf(ratesAnchorLbs),
           x2: PAD.l + cW, y2: yOf(ratesAnchorLbs + slopePerDay * (endMs - ratesAnchorMs) / 86400000),
-          goalMs: rateGoalMsById[id] };
+          goalMs: rateGoalMsById[id], lbsPerWeek: opt.ratePerWeek };
       });
 
       // Monthly x-axis ticks
@@ -2509,7 +2509,7 @@
                   <line key={t.id} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
                         stroke={t.color} strokeWidth="4" strokeDasharray="6,3" opacity="0"
                         style={{ cursor:'crosshair' }}
-                        onMouseEnter={() => setTrendLineTip({ label: opt?.label ?? t.id, goalMs: t.goalMs, x: mx, y: my })}
+                        onMouseEnter={() => setTrendLineTip({ label: opt?.label ?? t.id, goalMs: t.goalMs, lbsPerWeek: t.lbsPerWeek, x: mx, y: my })}
                         onMouseLeave={() => setTrendLineTip(null)} />
                 );
               })}
@@ -2708,7 +2708,10 @@
 
             {/* Trend line hover tooltip */}
             {trendLineTip && (() => {
-              const TW = 130, TH = 26, TR = 4;
+              const TW = 130, TR = 4;
+              const rate = trendLineTip.lbsPerWeek;
+              const rateStr = rate != null ? `${rate >= 0 ? '' : '+'}${(-rate).toFixed(2)} lbs/wk` : null;
+              const TH = rateStr ? 34 : 26;
               const tx = Math.max(PAD.l, Math.min(trendLineTip.x - TW / 2, PAD.l + cW - TW));
               const ty = Math.max(PAD.t + 2, trendLineTip.y - TH - 6);
               const dateStr = trendLineTip.goalMs
@@ -2722,7 +2725,12 @@
                   <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
                   <text x={tx + TW/2} y={ty + 9} textAnchor="middle"
                         fontSize="5.5" fontWeight="600" fill="#fff">{trendLabel}</text>
-                  <text x={tx + TW/2} y={ty + 19} textAnchor="middle" fontSize="5" fill="rgba(255,255,255,.55)">
+                  {rateStr && (
+                    <text x={tx + TW/2} y={ty + 18} textAnchor="middle" fontSize="5" fontWeight="600" fill="#34c759">
+                      {rateStr}
+                    </text>
+                  )}
+                  <text x={tx + TW/2} y={ty + TH - 5} textAnchor="middle" fontSize="5" fill="rgba(255,255,255,.55)">
                     {dateStr ? `Goal: ${dateStr}` : 'Beyond chart range'}
                   </text>
                 </g>

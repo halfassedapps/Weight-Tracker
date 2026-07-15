@@ -2051,13 +2051,14 @@
       for (const inj of injAsc) {
         const ms = new Date(inj.date + 'T12:00:00').getTime();
         const wk = weekStartMs(ms);
-        if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms };
+        if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms, count: 0 };
         weekGroups[wk].doseMg += inj.doseMg;
         weekGroups[wk].firstMs = Math.min(weekGroups[wk].firstMs, ms);
+        weekGroups[wk].count++;
       }
       const weeklyCycles = Object.values(weekGroups)
         .sort((a, b) => a.firstMs - b.firstMs)
-        .map(g => ({ startMs: g.firstMs, doseMg: Math.round(g.doseMg * 1000) / 1000 }));
+        .map(g => ({ startMs: g.firstMs, doseMg: Math.round(g.doseMg * 1000) / 1000, count: g.count }));
       const doseAt = ms => {
         let d = null;
         for (const c of weeklyCycles) { if (c.startMs <= ms) d = c.doseMg; else break; }
@@ -2067,7 +2068,7 @@
       { let prevDose = null;
         for (const c of weeklyCycles) {
           if (c.doseMg !== prevDose) {
-            doseChanges.push({ ms: c.startMs, doseMg: c.doseMg, date: msToLocalDate(c.startMs) });
+            doseChanges.push({ ms: c.startMs, doseMg: c.doseMg, count: c.count, date: msToLocalDate(c.startMs) });
             prevDose = c.doseMg;
           }
         }
@@ -2272,16 +2273,22 @@
       // ideal (dot-centered) position whenever it would overlap the
       // previous one, so dense escalation periods don't collide.
       const pillY = 3, pillH = 9, pillGap = 3;
+      const currentWkMs = weekStartMs(Date.now());
       let prevRight = -Infinity;
-      const pillPlacements = visibleDoseChanges.map(c => {
+      const pillPlacements = visibleDoseChanges.map((c, idx, arr) => {
         const dotX = xOf(c.ms), dotY = yOf(lbsAt(c.ms));
         const color = colorForDose(c.doseMg);
-        const label = `${c.doseMg}mg`;
-        const pillW = 9 + label.length * 4.2;
+        const isLastPill = idx === arr.length - 1;
+        const isCurrentWk = weekStartMs(c.ms) === currentWkMs;
+        const displayDose = (isLastPill && isCurrentWk && c.count === 1)
+          ? Math.round(c.doseMg * 2 * 1000) / 1000
+          : c.doseMg;
+        const dosePart = `${displayDose}mg`;
+        const pillW = 9 + dosePart.length * 4.2 + 10;
         let cx = Math.max(dotX, prevRight + pillGap + pillW / 2);
         cx = Math.min(Math.max(cx, PAD.l + pillW / 2), PAD.l + cW - pillW / 2);
         prevRight = cx + pillW / 2;
-        return { dotX, dotY, color, label, pillW, cx };
+        return { dotX, dotY, color, dosePart, pillW, cx };
       });
 
       // Stats
@@ -2521,7 +2528,9 @@
                   <g style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }}>
                     <rect x={p.cx - p.pillW / 2} y={pillY} width={p.pillW} height={pillH} rx={pillH / 2} fill={p.color} />
                     <text x={p.cx} y={pillY + pillH / 2 + 1.8} textAnchor="middle"
-                          fontSize="4" fontWeight="700" fill="#fff">{p.label}</text>
+                          fontSize="4" fontWeight="700" fill="#fff">
+                      {p.dosePart}<tspan fontSize="3" fontWeight="600"> /wk</tspan>
+                    </text>
                   </g>
                 </g>
               );

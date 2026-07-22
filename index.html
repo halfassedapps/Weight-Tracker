@@ -2020,10 +2020,10 @@
         return () => document.removeEventListener('pointerdown', onPointerDown);
       }, [trendMenuOpen]);
 
-      const VW = 360, VH = 190;
+      const VW = 360, VH = 200;
       // Extra top padding reserves a dedicated band for dose-change pills,
       // kept clear of the plotted line entirely (linked via leader lines).
-      const PAD = { t: 32, r: 14, b: 48, l: 38 };
+      const PAD = { t: 32, r: 14, b: 58, l: 38 };
       const cW  = VW - PAD.l - PAD.r;
       const cH  = VH - PAD.t - PAD.b;
 
@@ -2234,6 +2234,17 @@
       const xTicks = [];
       const td = new Date(startMs); td.setDate(1); td.setMonth(td.getMonth() + 1);
       while (td.getTime() <= endMs) { xTicks.push(td.getTime()); td.setMonth(td.getMonth() + 1); }
+
+      // Weekly x-axis ticks — weeks elapsed since start, rendered above the
+      // Body Morph Videos row. Numeric labels are thinned out (every Nth week)
+      // when the visible range is long enough that every-week labels would
+      // overlap; the tick marks themselves still appear every week.
+      const weekTicks = [];
+      for (let ms = startMs, n = 0; ms <= endMs; ms += 7 * 86400000, n++) {
+        weekTicks.push({ ms, n });
+      }
+      const weekPxGap    = cW / Math.max(weekTicks.length - 1, 1);
+      const weekLabelStep = Math.max(1, Math.ceil(6 / weekPxGap));
 
       // Y-axis grid lines every 10 lbs
       const yTicks = [];
@@ -2576,7 +2587,7 @@
                           stroke="#fff" strokeWidth="1.3" strokeLinecap="round" />
                   )}
                 </g>
-                <text x={xOf(goalMs)} y={PAD.t + cH + 36} textAnchor="middle"
+                <text x={xOf(goalMs)} y={PAD.t + cH + 46} textAnchor="middle"
                       fontSize="5" fill="#34c759" fontWeight="600">{goalDateStr}</text>
               </g>
             )}
@@ -2593,12 +2604,26 @@
             <text x={PAD.l - 5} y={goalY + 3} textAnchor="end"
                   fontSize="4.5" fill="#34c759" fontWeight="600">{GOAL_LBS}</text>
 
+            {/* Week count ticks — weeks elapsed since start, above the Body Morph Videos row */}
+            <text x={PAD.l - 3} y={PAD.t + cH + 6} textAnchor="end"
+                  fontSize="3.5" fill="#aeaeb2">Week</text>
+            {weekTicks.map(({ ms, n }) => (
+              <g key={n}>
+                <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 2}
+                      stroke="#e5e5ea" strokeWidth="0.75" />
+                {n % weekLabelStep === 0 && (
+                  <text x={xOf(ms)} y={PAD.t + cH + 6} textAnchor="middle"
+                        fontSize="3" fill="#c7c7cc">{n}</text>
+                )}
+              </g>
+            ))}
+
             {/* X axis ticks */}
             {xTicks.map(ms => (
               <g key={ms}>
                 <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 3}
                       stroke="#d1d1d6" strokeWidth="1" />
-                <text x={xOf(ms)} y={PAD.t + cH + 22} textAnchor="middle"
+                <text x={xOf(ms)} y={PAD.t + cH + 32} textAnchor="middle"
                       fontSize="5" fill="#aeaeb2">
                   {new Date(ms).toLocaleDateString('en-US', { month: 'short' })}
                 </text>
@@ -2609,7 +2634,7 @@
             {(() => {
               const SCAN_COLORS = ['#5c6bc0','#26a69a','#ef5350','#ab47bc','#ff7043'];
               const BAR_H = 6, GAP = 2;
-              const SPAN_Y = PAD.t + cH + 4;
+              const SPAN_Y = PAD.t + cH + 14;
               const PILL_Y = SPAN_Y + BAR_H + GAP;
               const all = videos
                 .map(v => ({
@@ -2665,7 +2690,7 @@
               const TW = 132, TH = 24, TR = 4;
               const cx = x1 + barW / 2;
               const tx = Math.max(PAD.l, Math.min(cx - TW / 2, PAD.l + cW - TW));
-              const SPAN_Y = PAD.t + cH + 4;
+              const SPAN_Y = PAD.t + cH + 14;
               const ty = SPAN_Y - TH - 3;
               return (
                 <g style={{ pointerEvents:'none' }}>

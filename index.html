@@ -31,6 +31,8 @@
     const LS_GIST_PAT_KEY  = 'weight-tracker-gist-pat';
     const LS_SPLIT_KEY     = 'weight-tracker-split-dose';
     const LS_VIAL_CONC_KEY    = 'weight-tracker-vial-conc';
+    const LS_VIAL_MG_KEY      = 'weight-tracker-vial-mg';
+    const LS_VIAL_VOL_KEY     = 'weight-tracker-vial-vol';
     const LS_SYRINGE_UNITS_KEY = 'weight-tracker-syringe-units';
     const LS_INTERVALS_KEY       = 'weight-tracker-intervals-config';
     const LS_CALORIE_KEY         = 'weight-tracker-calories';
@@ -439,8 +441,7 @@
       if (twoWeekLbs > 8)  return { action: 'contact', label: 'Contact prescriber', note: '>8 lbs/2wk', color: '#ff3b30', bg: '#fff1f0' };
       if (twoWeekLbs >= 5) return { action: 'monitor', label: 'Stay — monitor',     note: '5–8 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
       if (twoWeekLbs >= 3) return { action: 'stay',    label: 'Stay at dose',       note: '3–4 lbs/2wk', color: '#34c759', bg: '#f0fdf4' };
-      if (twoWeekLbs >= 0) return { action: 'increase', label: 'Consider ↑ dose',   note: '<3 lbs/2wk',  color: '#ff9500', bg: '#fff8ee' };
-      return { action: 'gained', label: 'Gained weight', note: twoWeekLbs.toFixed(1) + ' lbs', color: '#ff3b30', bg: '#fff1f0' };
+      return { action: 'increase', label: 'Consider ↑ dose', note: '<3 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
     }
 
     function recommendedDose(currentDoseMg, twoWeekLbs) {
@@ -1851,13 +1852,31 @@
         document.addEventListener('pointerdown', onPointerDown);
         return () => document.removeEventListener('pointerdown', onPointerDown);
       }, [rulesOpen]);
-      const [vialConc, setVialConc] = useState(
-        () => Math.max(parseFloat(localStorage.getItem(LS_VIAL_CONC_KEY) || '12.5'), 0.1)
+      // Vial strength as entered on the label — total mg per some volume (e.g.
+      // "15 mg / 0.5 mL") — rather than a pre-computed mg/mL concentration.
+      // Volume defaults to 1 mL so a bare mg entry behaves exactly like the old
+      // single mg/mL field. The derived concentration is still mirrored into
+      // LS_VIAL_CONC_KEY so the calculator modal and syringe graphic (which only
+      // know about mg/mL) don't need to change.
+      const [vialMg, setVialMgState] = useState(
+        () => Math.max(parseFloat(localStorage.getItem(LS_VIAL_MG_KEY) || localStorage.getItem(LS_VIAL_CONC_KEY) || '12.5'), 0.1)
       );
-      const handleVialConc = v => {
+      const [vialVol, setVialVolState] = useState(
+        () => Math.max(parseFloat(localStorage.getItem(LS_VIAL_VOL_KEY) || '1'), 0.01)
+      );
+      const vialConc = Math.max(vialMg / vialVol, 0.01);
+      useEffect(() => {
+        try { localStorage.setItem(LS_VIAL_CONC_KEY, String(vialConc)); } catch (_) {}
+      }, [vialConc]);
+      const handleVialMg = v => {
         const n = Math.max(parseFloat(v) || 12.5, 0.1);
-        setVialConc(n);
-        try { localStorage.setItem(LS_VIAL_CONC_KEY, String(n)); } catch (_) {}
+        setVialMgState(n);
+        try { localStorage.setItem(LS_VIAL_MG_KEY, String(n)); } catch (_) {}
+      };
+      const handleVialVol = v => {
+        const n = Math.max(parseFloat(v) || 1, 0.01);
+        setVialVolState(n);
+        try { localStorage.setItem(LS_VIAL_VOL_KEY, String(n)); } catch (_) {}
       };
       const [syringeUnits, setSyringeUnits] = useState(
         () => parseInt(localStorage.getItem(LS_SYRINGE_UNITS_KEY) || '100', 10)
@@ -1902,18 +1921,18 @@
       const nextInjDate  = new Date(nextInjMs);
       const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
       const subtext = g.action === 'increase'
-        ? `Progress below 3 lbs/2wk — increase by ${DOSE_STEP_MG} mg`
+        ? (recent.twoWeekLoss < 0
+            ? `Weight trending up — increase by ${DOSE_STEP_MG} mg`
+            : `Progress below 3 lbs/2wk — increase by ${DOSE_STEP_MG} mg`)
         : g.action === 'stay'    ? 'Weight loss on track — hold current dose'
         : g.action === 'monitor' ? 'Strong loss — stay put; drop down if >5 lbs next 2 wks too'
-        : g.action === 'contact' ? 'Unusually rapid loss — consult your prescriber'
-        : 'Weight moving up — hold and reassess';
+        : 'Unusually rapid loss — consult your prescriber';
 
       const DOSING_RULES = [
         { range: '> 8 lbs / 2 wks',  action: 'Contact prescriber',        color: '#ff3b30' },
         { range: '5–8 lbs / 2 wks',  action: 'Stay — monitor closely',    color: '#ff9500' },
         { range: '3–4 lbs / 2 wks',  action: 'Stay at current dose',      color: '#34c759' },
-        { range: '0–3 lbs / 2 wks',  action: `Increase by ${DOSE_STEP_MG} mg`, color: '#ff9500' },
-        { range: 'Weight gain',      action: 'Hold and reassess',         color: '#ff3b30' },
+        { range: '< 3 lbs / 2 wks',  action: `Increase by ${DOSE_STEP_MG} mg (incl. weight gain)`, color: '#ff9500' },
       ];
 
       return (
@@ -2004,13 +2023,19 @@
                 {/* Vial config row */}
                 <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8, flexWrap:'wrap' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                    <span style={{ fontSize:11, color:'#8e8e93', fontWeight:600 }}>Vial concentration</span>
-                    <input type="number" step="0.5" min="0.5" value={vialConc}
-                           onChange={e => handleVialConc(e.target.value)}
-                           style={{ width:68, fontSize:13, fontWeight:600, padding:'3px 8px', borderRadius:8,
+                    <span style={{ fontSize:11, color:'#8e8e93', fontWeight:600 }}>Vial</span>
+                    <input type="number" step="0.5" min="0.1" value={vialMg}
+                           onChange={e => handleVialMg(e.target.value)}
+                           style={{ width:64, fontSize:13, fontWeight:600, padding:'3px 8px', borderRadius:8,
                                     border:'1px solid #d1d1d6', background:'#f9f9f9',
                                     color:'#1c1c1e', outline:'none', textAlign:'center' }} />
-                    <span style={{ fontSize:11, color:'#8e8e93' }}>mg/mL</span>
+                    <span style={{ fontSize:11, color:'#8e8e93' }}>mg /</span>
+                    <input type="number" step="0.1" min="0.01" value={vialVol}
+                           onChange={e => handleVialVol(e.target.value)}
+                           style={{ width:54, fontSize:13, fontWeight:600, padding:'3px 8px', borderRadius:8,
+                                    border:'1px solid #d1d1d6', background:'#f9f9f9',
+                                    color:'#1c1c1e', outline:'none', textAlign:'center' }} />
+                    <span style={{ fontSize:11, color:'#8e8e93' }}>mL ({vialConc.toFixed(2)} mg/mL)</span>
                   </div>
                   <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                     <span style={{ fontSize:11, color:'#8e8e93', fontWeight:600 }}>Syringe</span>

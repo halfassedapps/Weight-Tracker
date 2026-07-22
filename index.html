@@ -1841,6 +1841,16 @@
       const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
+      const [rulesOpen,    setRulesOpen]    = useState(false);
+      const rulesRef = useRef(null);
+      useEffect(() => {
+        if (!rulesOpen) return;
+        const onPointerDown = e => {
+          if (rulesRef.current && !rulesRef.current.contains(e.target)) setRulesOpen(false);
+        };
+        document.addEventListener('pointerdown', onPointerDown);
+        return () => document.removeEventListener('pointerdown', onPointerDown);
+      }, [rulesOpen]);
       const [vialConc, setVialConc] = useState(
         () => Math.max(parseFloat(localStorage.getItem(LS_VIAL_CONC_KEY) || '12.5'), 0.1)
       );
@@ -1898,6 +1908,14 @@
         : g.action === 'contact' ? 'Unusually rapid loss — consult your prescriber'
         : 'Weight moving up — hold and reassess';
 
+      const DOSING_RULES = [
+        { range: '> 8 lbs / 2 wks',  action: 'Contact prescriber',        color: '#ff3b30' },
+        { range: '5–8 lbs / 2 wks',  action: 'Stay — monitor closely',    color: '#ff9500' },
+        { range: '3–4 lbs / 2 wks',  action: 'Stay at current dose',      color: '#34c759' },
+        { range: '0–3 lbs / 2 wks',  action: `Increase by ${DOSE_STEP_MG} mg`, color: '#ff9500' },
+        { range: 'Weight gain',      action: 'Hold and reassess',         color: '#ff3b30' },
+      ];
+
       return (
         <div>
           {showCalc && <DoseCalculatorModal initialDose={calcInitDose} initialConc={vialConc} onClose={() => setShowCalc(false)} />}
@@ -1905,8 +1923,41 @@
                              onSave={onSaveSchedule} onClose={() => setShowSchedule(false)} />}
 
           <div style={{ margin: '0 0 12px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
-                          letterSpacing: .6, marginBottom: 6 }}>Next Dose Recommendation</div>
+            <div ref={rulesRef} style={{ display: 'flex', alignItems: 'center', gap: 5,
+                          marginBottom: 6, position: 'relative' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
+                            letterSpacing: .6 }}>Next Dose Recommendation</div>
+              <button onClick={() => setRulesOpen(v => !v)}
+                      aria-label="Dosing increment rules"
+                      style={{ width: 14, height: 14, borderRadius: '50%', border: '1px solid #c7c7cc',
+                               background: rulesOpen ? '#8e8e93' : '#fff', color: rulesOpen ? '#fff' : '#8e8e93',
+                               fontSize: 9, fontWeight: 700, lineHeight: 1, fontStyle: 'italic',
+                               display: 'flex', alignItems: 'center', justifyContent: 'center',
+                               cursor: 'pointer', padding: 0 }}>i</button>
+              {rulesOpen && (
+                <div style={{ position: 'absolute', top: 18, left: 0, zIndex: 20, width: 250,
+                              background: '#1c1c1e', color: '#fff', borderRadius: 10, padding: '10px 12px',
+                              boxShadow: '0 8px 24px rgba(0,0,0,.28)' }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 7 }}>Dosing increment rules</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    {DOSING_RULES.map(r => (
+                      <div key={r.range} style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: r.color,
+                                       flexShrink: 0, marginTop: 2 }} />
+                        <span style={{ fontSize: 11.5, lineHeight: 1.4 }}>
+                          <span style={{ color: '#fff', fontWeight: 600 }}>{r.range}</span>
+                          <span style={{ color: 'rgba(255,255,255,.7)' }}> — {r.action}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,.5)', marginTop: 8,
+                                paddingTop: 7, borderTop: '1px solid rgba(255,255,255,.15)' }}>
+                    Based on weight change over the trailing 2 weeks. Capped at {MAX_DOSE_MG} mg/week.
+                  </div>
+                </div>
+              )}
+            </div>
             <div style={{ padding: '12px 14px', borderRadius: 10,
                           background: g.bg, border: `1px solid ${g.color}33` }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>

@@ -1930,7 +1930,7 @@
 
       const DOSING_RULES = [
         { range: '> 8 lbs / 2 wks',  action: 'Contact prescriber',        color: '#ff3b30' },
-        { range: '5–8 lbs / 2 wks',  action: 'Stay — monitor closely; ↓ dose if it repeats next 2 wks', color: '#ff9500' },
+        { range: '> 5–8 lbs / 2 wks', action: `Stay — monitor closely; decrease dose by ${DOSE_STEP_MG} mg if it repeats next 2 wks`, color: '#ff9500' },
         { range: '3–5 lbs / 2 wks',  action: 'Stay at current dose',      color: '#34c759' },
         { range: '< 3 lbs / 2 wks',  action: `Increase by ${DOSE_STEP_MG} mg (incl. weight gain)`, color: '#ff9500' },
       ];

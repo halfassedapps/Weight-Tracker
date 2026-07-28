@@ -440,7 +440,7 @@
       if (twoWeekLbs == null) return null;
       if (twoWeekLbs > 8)  return { action: 'contact', label: 'Contact prescriber', note: '>8 lbs/2wk', color: '#ff3b30', bg: '#fff1f0' };
       if (twoWeekLbs >= 5) return { action: 'monitor', label: 'Stay — monitor',     note: '5–8 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
-      if (twoWeekLbs >= 3) return { action: 'stay',    label: 'Stay at dose',       note: '3–4 lbs/2wk', color: '#34c759', bg: '#f0fdf4' };
+      if (twoWeekLbs >= 3) return { action: 'stay',    label: 'Stay at dose',       note: '3–5 lbs/2wk', color: '#34c759', bg: '#f0fdf4' };
       return { action: 'increase', label: 'Consider ↑ dose', note: '<3 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
     }
 
@@ -1930,8 +1930,8 @@
 
       const DOSING_RULES = [
         { range: '> 8 lbs / 2 wks',  action: 'Contact prescriber',        color: '#ff3b30' },
-        { range: '5–8 lbs / 2 wks',  action: 'Stay — monitor closely',    color: '#ff9500' },
-        { range: '3–4 lbs / 2 wks',  action: 'Stay at current dose',      color: '#34c759' },
+        { range: '5–8 lbs / 2 wks',  action: 'Stay — monitor closely; ↓ dose if it repeats next 2 wks', color: '#ff9500' },
+        { range: '3–5 lbs / 2 wks',  action: 'Stay at current dose',      color: '#34c759' },
         { range: '< 3 lbs / 2 wks',  action: `Increase by ${DOSE_STEP_MG} mg (incl. weight gain)`, color: '#ff9500' },
       ];
 

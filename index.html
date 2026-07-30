@@ -2073,11 +2073,10 @@
     const GOAL_LBS        = 155;
     const HEIGHT_IN       = 67; // 5'7"
 
-    function WeightChart({ rows, injections, videos = [], onPlayVideo }) {
+    function WeightChart({ rows, injections }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
-      const [scanTip, setScanTip] = useState(null);
       const [trendLineTip, setTrendLineTip] = useState(null);
       const [weightTip, setWeightTip] = useState(null);
       // Regression window for the Current Trend line. 0 = all data.
@@ -2099,7 +2098,7 @@
       const VW = 360, VH = 200;
       // Extra top padding reserves a dedicated band for dose-change pills,
       // kept clear of the plotted line entirely (linked via leader lines).
-      const PAD = { t: 32, r: 14, b: 58, l: 38 };
+      const PAD = { t: 32, r: 14, b: 38, l: 38 };
       const cW  = VW - PAD.l - PAD.r;
       const cH  = VH - PAD.t - PAD.b;
 
@@ -2311,10 +2310,10 @@
       const td = new Date(startMs); td.setDate(1); td.setMonth(td.getMonth() + 1);
       while (td.getTime() <= endMs) { xTicks.push(td.getTime()); td.setMonth(td.getMonth() + 1); }
 
-      // Weekly x-axis ticks — weeks elapsed since start, rendered above the
-      // Body Morph Videos row. Numeric labels are thinned out (every Nth week)
-      // when the visible range is long enough that every-week labels would
-      // overlap; the tick marks themselves still appear every week.
+      // Weekly x-axis ticks — weeks elapsed since start. Numeric labels are
+      // thinned out (every Nth week) when the visible range is long enough
+      // that every-week labels would overlap; the tick marks themselves
+      // still appear every week.
       const weekTicks = [];
       for (let ms = startMs, n = 0; ms <= endMs; ms += 7 * 86400000, n++) {
         weekTicks.push({ ms, n });
@@ -2663,7 +2662,7 @@
                           stroke="#fff" strokeWidth="1.3" strokeLinecap="round" />
                   )}
                 </g>
-                <text x={xOf(goalMs)} y={PAD.t + cH + 46} textAnchor="middle"
+                <text x={xOf(goalMs)} y={PAD.t + cH + 28} textAnchor="middle"
                       fontSize="5" fill="#34c759" fontWeight="600">{goalDateStr}</text>
               </g>
             )}
@@ -2680,7 +2679,7 @@
             <text x={PAD.l - 5} y={goalY + 3} textAnchor="end"
                   fontSize="4.5" fill="#34c759" fontWeight="600">{GOAL_LBS}</text>
 
-            {/* Week count ticks — weeks elapsed since start, above the Body Morph Videos row */}
+            {/* Week count ticks — weeks elapsed since start */}
             <text x={PAD.l - 3} y={PAD.t + cH + 6} textAnchor="end"
                   fontSize="3.5" fill="#aeaeb2">Week</text>
             {weekTicks.map(({ ms, n }) => (
@@ -2699,86 +2698,12 @@
               <g key={ms}>
                 <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 3}
                       stroke="#d1d1d6" strokeWidth="1" />
-                <text x={xOf(ms)} y={PAD.t + cH + 32} textAnchor="middle"
+                <text x={xOf(ms)} y={PAD.t + cH + 14} textAnchor="middle"
                       fontSize="5" fill="#aeaeb2">
                   {new Date(ms).toLocaleDateString('en-US', { month: 'short' })}
                 </text>
               </g>
             ))}
-
-            {/* Body scan bars — two rows: spanning clips on top, individual pills below */}
-            {(() => {
-              const SCAN_COLORS = ['#5c6bc0','#26a69a','#ef5350','#ab47bc','#ff7043'];
-              const BAR_H = 6, GAP = 2;
-              const SPAN_Y = PAD.t + cH + 14;
-              const PILL_Y = SPAN_Y + BAR_H + GAP;
-              const all = videos
-                .map(v => ({
-                  ...v,
-                  sMs: new Date(v.startDate + 'T12:00:00').getTime(),
-                  eMs: new Date(v.endDate   + 'T12:00:00').getTime(),
-                }))
-                .filter(v => v.eMs >= startMs && v.sMs <= endMs);
-              if (!all.length) return null;
-              // Span row = contains others AND is not itself contained by something larger
-              const isSpan = v =>
-                all.some(o => o !== v && o.sMs >= v.sMs && o.eMs <= v.eMs) &&
-                !all.some(o => o !== v && o.sMs <= v.sMs && o.eMs >= v.eMs);
-              const spans = all.filter(isSpan);
-              const pills = all.filter(v => !isSpan(v));
-              const renderBar = (v, i, y) => {
-                const x1   = Math.max(PAD.l, xOf(v.sMs));
-                const x2   = Math.min(PAD.l + cW, xOf(v.eMs));
-                const barW = Math.max(4, x2 - x1);
-                const col  = SCAN_COLORS[i % SCAN_COLORS.length];
-                return (
-                  <g key={v.startDate + y} style={{ cursor:'pointer' }}
-                     onClick={() => onPlayVideo && onPlayVideo(v)}
-                     onMouseEnter={() => setScanTip({ v, x1, x2, barW, y })}
-                     onMouseLeave={() => setScanTip(null)}>
-                    <rect x={x1} y={y} width={barW} height={BAR_H}
-                          rx={BAR_H/2} fill={col} opacity="0.85" />
-                    {barW > 8 && (
-                      <text x={x1 + barW/2} y={y + BAR_H/2 + 2}
-                            textAnchor="middle" fontSize="5" fill="#fff">▶</text>
-                    )}
-                  </g>
-                );
-              };
-              const labelY = SPAN_Y + (spans.length ? BAR_H + GAP/2 + BAR_H/2 : BAR_H/2);
-              return (
-                <g>
-                  <text x={PAD.l - 3} y={labelY - 1} textAnchor="end"
-                        fontSize="3.5" fill="#aeaeb2">Body Morph</text>
-                  <text x={PAD.l - 3} y={labelY + 4} textAnchor="end"
-                        fontSize="3.5" fill="#aeaeb2">Videos</text>
-                  {spans.map((v, i) => renderBar(v, i, SPAN_Y))}
-                  {pills.map((v, i) => renderBar(v, spans.length + i, spans.length ? PILL_Y : SPAN_Y))}
-                </g>
-              );
-            })()}
-
-            {/* Scan bar hover tooltip */}
-            {scanTip && (() => {
-              const { v, x1, x2, barW } = scanTip;
-              const label = `▶  Play ZOZO Fit Body Morph`;
-              const sub   = `${fmtShort(v.startDate)} – ${fmtShort(v.endDate)}`;
-              const TW = 132, TH = 24, TR = 4;
-              const cx = x1 + barW / 2;
-              const tx = Math.max(PAD.l, Math.min(cx - TW / 2, PAD.l + cW - TW));
-              const SPAN_Y = PAD.t + cH + 14;
-              const ty = SPAN_Y - TH - 3;
-              return (
-                <g style={{ pointerEvents:'none' }}>
-                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR}
-                        fill="rgba(28,28,30,.92)" />
-                  <text x={tx + TW/2} y={ty + 9} textAnchor="middle"
-                        fontSize="5.5" fontWeight="600" fill="#fff">{label}</text>
-                  <text x={tx + TW/2} y={ty + 18} textAnchor="middle"
-                        fontSize="5" fill="rgba(255,255,255,.55)">{sub}</text>
-                </g>
-              );
-            })()}
 
             {/* Weight line hover tooltip */}
             {weightTip && !trendLineTip && (() => {
@@ -2927,82 +2852,84 @@
       );
     }
 
-    /* ─── Body Scan Timeline ─────────────────────────────────────────────────── */
-    function BodyScanTimeline({ rows, videos, onPlayVideo }) {
-      if (!videos.length) return null;
+    /* ─── Progress Videos Grid ───────────────────────────────────────────────── */
+    // Seeks a thumbnail <video> to a representative frame (many clips open on a
+    // blank first frame) and forces the browser to actually paint it — some
+    // browsers (notably Safari) won't render a seeked frame without a
+    // play/pause nudge, even when muted.
+    const thumbOnLoaded = e => {
+      const v = e.target;
+      try { v.currentTime = Math.min(1, (v.duration || 2) / 2); } catch (_) {}
+    };
+    const thumbOnSeeked = e => {
+      const v = e.target;
+      const p = v.play();
+      if (p && p.then) p.then(() => v.pause()).catch(() => {});
+    };
 
-      const VW = 360;
-      const PAD = { l: 38, r: 14, t: 8, b: 28 };
-      const cW = VW - PAD.l - PAD.r;
-      const BAR_H = 18, LANE_GAP = 4;
+    // A single clickable video thumbnail: seeked live-frame preview, play glyph,
+    // and a date-span label overlaid at the bottom.
+    const THUMB_W = 176; // halfway between the old "full term" (220) and grid (~130) sizes
 
-      const pts = [...rows].reverse();
-      const startMs = pts.length ? new Date(pts[0].date + 'T12:00:00').getTime() : Date.now();
-      const todayMs = new Date().setHours(12,0,0,0);
-      const endMs   = todayMs + 14 * 86400000;
-      const xOf = ms => PAD.l + (ms - startMs) / (endMs - startMs) * cW;
+    function VideoThumb({ video, onPlayVideo, badge }) {
+      return (
+        <div onClick={() => onPlayVideo && onPlayVideo(video)}
+             style={{ cursor: 'pointer', borderRadius: 12, overflow: 'hidden', width: THUMB_W,
+                       position: 'relative', background: '#000', aspectRatio: '3 / 4', flexShrink: 0 }}>
+          <video muted playsInline preload="auto" src={video.url}
+                 onLoadedMetadata={thumbOnLoaded} onSeeked={thumbOnSeeked}
+                 style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }} />
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '10px 8px 8px',
+                        height: '30%', display: 'flex', alignItems: 'flex-end',
+                        background: 'linear-gradient(to top, rgba(0,0,0,.95) 65%, transparent)' }}>
+            <div style={{ color: '#fff', fontSize: 11, fontWeight: 700 }}>
+              {fmtShort(video.startDate)} – {fmtShort(video.endDate)}
+            </div>
+          </div>
+          {badge && (
+            <div style={{ position: 'absolute', top: 6, left: 6, padding: '2px 7px', borderRadius: 20,
+                          background: '#4a90d9', color: '#fff', fontSize: 8.5, fontWeight: 700,
+                          textTransform: 'uppercase', letterSpacing: .4 }}>
+              {badge}
+            </div>
+          )}
+          <div style={{ position: 'absolute', top: 6, right: 6, width: 20, height: 20, borderRadius: '50%',
+                        background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ color: '#fff', fontSize: 9 }}>▶</span>
+          </div>
+        </div>
+      );
+    }
 
-      // Pack clips into lanes to avoid overlap
-      const sorted = [...videos].sort((a,b) => a.startDate.localeCompare(b.startDate));
-      const lanes = [];
-      const placed = sorted.map(v => {
-        const sMs = new Date(v.startDate + 'T12:00:00').getTime();
-        const eMs = new Date(v.endDate + 'T12:00:00').getTime();
-        let lane = lanes.findIndex(laneEnd => laneEnd < sMs - 86400000);
-        if (lane === -1) { lane = lanes.length; lanes.push(eMs); }
-        else { lanes[lane] = eMs; }
-        return { ...v, sMs, eMs, lane };
-      });
-
-      const numLanes = Math.max(1, lanes.length);
-      const svgH = PAD.t + numLanes * (BAR_H + LANE_GAP) - LANE_GAP + PAD.b;
-
-      const xTicks = [];
-      const td = new Date(startMs); td.setDate(1); td.setMonth(td.getMonth()+1);
-      while (td.getTime() <= endMs) { xTicks.push(td.getTime()); td.setMonth(td.getMonth()+1); }
-
-      const COLORS = ['#5c6bc0','#26a69a','#ef5350','#ab47bc','#ff7043'];
+    function ProgressVideosGrid({ videos = [], onPlayVideo }) {
+      // The "full term" clip is the one bounding every other clip's date range
+      // (starts at the earliest date, ends at the latest) — shown first, flagged
+      // with a badge, but otherwise sized identically to the segment clips.
+      const minStart = videos.reduce((min, v) => (v.startDate < min ? v.startDate : min), videos[0]?.startDate);
+      const maxEnd   = videos.reduce((max, v) => (v.endDate   > max ? v.endDate   : max), videos[0]?.endDate);
+      const fullTerm = videos.find(v => v.startDate === minStart && v.endDate === maxEnd);
+      const segments = videos.filter(v => v !== fullTerm)
+        .sort((a, b) => a.startDate.localeCompare(b.startDate));
 
       return (
-        <div style={{ background:'#fff', borderRadius:14, margin:'0 0 12px',
-                      overflow:'hidden', border:'.5px solid rgba(0,0,0,.06)' }}>
-          <div style={{ padding:'10px 14px 4px' }}>
-            <div style={{ fontSize:13, fontWeight:700, color:'#1c1c1e' }}>Body Scans</div>
+        <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
+                      border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
+          <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Progress Videos</div>
           </div>
-          <svg viewBox={`0 0 ${VW} ${svgH}`}
-               style={{ width:'100%', height:'auto', display:'block' }}>
-            {xTicks.map(ms => (
-              <g key={ms}>
-                <line x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={svgH - PAD.b}
-                      stroke="rgba(0,0,0,.05)" strokeWidth="0.8" />
-                <text x={xOf(ms)} y={svgH - PAD.b + 10} textAnchor="middle"
-                      fontSize="5" fill="#aeaeb2">
-                  {new Date(ms).toLocaleDateString('en-US', { month:'short' })}
-                </text>
-              </g>
-            ))}
-            {placed.map((v, i) => {
-              const x1    = Math.max(PAD.l, xOf(v.sMs));
-              const x2    = Math.min(PAD.l + cW, xOf(v.eMs));
-              const y     = PAD.t + v.lane * (BAR_H + LANE_GAP);
-              const color = COLORS[i % COLORS.length];
-              const barW  = Math.max(4, x2 - x1);
-              return (
-                <g key={v.startDate} style={{ cursor:'pointer' }}
-                   onClick={() => onPlayVideo && onPlayVideo(v)}>
-                  <rect x={x1} y={y} width={barW} height={BAR_H} rx={BAR_H/2}
-                        fill={color} opacity="0.85" />
-                  <text x={x1 + 9} y={y + BAR_H/2 + 3.5} fontSize="9" fill="#fff">▶</text>
-                  {barW > 40 && (
-                    <text x={x1 + 20} y={y + BAR_H/2 + 3.5} fontSize="6.5" fontWeight="600"
-                          fill="#fff">
-                      {v.label || `${fmtShort(v.startDate)} – ${fmtShort(v.endDate)}`}
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-          </svg>
+
+          {!videos.length ? (
+            <div style={{ padding: '14px', fontSize: 12, color: '#aeaeb2', textAlign: 'center' }}>
+              No progress videos yet.
+            </div>
+          ) : (
+            <div style={{ padding: 12, display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              {fullTerm && <VideoThumb video={fullTerm} onPlayVideo={onPlayVideo} badge="Full Term" />}
+              {segments.map(v => (
+                <VideoThumb key={v.startDate} video={v} onPlayVideo={onPlayVideo} />
+              ))}
+            </div>
+          )}
         </div>
       );
     }
@@ -4312,7 +4239,7 @@
             {!loading && rows.length > 0 && (
               <div style={{ display:'flex', gap:6, padding:'0 12px 8px',
                             overflowX:'auto', WebkitOverflowScrolling:'touch' }}>
-                {[['weight','Weight'],['tirz','Tirzepatide'],['dosing','Dosing'],['activity','Activity']].map(([id,label]) => (
+                {[['weight','Weight'],['tirz','Tirzepatide'],['dosing','Dosing'],['activity','Activity'],['videos','Progress Videos']].map(([id,label]) => (
                   <button key={id} onClick={() => setActiveTab(id)}
                           style={{ flexShrink:0, fontSize:13, fontWeight:600, padding:'6px 18px',
                                    borderRadius:20, border:'none', cursor:'pointer', whiteSpace:'nowrap',
@@ -4438,8 +4365,7 @@
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Weight Trend</div>
                   <div style={{ fontSize: 12, color: '#aeaeb2' }}>goal: {GOAL_LBS} lbs</div>
                 </div>
-                <WeightChart rows={rows} injections={injections}
-                             videos={videos} onPlayVideo={setPlayingVideo} />
+                <WeightChart rows={rows} injections={injections} />
               </div>
 
               {/* Weight Loss Per Dose */}
@@ -4682,6 +4608,11 @@
               </div>
 
               </div>{/* end dosing tab */}
+
+              {/* ── PROGRESS VIDEOS TAB ── */}
+              <div style={{ display: activeTab==='videos' ? undefined : 'none' }}>
+                <ProgressVideosGrid videos={videos} onPlayVideo={setPlayingVideo} />
+              </div>{/* end videos tab */}
 
               {/* ── Admin settings (outside tabs) ── */}
               {isAdmin ? (

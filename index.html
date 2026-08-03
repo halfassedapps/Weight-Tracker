@@ -34,6 +34,7 @@
     const LS_VIAL_MG_KEY      = 'weight-tracker-vial-mg';
     const LS_VIAL_VOL_KEY     = 'weight-tracker-vial-vol';
     const LS_SYRINGE_UNITS_KEY = 'weight-tracker-syringe-units';
+    const LS_POPOVER_DISMISS_KEY = 'weight-tracker-inj-popover-dismiss-date';
     const LS_INTERVALS_KEY       = 'weight-tracker-intervals-config';
     const LS_CALORIE_KEY         = 'weight-tracker-calories';
     const LS_INTERVALS_CAL_KEY   = 'weight-tracker-intervals-calories';
@@ -124,7 +125,7 @@
     function lsLoadSchedule() {
       try {
         const raw = localStorage.getItem(LS_SCHED_KEY);
-        if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) return p; }
+        if (raw) { const p = JSON.parse(raw); if (Array.isArray(p) || isIntervalSchedule(p)) return p; }
       } catch (_) {}
       return [];
     }
@@ -202,7 +203,7 @@
         logbook:      daily.length ? computeLogbook(daily) : [],
         meta:         meta ?? { metric: 'Weight', source: '' },
         injections:   injections.filter(i => i.date && i.doseMg),
-        injSchedule:  Array.isArray(injSchedule) ? injSchedule : [],
+        injSchedule:  (Array.isArray(injSchedule) || isIntervalSchedule(injSchedule)) ? injSchedule : [],
         calories:     Array.isArray(calories) ? calories.filter(c => c.date) : [],
         intervalsCfg: intervalsCfg && intervalsCfg.apiKey && intervalsCfg.athleteId ? intervalsCfg : null,
       };
@@ -498,9 +499,28 @@
       }, 0);
     }
 
+    // Two mutually-exclusive schedule shapes:
+    //   weekday mode:  [{ day: 0-6, ampm: 'am'|'pm' }, ...]  (0=Sun … 6=Sat)
+    //   interval mode: { mode: 'interval', everyNDays: N, ampm: 'am'|'pm' }
+    const isIntervalSchedule = s => !!s && s.mode === 'interval';
+    const isWeekdaySchedule  = s => Array.isArray(s) && s.length > 0;
+
     // Given a ms timestamp, return the next scheduled injection ms per the config.
-    // schedule = [{ day: 0-6, ampm: 'am'|'pm' }]  (0=Sun … 6=Sat)
-    function nextScheduledMs(afterMs, schedule) {
+    // `lastInjMs` anchors interval-mode schedules (next dose = last logged
+    // injection + N days) and is unused for weekday-mode schedules.
+    function nextScheduledMs(afterMs, schedule, lastInjMs) {
+      if (isIntervalSchedule(schedule)) {
+        if (lastInjMs == null) return null;
+        const stepMs = schedule.everyNDays * 86400000;
+        let n = Math.max(1, Math.ceil((afterMs - lastInjMs) / stepMs));
+        let cand = new Date(lastInjMs + n * stepMs);
+        cand.setHours(schedule.ampm === 'am' ? 8 : 20, 0, 0, 0);
+        if (cand.getTime() <= afterMs) {
+          cand = new Date(lastInjMs + (n + 1) * stepMs);
+          cand.setHours(schedule.ampm === 'am' ? 8 : 20, 0, 0, 0);
+        }
+        return cand.getTime();
+      }
       if (!schedule || schedule.length === 0) return null;
       const base = new Date(afterMs);
       for (let d = 1; d <= 7; d++) {
@@ -513,6 +533,79 @@
         }
       }
       return null;
+    }
+
+    const round1 = n => Math.round(n * 10) / 10;
+
+    // Unifies the schedule/cadence math that PkChart and DosePanel both need:
+    // current per-injection dose, doses/week (continuous, not just 1 or 2),
+    // and the resulting true weekly total.
+    function getDoseSchedule(injections, injSchedule) {
+      if (!injections || injections.length === 0) return null;
+      const sortedInj = [...injections].sort((a, b) => a.date.localeCompare(b.date));
+      const lastInj   = sortedInj[sortedInj.length - 1];
+      const lastInjMs = new Date(lastInj.date + 'T12:00:00').getTime();
+      const lastDose  = lastInj.doseMg;
+
+      let injInterval = 7;
+      if (sortedInj.length >= 2) {
+        const prevMs = new Date(sortedInj[sortedInj.length - 2].date + 'T12:00:00').getTime();
+        injInterval = (lastInjMs - prevMs) / 86400000;
+      }
+
+      const weekdayActive  = isWeekdaySchedule(injSchedule);
+      const intervalActive = isIntervalSchedule(injSchedule);
+      const scheduleActive = weekdayActive || intervalActive;
+      const splitManual    = localStorage.getItem(LS_SPLIT_KEY) === 'true';
+
+      const injPerWeek = weekdayActive  ? injSchedule.length
+                       : intervalActive ? 7 / injSchedule.everyNDays
+                       : (splitManual || injInterval < 5 ? 2 : 1);
+
+      const weeklyDose = lastDose * injPerWeek;
+
+      const nextInjMs = scheduleActive
+        ? (nextScheduledMs(lastInjMs, injSchedule, lastInjMs) ?? lastInjMs + injInterval * 86400000)
+        : lastInjMs + injInterval * 86400000;
+
+      return { sortedInj, lastInj, lastInjMs, lastDose, injInterval,
+               scheduleActive, weekdayActive, intervalActive, injPerWeek, weeklyDose, nextInjMs };
+    }
+
+    // Trend-based increase/stay/monitor/contact guidance, expressed at the
+    // schedule's current cadence (perInjMg = the true partial per-injection
+    // amount, not the weekly total).
+    function getRecommendation(rows, ds) {
+      if (!ds) return null;
+      const recent = rows.find(r => r.twoWeekLoss != null);
+      if (!recent) return null;
+      const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss);
+      const recWeekly = rec.dose != null ? rec.dose : ds.weeklyDose;
+      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg: recWeekly / ds.injPerWeek };
+    }
+
+    // Groups a date-sorted injection log into contiguous runs sharing the same
+    // per-injection doseMg — replaces the old "sum injections into a Sun-Sat
+    // calendar week" bucketing, which broke down under non-weekly cadences.
+    function buildDosePeriods(injections) {
+      const sortedInj = [...(injections || [])].sort((a, b) => a.date.localeCompare(b.date));
+      const periods = [];
+      for (const inj of sortedInj) {
+        const ms = new Date(inj.date + 'T12:00:00').getTime();
+        const last = periods[periods.length - 1];
+        if (last && last.doseMg === inj.doseMg) {
+          last.count++; last.lastMs = ms;
+        } else {
+          periods.push({ doseMg: inj.doseMg, startMs: ms, lastMs: ms, count: 1 });
+        }
+      }
+      return periods;
+    }
+    // Which dose was active as of `ms` (most recent period at-or-before ms).
+    function doseActiveAt(periods, ms) {
+      let d = null;
+      for (const p of periods) { if (p.startMs <= ms) d = p.doseMg; else break; }
+      return d;
     }
 
     /* ─── Logbook item builder ───────────────────────────────────────────────── */
@@ -1403,29 +1496,10 @@
 
       const todayX   = xOf(todayMs);
       const curLevel = pkTotal(sortedInj, todayMs);
-      const lastInjMs = new Date(sortedInj[sortedInj.length - 1].date + 'T12:00:00').getTime();
 
-      // Detect split-dose from the single most recent interval only.
-      // Averaging multiple intervals masks a recent switch to 2x/wk.
-      let injInterval = 7;
-      if (sortedInj.length >= 2) {
-        const a = new Date(sortedInj[sortedInj.length - 2].date + 'T12:00:00').getTime();
-        const b = new Date(sortedInj[sortedInj.length - 1].date + 'T12:00:00').getTime();
-        injInterval = (b - a) / 86400000;
-      }
-      const scheduleActive = injSchedule && injSchedule.length > 0;
-      const isSplitDose = scheduleActive ? injSchedule.length >= 2 : (splitManual || injInterval < 5);
-      // Number of injections per week from schedule
-      const injPerWeek = scheduleActive ? injSchedule.length : (isSplitDose ? 2 : 1);
-      // Weekly dose = last injection × 2 in split mode (works at any dose level,
-      // including during transitions where the two most recent shots differ).
-      const weeklyDose = isSplitDose
-        ? sortedInj[sortedInj.length - 1].doseMg * 2
-        : sortedInj[sortedInj.length - 1].doseMg;
-
-      const nextInjMs = scheduleActive
-        ? (nextScheduledMs(lastInjMs, injSchedule) ?? lastInjMs + injInterval * 86400000)
-        : lastInjMs + injInterval * 86400000;
+      const ds = getDoseSchedule(injections, injSchedule);
+      const { lastInjMs, injInterval, scheduleActive, injPerWeek, weeklyDose } = ds;
+      const nextInjMs = ds.nextInjMs;
 
       // All upcoming injection dates within the visible window
       const upcomingInjMs = (() => {
@@ -1433,7 +1507,7 @@
           const dates = [];
           let after = lastInjMs;
           for (let i = 0; i < 10; i++) {
-            const ms = nextScheduledMs(after, injSchedule);
+            const ms = nextScheduledMs(after, injSchedule, lastInjMs);
             if (!ms || ms > visEndMs) break;
             dates.push(ms);
             after = ms;
@@ -1445,7 +1519,7 @@
       const troughLevel = pkTotal(sortedInj, nextInjMs - 3600000);
 
       // Future projection: PK curve + interval averages assuming scheduled doses at current dose
-      const lastDoseMg = sortedInj[sortedInj.length - 1].doseMg;
+      const lastDoseMg = ds.lastDose;
       const projInjs = scheduleActive
         ? [...sortedInj, ...upcomingInjMs.map(ms => ({ _ms: ms, doseMg: lastDoseMg }))]
         : sortedInj;
@@ -1528,7 +1602,7 @@
           ctx.fillStyle = '#1c1c1e'; ctx.font = `700 13px ${FONT}`;
           ctx.fillText('Tirzepatide · Drug on Board', 14, 18);
           ctx.fillStyle = '#4a90d9'; ctx.font = `700 10px ${FONT}`;
-          ctx.fillText(`On board now: ${curLevel.toFixed(2)} mg · Weekly dose: ${weeklyDose} mg`, 14, 34);
+          ctx.fillText(`On board now: ${curLevel.toFixed(2)} mg · Weekly dose: ${round1(weeklyDose)} mg`, 14, 34);
           ctx.fillStyle = '#8e8e93'; ctx.font = `400 9px ${FONT}`;
           ctx.fillText(`Trough: ${troughLevel.toFixed(2)} mg · ${fmtShort(msToLocalDate(nextInjMs))}`, 14, 44);
           ctx.drawImage(img, 0, headerH, VW, VH);
@@ -1536,7 +1610,7 @@
           const file = new File([fileBlob], 'tirz-on-board.png', { type: 'image/png' });
           if (navigator.canShare && navigator.canShare({ files: [file] })) {
             await navigator.share({ files: [file], title: 'Tirzepatide · Drug on Board',
-              text: `On board now: ${curLevel.toFixed(2)} mg · ${weeklyDose} mg/wk` });
+              text: `On board now: ${curLevel.toFixed(2)} mg · ${round1(weeklyDose)} mg/wk` });
           } else {
             const url = URL.createObjectURL(fileBlob);
             const a = document.createElement('a');
@@ -1889,34 +1963,15 @@
 
       if (!injections || injections.length === 0) return null;
 
-      const sortedInj = [...injections].sort((a, b) => a.date.localeCompare(b.date));
-      const lastInj   = sortedInj[sortedInj.length - 1];
-      const lastInjMs = new Date(lastInj.date + 'T12:00:00').getTime();
-
-      let injInterval = 7;
-      if (sortedInj.length >= 2) {
-        const a = new Date(sortedInj[sortedInj.length - 2].date + 'T12:00:00').getTime();
-        const b = new Date(lastInj.date + 'T12:00:00').getTime();
-        injInterval = (b - a) / 86400000;
-      }
-      const splitManual  = localStorage.getItem(LS_SPLIT_KEY) === 'true';
-      const scheduleActive = injSchedule && injSchedule.length > 0;
-      const isSplitDose    = scheduleActive ? injSchedule.length >= 2 : (splitManual || injInterval < 5);
-      const injPerWeek     = scheduleActive ? injSchedule.length : (isSplitDose ? 2 : 1);
-      const weeklyDose     = isSplitDose ? lastInj.doseMg * 2 : lastInj.doseMg;
-
-      const nextInjMs = scheduleActive
-        ? (nextScheduledMs(lastInjMs, injSchedule) ?? lastInjMs + injInterval * 86400000)
-        : lastInjMs + injInterval * 86400000;
+      const ds = getDoseSchedule(injections, injSchedule);
+      const { lastInj, lastInjMs, injInterval, scheduleActive, weekdayActive, intervalActive, injPerWeek, weeklyDose, nextInjMs } = ds;
 
       const recent = (rows ?? []).find(r => r.twoWeekLoss != null);
-      if (!recent || weeklyDose == null) return null;
-      const rec = recommendedDose(weeklyDose, recent.twoWeekLoss);
+      if (!recent) return null;
+      const rec = getRecommendation(rows ?? [], ds);
       if (!rec) return null;
 
-      const { dose, g } = rec;
-      const recWeekly  = dose != null ? dose : weeklyDose;
-      const perInjMg   = isSplitDose ? recWeekly / 2 : recWeekly;
+      const { g, dose, recWeekly, perInjMg } = rec;
       const lossSign   = recent.twoWeekLoss >= 0 ? '↓' : '↑';
       const nextInjDate  = new Date(nextInjMs);
       const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
@@ -1986,9 +2041,10 @@
                     {g.action === 'increase' ? 'Increase to' : g.action === 'contact' ? 'Hold at' : 'Stay at'}
                   </div>
                   <div style={{ fontSize: 22, fontWeight: 800, color: g.color, lineHeight: 1,
-                                fontVariantNumeric: 'tabular-nums' }}>{recWeekly} mg</div>
+                                fontVariantNumeric: 'tabular-nums' }}>{round1(recWeekly)} mg</div>
                   <div style={{ fontSize: 11, color: g.color, opacity: .75, marginTop: 2 }}>
-                    {injPerWeek > 1 ? `${recWeekly / injPerWeek} mg × ${injPerWeek}/wk` : 'per week'}
+                    {intervalActive ? `${round1(perInjMg)} mg every ${injSchedule.everyNDays}d`
+                      : injPerWeek > 1 ? `${round1(perInjMg)} mg × ${injPerWeek}/wk` : 'per week'}
                   </div>
                   {g.action === 'increase' && dose == null && (
                     <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>
@@ -2000,7 +2056,9 @@
                   <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{subtext}</div>
                   <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
                     2-wk loss: {lossSign}{Math.abs(recent.twoWeekLoss).toFixed(1)} lbs &nbsp;·&nbsp;
-                    current: {weeklyDose} mg/wk{isSplitDose ? ` (${lastInj.doseMg} mg × 2)` : ''}
+                    current: ≈{round1(weeklyDose)} mg/wk
+                    {intervalActive ? ` (${lastInj.doseMg} mg every ${injSchedule.everyNDays}d)`
+                      : injPerWeek > 1 ? ` (${lastInj.doseMg} mg × ${injPerWeek})` : ''}
                   </div>
                   <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 3 }}>
                     Your next injection is planned for {nextInjLabel}.
@@ -2013,9 +2071,10 @@
                 <button onClick={() => setShowSchedule(true)}
                         style={{ fontSize: 13, fontWeight: 700, padding: '5px 14px', borderRadius: 20,
                                  background: '#4a90d9', color: '#fff', border: 'none', cursor: 'pointer', lineHeight: 1.3 }}>
-                  {scheduleActive
+                  {weekdayActive
                     ? [...injSchedule].sort((a,b)=>a.day-b.day).map(s=>SCHED_DAYS_LNG[s.day]).join(' · ')
-                    : (isSplitDose ? '2× / week' : '1× / week')}
+                    : intervalActive ? `Every ${injSchedule.everyNDays}d`
+                    : (injPerWeek > 1 ? '2× / week' : '1× / week')}
                 </button>
               </div>
               {/* Syringe draw-up */}
@@ -2053,7 +2112,7 @@
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: g.color,
                                 textTransform: 'uppercase', letterSpacing: .4 }}>
-                    {isSplitDose ? 'Draw up per injection' : 'Draw up'}
+                    {injPerWeek > 1 ? 'Draw up per injection' : 'Draw up'}
                   </div>
                   <button onClick={() => { setCalcInitDose(perInjMg); setShowCalc(true); }}
                           style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12,
@@ -2108,56 +2167,15 @@
         lbs: r.lbs,
       }));
 
-      // Dose timeline: which *weekly* tirz dose was active at any point in time,
-      // and where the weekly dose actually changed (used to color-grade the
-      // weight line and place subtle markers — not every injection, just
-      // changes). Sum all injections falling in the same Sun-Sat calendar
-      // week — this correctly captures split dosing (e.g. 1.25mg x2/wk =
-      // 2.5mg/wk) without misgrouping the single-dose -> split-dose
-      // transition week (gap-based pairing mis-paired those).
-      const injAsc = (injections || []).slice().sort((a, b) => a.date.localeCompare(b.date));
-      const weekStartMs = ms => {
-        const d = new Date(ms);
-        d.setHours(0, 0, 0, 0);
-        d.setDate(d.getDate() - d.getDay());
-        return d.getTime();
-      };
-      const weekGroups = {};
-      for (const inj of injAsc) {
-        const ms = new Date(inj.date + 'T12:00:00').getTime();
-        const wk = weekStartMs(ms);
-        if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms, count: 0 };
-        weekGroups[wk].doseMg += inj.doseMg;
-        weekGroups[wk].firstMs = Math.min(weekGroups[wk].firstMs, ms);
-        weekGroups[wk].count++;
-      }
-      const currentWkMs = weekStartMs(Date.now());
-      // Project a partial current week (1 injection so far) to its full weekly dose
-      // so the line color and pill don't show a phantom dose change mid-week.
-      const weeklyCycles = Object.values(weekGroups)
-        .sort((a, b) => a.firstMs - b.firstMs)
-        .map((g, i, arr) => {
-          const doseMg = Math.round(g.doseMg * 1000) / 1000;
-          const isLast = i === arr.length - 1;
-          const effectiveDose = (isLast && weekStartMs(g.firstMs) === currentWkMs && g.count === 1)
-            ? Math.round(doseMg * 2 * 1000) / 1000
-            : doseMg;
-          return { startMs: g.firstMs, doseMg: effectiveDose, count: g.count };
-        });
-      const doseAt = ms => {
-        let d = null;
-        for (const c of weeklyCycles) { if (c.startMs <= ms) d = c.doseMg; else break; }
-        return d;
-      };
-      const doseChanges = [];
-      { let prevDose = null;
-        for (const c of weeklyCycles) {
-          if (c.doseMg !== prevDose) {
-            doseChanges.push({ ms: c.startMs, doseMg: c.doseMg, count: c.count, date: msToLocalDate(c.startMs) });
-            prevDose = c.doseMg;
-          }
-        }
-      }
+      // Dose timeline: which per-injection tirz dose was active at any point in
+      // time, and where it actually changed (used to color-grade the weight
+      // line and place subtle markers — not every injection, just changes).
+      // A new period starts exactly when the logged doseMg changes, which
+      // works for any injection cadence (weekly, split, every-N-days, ...).
+      const dosePeriods = buildDosePeriods(injections);
+      const doseAt = ms => doseActiveAt(dosePeriods, ms);
+      const doseChanges = dosePeriods.map(p =>
+        ({ ms: p.startMs, doseMg: p.doseMg, count: p.count, date: msToLocalDate(p.startMs) }));
       // Distinct color per dose level (not a magnitude gradient) so adjacent
       // changes are always clearly different, regardless of how close the
       // mg values are.
@@ -2606,7 +2624,7 @@
               ))}
             </g>
 
-            {/* Weight line — distinct color per weekly tirz dose */}
+            {/* Weight line — distinct color per tirz dose */}
             {doseSegments.map((seg, i) => (
               <polyline key={i}
                 points={seg.pts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
@@ -2614,7 +2632,7 @@
                 strokeWidth="1.5" strokeLinejoin="round" />
             ))}
 
-            {/* Weekly-dose-change markers — dot on the line, pill in the top
+            {/* Dose-change markers — dot on the line, pill in the top
                 band (clear of the data), linked by a thin leader line */}
             {pillPlacements.map((p, i) => (
               <g key={i}>
@@ -2625,7 +2643,7 @@
                   <rect x={p.cx - p.pillW / 2} y={p.rowY} width={p.pillW} height={pillH} rx={pillH / 2} fill={p.color} />
                   <text x={p.cx} y={p.rowY + pillH / 2 + 1.2} textAnchor="middle"
                         fontSize="3.2" fontWeight="700" fill="#fff">
-                    {p.dosePart}<tspan fontSize="2.5" fontWeight="600"> /wk</tspan>
+                    {p.dosePart}
                   </text>
                 </g>
               </g>
@@ -3059,33 +3077,9 @@
         return pts[pts.length-1].lbs;
       };
 
-      const sortedInj = [...injections].sort((a,b) => a.date.localeCompare(b.date));
-      const weekStartMs = ms => { const d = new Date(ms); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()); return d.getTime(); };
-      const currentWkMs = weekStartMs(Date.now());
-      const weekGroups = {};
-      for (const inj of sortedInj) {
-        const ms = new Date(inj.date + 'T12:00:00').getTime();
-        const wk = weekStartMs(ms);
-        if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms, count: 0 };
-        weekGroups[wk].doseMg += inj.doseMg;
-        weekGroups[wk].firstMs = Math.min(weekGroups[wk].firstMs, ms);
-        weekGroups[wk].count++;
-      }
-      const weeklyCycles = Object.values(weekGroups)
-        .sort((a,b) => a.firstMs - b.firstMs)
-        .map((g, i, arr) => {
-          const doseMg = Math.round(g.doseMg * 1000) / 1000;
-          const isLast = i === arr.length - 1;
-          const effectiveDose = (isLast && weekStartMs(g.firstMs) === currentWkMs && g.count === 1)
-            ? Math.round(doseMg * 2 * 1000) / 1000
-            : doseMg;
-          return { startMs: g.firstMs, doseMg: effectiveDose };
-        });
-      const doseChanges = [];
-      let prevDose = null;
-      for (const c of weeklyCycles) {
-        if (c.doseMg !== prevDose) { doseChanges.push({ ms: c.startMs, doseMg: c.doseMg }); prevDose = c.doseMg; }
-      }
+      // A period per contiguous run of same-doseMg injections (see buildDosePeriods) —
+      // works for any cadence, unlike the old Sun-Sat calendar-week summing.
+      const doseChanges = buildDosePeriods(injections).map(p => ({ ms: p.startMs, doseMg: p.doseMg }));
       if (doseChanges.length < 2) return null;
 
       const todayMs = new Date().setHours(12,0,0,0);
@@ -3592,8 +3586,14 @@
     const SCHED_DAYS_LNG = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
     function InjScheduleModal({ schedule, onSave, onClose, isAdmin }) {
-      const [draft, setDraft] = useState(() => [...(schedule ?? [])].sort((a,b) => a.day - b.day));
+      const [mode, setMode] = useState(() => isIntervalSchedule(schedule) ? 'interval' : 'days');
+      const [draft, setDraft] = useState(
+        () => isWeekdaySchedule(schedule) ? [...schedule].sort((a,b) => a.day - b.day) : []
+      );
+      const [everyN, setEveryN] = useState(() => isIntervalSchedule(schedule) ? schedule.everyNDays : 2);
+      const [intervalAmpm, setIntervalAmpm] = useState(() => isIntervalSchedule(schedule) ? schedule.ampm : 'am');
 
+      const setModeIfAdmin = (m) => { if (isAdmin) setMode(m); };
       const toggleDay = (i) => {
         if (!isAdmin) return;
         const has = draft.find(s => s.day === i);
@@ -3605,9 +3605,25 @@
         if (!isAdmin) return;
         setDraft(draft.map(s => s.day === i ? { ...s, ampm: s.ampm === 'am' ? 'pm' : 'am' } : s));
       };
+      const toggleIntervalAmpm = () => {
+        if (!isAdmin) return;
+        setIntervalAmpm(v => v === 'am' ? 'pm' : 'am');
+      };
+      const handleEveryN = (v) => {
+        const n = Math.max(1, Math.min(28, parseInt(v, 10) || 1));
+        setEveryN(n);
+      };
 
       const sorted  = [...draft].sort((a, b) => a.day - b.day);
-      const changed = JSON.stringify(sorted) !== JSON.stringify([...(schedule ?? [])].sort((a,b) => a.day - b.day));
+      const changed = mode === 'days'
+        ? JSON.stringify(sorted) !== JSON.stringify(isWeekdaySchedule(schedule) ? [...schedule].sort((a,b)=>a.day-b.day) : [])
+        : (!isIntervalSchedule(schedule) || schedule.everyNDays !== everyN || schedule.ampm !== intervalAmpm);
+
+      const handleSave = () => {
+        const next = mode === 'days' ? sorted : { mode: 'interval', everyNDays: everyN, ampm: intervalAmpm };
+        onSave(next);
+        onClose();
+      };
 
       return (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
@@ -3628,48 +3644,100 @@
                                justifyContent: 'center' }}>✕</button>
             </div>
 
-            {/* Day picker */}
-            <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93',
-                          textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>
-              Injection days
-            </div>
-            <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
-              {SCHED_DAYS.map((d, i) => {
-                const sel = !!draft.find(s => s.day === i);
-                return (
-                  <button key={i} onClick={() => toggleDay(i)}
-                          style={{ flex: 1, padding: '8px 0', borderRadius: 10,
-                                   fontSize: 13, fontWeight: 600,
-                                   background: sel ? '#4a90d9' : '#f2f2f7',
-                                   color: sel ? '#fff' : '#8e8e93',
+            {/* Mode toggle */}
+            {isAdmin && (
+              <div style={{ display: 'flex', gap: 4, marginBottom: 16, background: '#f2f2f7',
+                            borderRadius: 10, padding: 3 }}>
+                {[['days','Specific days'], ['interval','Every N days']].map(([m, label]) => (
+                  <button key={m} onClick={() => setModeIfAdmin(m)}
+                          disabled={!isAdmin}
+                          style={{ flex: 1, padding: '7px 0', borderRadius: 8,
+                                   fontSize: 12.5, fontWeight: 600,
+                                   background: mode === m ? '#fff' : 'transparent',
+                                   color: mode === m ? '#1c1c1e' : '#8e8e93',
+                                   boxShadow: mode === m ? '0 1px 3px rgba(0,0,0,.15)' : 'none',
                                    border: 'none', cursor: isAdmin ? 'pointer' : 'default' }}>
-                    {d}
+                    {label}
                   </button>
-                );
-              })}
-            </div>
-
-            {/* AM/PM per selected day */}
-            {sorted.length > 0 ? (
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
-                {sorted.map(s => (
-                  <div key={s.day} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: '#3c3c43' }}>
-                      {SCHED_DAYS_LNG[s.day]}
-                    </span>
-                    <button onClick={() => toggleAmPm(s.day)}
-                            style={{ fontSize: 12, fontWeight: 600, padding: '5px 12px',
-                                     borderRadius: 10, background: '#f2f2f7', color: '#3c3c43',
-                                     border: 'none', cursor: isAdmin ? 'pointer' : 'default' }}>
-                      {s.ampm === 'am' ? 'Morning' : 'Evening'}
-                    </button>
-                  </div>
                 ))}
               </div>
+            )}
+
+            {mode === 'days' ? (
+              <>
+                {/* Day picker */}
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93',
+                              textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>
+                  Injection days
+                </div>
+                <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+                  {SCHED_DAYS.map((d, i) => {
+                    const sel = !!draft.find(s => s.day === i);
+                    return (
+                      <button key={i} onClick={() => toggleDay(i)}
+                              style={{ flex: 1, padding: '8px 0', borderRadius: 10,
+                                       fontSize: 13, fontWeight: 600,
+                                       background: sel ? '#4a90d9' : '#f2f2f7',
+                                       color: sel ? '#fff' : '#8e8e93',
+                                       border: 'none', cursor: isAdmin ? 'pointer' : 'default' }}>
+                        {d}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* AM/PM per selected day */}
+                {sorted.length > 0 ? (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
+                    {sorted.map(s => (
+                      <div key={s.day} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: '#3c3c43' }}>
+                          {SCHED_DAYS_LNG[s.day]}
+                        </span>
+                        <button onClick={() => toggleAmPm(s.day)}
+                                style={{ fontSize: 12, fontWeight: 600, padding: '5px 12px',
+                                         borderRadius: 10, background: '#f2f2f7', color: '#3c3c43',
+                                         border: 'none', cursor: isAdmin ? 'pointer' : 'default' }}>
+                          {s.ampm === 'am' ? 'Morning' : 'Evening'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 13, color: '#aeaeb2', marginBottom: 20 }}>
+                    {isAdmin ? 'Tap days above to set your injection days.' : 'No schedule configured.'}
+                  </div>
+                )}
+              </>
             ) : (
-              <div style={{ fontSize: 13, color: '#aeaeb2', marginBottom: 20 }}>
-                {isAdmin ? 'Tap days above to set your injection days.' : 'No schedule configured.'}
-              </div>
+              <>
+                {/* Every-N-days picker */}
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93',
+                              textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>
+                  Interval
+                </div>
+                {isAdmin ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
+                    <span style={{ fontSize: 13, color: '#3c3c43' }}>Every</span>
+                    <input type="number" min="1" max="28" value={everyN}
+                           onChange={e => handleEveryN(e.target.value)}
+                           style={{ width: 52, fontSize: 14, fontWeight: 600, padding: '6px 8px',
+                                    borderRadius: 8, border: '1px solid #d1d1d6', background: '#f9f9f9',
+                                    color: '#1c1c1e', outline: 'none', textAlign: 'center' }} />
+                    <span style={{ fontSize: 13, color: '#3c3c43' }}>days</span>
+                    <button onClick={toggleIntervalAmpm}
+                            style={{ fontSize: 12, fontWeight: 600, padding: '5px 12px',
+                                     borderRadius: 10, background: '#f2f2f7', color: '#3c3c43',
+                                     border: 'none', cursor: 'pointer', marginLeft: 4 }}>
+                      {intervalAmpm === 'am' ? 'Morning' : 'Evening'}
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 13, color: '#aeaeb2', marginBottom: 20 }}>
+                    Every {everyN} days · {intervalAmpm === 'am' ? 'Morning' : 'Evening'}
+                  </div>
+                )}
+              </>
             )}
 
             {!isAdmin && (
@@ -3680,7 +3748,7 @@
 
             <div style={{ display: 'flex', gap: 8 }}>
               {isAdmin && changed && (
-                <button onClick={() => { onSave(sorted); onClose(); }}
+                <button onClick={handleSave}
                         style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '12px',
                                  borderRadius: 12, background: '#4a90d9', color: '#fff',
                                  border: 'none', cursor: 'pointer' }}>
@@ -3693,6 +3761,64 @@
                                border: 'none', cursor: 'pointer' }}>
                 {isAdmin && changed ? 'Cancel' : 'Done'}
               </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Injection-day banner ───────────────────────────────────────────────── */
+    function InjectionDayBanner({ rows, injections, injSchedule }) {
+      const [dismissedDate, setDismissedDate] = useState(
+        () => localStorage.getItem(LS_POPOVER_DISMISS_KEY)
+      );
+
+      const ds = getDoseSchedule(injections, injSchedule);
+      if (!ds || !ds.scheduleActive) return null;
+
+      const todayStr = today();
+      const isToday      = msToLocalDate(ds.nextInjMs) === todayStr;
+      const alreadyLogged = injections.some(i => i.date === todayStr);
+      if (!isToday || alreadyLogged || dismissedDate === todayStr) return null;
+
+      const rec = getRecommendation(rows ?? [], ds);
+      if (!rec) return null;
+      const { g, perInjMg } = rec;
+      const currentPerInjMg = ds.lastDose;
+      const changing = round1(perInjMg) !== round1(currentPerInjMg);
+
+      const vialConc = Math.max(parseFloat(localStorage.getItem(LS_VIAL_CONC_KEY) || '12.5'), 0.01);
+      const syringeUnits = parseInt(localStorage.getItem(LS_SYRINGE_UNITS_KEY) || '100', 10);
+
+      const dismiss = () => {
+        localStorage.setItem(LS_POPOVER_DISMISS_KEY, todayStr);
+        setDismissedDate(todayStr);
+      };
+
+      return (
+        <div style={{ borderRadius: 18, overflow: 'hidden', background: g.bg,
+                      border: `1px solid ${g.color}33`, marginBottom: 10, position: 'relative' }}>
+          <button onClick={dismiss} aria-label="Dismiss"
+                  style={{ position: 'absolute', top: 10, right: 10, width: 22, height: 22,
+                           borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,.08)',
+                           color: '#8e8e93', fontSize: 12, display: 'flex', alignItems: 'center',
+                           justifyContent: 'center', cursor: 'pointer' }}>✕</button>
+          <div style={{ padding: '14px 40px 14px 16px', display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div style={{ width: 140, flexShrink: 0 }}>
+              <SyringeGraphic doseMg={perInjMg} concentration={vialConc} color={g.color} maxUnits={syringeUnits} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: g.color, textTransform: 'uppercase',
+                            letterSpacing: .5, marginBottom: 3 }}>
+                Today is injection day
+              </div>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 3 }}>
+                <span style={{ fontSize: 20, fontWeight: 800, color: '#1c1c1e' }}>{round1(perInjMg)} mg</span>
+                {changing && (
+                  <span style={{ fontSize: 12, color: '#8e8e93' }}>(was {round1(currentPerInjMg)} mg)</span>
+                )}
+              </div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: g.color }}>{g.label}</div>
             </div>
           </div>
         </div>
@@ -4335,6 +4461,8 @@
             <div>
 
               <div style={{ padding:'12px 12px 32px' }}>
+
+              <InjectionDayBanner rows={rows} injections={injections} injSchedule={injSchedule} />
 
               {/* ── TIRZEPATIDE TAB ── */}
               <div style={{ display: activeTab==='tirz' ? undefined : 'none' }}>

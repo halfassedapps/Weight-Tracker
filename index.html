@@ -3017,12 +3017,10 @@
                 <g key={b.dow}>
                   <rect x={xOf(i)-barW/2} y={top} width={barW} height={h}
                         rx={2} fill={col} opacity="0.82" />
-                  {h > 7 && (
-                    <text x={xOf(i)} y={b.avg < 0 ? top+h+6 : top-2}
-                          textAnchor="middle" fontSize="4.5" fontWeight="600" fill={txtCol}>
-                      {b.avg > 0 ? '+' : ''}{b.avg.toFixed(2)}
-                    </text>
-                  )}
+                  <text x={xOf(i)} y={b.avg < 0 ? top+h+6 : top-2}
+                        textAnchor="middle" fontSize="4.5" fontWeight="600" fill={txtCol}>
+                    {b.avg > 0 ? '+' : ''}{b.avg.toFixed(2)}
+                  </text>
                   <text x={xOf(i)} y={PAD.t+cH+11} textAnchor="middle"
                         fontSize="6" fontWeight="600" fill="#3c3c43">{b.wd}</text>
                   <text x={xOf(i)} y={PAD.t+cH+20} textAnchor="middle"

@@ -3592,6 +3592,8 @@
       );
       const [everyN, setEveryN] = useState(() => isIntervalSchedule(schedule) ? schedule.everyNDays : 2);
       const [intervalAmpm, setIntervalAmpm] = useState(() => isIntervalSchedule(schedule) ? schedule.ampm : 'am');
+      const [saving, setSaving] = useState(false);
+      const [saveError, setSaveError] = useState('');
 
       const setModeIfAdmin = (m) => { if (isAdmin) setMode(m); };
       const toggleDay = (i) => {
@@ -3619,10 +3621,17 @@
         ? JSON.stringify(sorted) !== JSON.stringify(isWeekdaySchedule(schedule) ? [...schedule].sort((a,b)=>a.day-b.day) : [])
         : (!isIntervalSchedule(schedule) || schedule.everyNDays !== everyN || schedule.ampm !== intervalAmpm);
 
-      const handleSave = () => {
+      const handleSave = async () => {
         const next = mode === 'days' ? sorted : { mode: 'interval', everyNDays: everyN, ampm: intervalAmpm };
-        onSave(next);
-        onClose();
+        setSaving(true);
+        setSaveError('');
+        try {
+          const ok = await onSave(next);
+          if (ok) { onClose(); return; }
+          setSaveError("Couldn't save — check your connection and try again.");
+        } finally {
+          setSaving(false);
+        }
       };
 
       return (
@@ -3746,19 +3755,23 @@
               </div>
             )}
 
+            {saveError && (
+              <div style={{ fontSize: 12.5, color: '#ff3b30', marginBottom: 12 }}>{saveError}</div>
+            )}
+
             <div style={{ display: 'flex', gap: 8 }}>
               {isAdmin && changed && (
-                <button onClick={handleSave}
+                <button onClick={handleSave} disabled={saving}
                         style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '12px',
-                                 borderRadius: 12, background: '#4a90d9', color: '#fff',
-                                 border: 'none', cursor: 'pointer' }}>
-                  Save
+                                 borderRadius: 12, background: saving ? '#a9c8ea' : '#4a90d9', color: '#fff',
+                                 border: 'none', cursor: saving ? 'default' : 'pointer' }}>
+                  {saving ? 'Saving…' : 'Save'}
                 </button>
               )}
-              <button onClick={onClose}
+              <button onClick={onClose} disabled={saving}
                       style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '12px',
                                borderRadius: 12, background: '#f2f2f7', color: '#3c3c43',
-                               border: 'none', cursor: 'pointer' }}>
+                               border: 'none', cursor: saving ? 'default' : 'pointer', opacity: saving ? .6 : 1 }}>
                 {isAdmin && changed ? 'Cancel' : 'Done'}
               </button>
             </div>
@@ -3849,6 +3862,8 @@
       const [needsPerm,  setNeedsPerm]  = useState(false);  // permission lapsed
       const [gistOk,  setGistOk]  = useState(false);
       const [gistMsg, setGistMsg] = useState('');
+      const [syncPending, setSyncPending] = useState(false); // a mutating write is in flight
+      const [dismissedGistMsg, setDismissedGistMsg] = useState(''); // last gistMsg the user dismissed
       const [isAdmin, setIsAdmin] = useState(() => !!localStorage.getItem(LS_GIST_PAT_KEY));
       const [loading, setLoading] = useState(true);
       const [intervalsCfg, setIntervalsCfg] = useState(() => {
@@ -3875,17 +3890,25 @@
       // Always reads PAT from localStorage so closures don't go stale.
       // newCalories defaults to closure state but callers that just updated
       // calories synchronously (e.g. applyResult) should pass the fresh value.
-      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories) => {
+      // Returns true/false so callers can commit local state only on a confirmed
+      // write — a mutation must never appear to "succeed" locally while silently
+      // failing to reach the shared Gist.
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
-        if (!pat) return;
+        if (!pat) {
+          setGistOk(false); setGistMsg('Not logged in');
+          return false;
+        }
         let icuCfg = null;
         try { icuCfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) {}
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, injSchedule, newCalories, icuCfg);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, icuCfg);
           setGistOk(true); setGistMsg('');
+          return true;
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
           console.warn('[Gist] write failed:', e.message);
+          return false;
         }
       };
 
@@ -3985,16 +4008,19 @@
         } catch (e) { setMsg(e.message); }
       }, []);
 
+      // Attempts the write first — only commits the new schedule locally once
+      // it's confirmed saved, so InjScheduleModal can tell the difference
+      // between "saved" and "failed, please retry" instead of always closing.
       const saveInjSchedule = useCallback(async (newSched) => {
-        setInjSchedule(newSched);
-        lsSaveSchedule(newSched);
-        const pat = localStorage.getItem(LS_GIST_PAT_KEY);
-        if (!pat) return;
+        setSyncPending(true);
         try {
-          await patchGist(GIST_ID, pat, rows, meta, injections, newSched, calories);
-          setGistOk(true); setGistMsg('');
-        } catch (e) { setGistOk(false); setGistMsg(e.message); }
-      }, [rows, meta, injections, calories, videos]);
+          const ok = await writeToGist(rows, meta, injections, calories, newSched);
+          if (ok) { setInjSchedule(newSched); lsSaveSchedule(newSched); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories]);
 
       // Admin logout
       const adminLogout = useCallback(() => {
@@ -4003,16 +4029,29 @@
       }, []);
 
       // Apply processed result to state + localStorage + Gist
-      const applyResult = useCallback(({ logbook, meta: newMeta, injSchedule: newSched, calorieData: newCals }) => {
-        setRows(logbook);
-        setMeta(newMeta);
-        if (newSched) { setInjSchedule(newSched); lsSaveSchedule(newSched); }
+      // Imported data isn't committed to local state until the Gist write is
+      // confirmed — an import that parses fine but fails to sync shouldn't
+      // silently leave this device out of step with everywhere else.
+      const applyResult = useCallback(async ({ logbook, meta: newMeta, injSchedule: newSched, calorieData: newCals }) => {
         const mergedCalories = (newCals && newCals.length > 0) ? mergeCaloriesWithStored(newCals) : calories;
-        if (newCals && newCals.length > 0) setCalories(mergedCalories);
-        setError('');
-        lsSave(logbook, newMeta);
-        writeToGist(logbook, newMeta, injections, mergedCalories);
-      }, [injections, calories]);
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(logbook, newMeta, injections, mergedCalories, newSched || injSchedule);
+          if (!ok) {
+            setError("Import parsed fine but failed to sync to the Gist — try again.");
+            return false;
+          }
+          setRows(logbook);
+          setMeta(newMeta);
+          if (newSched) { setInjSchedule(newSched); lsSaveSchedule(newSched); }
+          if (newCals && newCals.length > 0) setCalories(mergedCalories);
+          setError('');
+          lsSave(logbook, newMeta);
+          return true;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [injections, calories, injSchedule]);
 
       // Daily chart data with Active Energy replaced by intervals.icu ride calories
       // (0 on non-ride days) once connected — matches MFP's net-calorie definition.
@@ -4071,15 +4110,13 @@
         const cfg = { apiKey, athleteId };
         localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(cfg));
         setIntervalsCfg(cfg);
-        // Persist to gist so any viewer (phone, other device) gets ride data
-        (async () => {
-          const pat = localStorage.getItem(LS_GIST_PAT_KEY);
-          if (pat) {
-            try { await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, cfg); } catch (_) {}
-          }
-        })();
+        // Persist to gist so any viewer (phone, other device) gets ride data.
+        // Kept optimistic (local config applies regardless of sync outcome,
+        // since it's only used to fetch ride data for this device) — but a
+        // failure to sync is no longer swallowed silently.
+        writeToGist(rows, meta, injections, calories);
         refreshIntervals();
-      }, [refreshIntervals, rows, meta, injections, injSchedule, calories]);
+      }, [refreshIntervals, rows, meta, injections, calories]);
 
       const disconnectIntervals = useCallback(() => {
         localStorage.removeItem(LS_INTERVALS_KEY);
@@ -4116,7 +4153,8 @@
             onWaiting: attempt => showMsg(`Downloading from iCloud… (attempt ${attempt})`, 10000),
           });
           const result = processCSVText(text);
-          applyResult(result);
+          const ok = await applyResult(result);
+          if (!ok) return; // applyResult already surfaced the sync error
           refreshIntervals(result.calorieData);
           localStorage.setItem(LS_LAST_CSV_KEY, latest.name);
           console.log(`[Weight Tracker] Import complete.`);
@@ -4254,24 +4292,39 @@
         reader.readAsText(file);
       }, [applyResult]);
 
-      const addInjection = useCallback(() => {
+      // Attempts the Gist write before touching local state — a shot must be
+      // confirmed saved before it can look logged. On failure the form stays
+      // open with what was typed so retrying doesn't mean retyping.
+      const addInjection = useCallback(async () => {
         const dose = parseFloat(injDose);
         if (!injDate || isNaN(dose) || dose <= 0) return;
         const next = [...injections.filter(i => i.date !== injDate), { date: injDate, doseMg: dose }]
           .sort((a, b) => b.date.localeCompare(a.date));
-        setInjections(next);
-        lsSaveInjections(next);
-        writeToGist(rows, meta, next);
-        setInjDose('');
-        setInjDate(today());
-        setShowInj(false);
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, next);
+          if (!ok) return;
+          setInjections(next);
+          lsSaveInjections(next);
+          setInjDose('');
+          setInjDate(today());
+          setShowInj(false);
+        } finally {
+          setSyncPending(false);
+        }
       }, [injections, injDate, injDose, rows, meta]);
 
-      const deleteInjection = useCallback((date) => {
+      const deleteInjection = useCallback(async (date) => {
         const next = injections.filter(i => i.date !== date);
-        setInjections(next);
-        lsSaveInjections(next);
-        writeToGist(rows, meta, next);
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, next);
+          if (!ok) return;
+          setInjections(next);
+          lsSaveInjections(next);
+        } finally {
+          setSyncPending(false);
+        }
       }, [injections, rows, meta]);
 
       // Load body scan videos from the body-scans/ folder in the repo.
@@ -4280,12 +4333,18 @@
         fetchBodyScans().then(scans => { if (scans.length) setVideos(scans); });
       }, []);
 
-      const deleteRow = useCallback((date) => {
+      const deleteRow = useCallback(async (date) => {
         const daily = rows.filter(r => r.date !== date).map(r => ({ date: r.date, wKg: r.wKg }));
         const newLogbook = computeLogbook(daily);
-        setRows(newLogbook);
-        lsSave(newLogbook, meta);
-        writeToGist(newLogbook, meta, injections);
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(newLogbook, meta, injections);
+          if (!ok) return;
+          setRows(newLogbook);
+          lsSave(newLogbook, meta);
+        } finally {
+          setSyncPending(false);
+        }
       }, [rows, meta, injections]);
 
       const exportJSON = useCallback(() => {
@@ -4359,6 +4418,21 @@
               </div>
               <input ref={inputRef} type="file" accept=".csv,.txt,.json" style={{ display: 'none' }} onChange={onInput} />
             </div>
+            {/* Persistent, tab-agnostic sync-failure banner — a change (or the
+                initial Gist read) failed and local state may be out of step
+                with the shared Gist. Deliberately does not auto-dismiss. */}
+            {!gistOk && gistMsg && gistMsg !== dismissedGistMsg && (
+              <div style={{ margin: '0 16px 10px', borderRadius: 12, background: '#fff2f2',
+                            border: '.5px solid #ffb3b3', padding: '8px 12px',
+                            display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 13, color: '#c0392b', flex: 1 }}>
+                  Not synced: {gistMsg}
+                </span>
+                <button onClick={() => setDismissedGistMsg(gistMsg)}
+                        style={{ fontSize: 12, color: '#c0392b', background: 'none',
+                                 border: 'none', cursor: 'pointer', padding: '0 2px', flexShrink: 0 }}>✕</button>
+              </div>
+            )}
             {/* Tab pills — part of the sticky header so they never scroll away */}
             {!loading && rows.length > 0 && (
               <div style={{ display:'flex', gap:6, padding:'0 12px 8px',
@@ -4582,9 +4656,10 @@
                         <span style={{ fontSize: 13, color: '#6a9fd4' }}>{fmtShort(item.date)}</span>
                         <div style={{ flex: 1, height: '.5px', background: 'rgba(74,144,217,.2)' }} />
                         {isAdmin && (
-                          <button onClick={() => deleteInjection(item.date)}
+                          <button onClick={() => deleteInjection(item.date)} disabled={syncPending}
                                   style={{ fontSize: 13, color: '#aac6e8', background: 'none',
-                                           border: 'none', cursor: 'pointer', padding: '0 2px' }}>✕</button>
+                                           border: 'none', cursor: syncPending ? 'default' : 'pointer',
+                                           padding: '0 2px', opacity: syncPending ? .5 : 1 }}>✕</button>
                         )}
                       </div>
                     );
@@ -4606,9 +4681,10 @@
                                          background: '#e8f2fd', padding: '1px 5px', borderRadius: 4 }}>inj</span>
                         )}
                         {isAdmin && (
-                          <button onClick={() => deleteRow(item.date)}
+                          <button onClick={() => deleteRow(item.date)} disabled={syncPending}
                                   style={{ marginLeft: 2, fontSize: 12, color: '#c7c7cc', background: 'none',
-                                           border: 'none', cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}>✕</button>
+                                           border: 'none', cursor: syncPending ? 'default' : 'pointer',
+                                           padding: '0 2px', lineHeight: 1, opacity: syncPending ? .5 : 1 }}>✕</button>
                         )}
                       </div>
                       <div style={{ textAlign: 'right', fontSize: 16, fontWeight: 500,
@@ -4700,12 +4776,12 @@
                                       border: '1px solid #d1d1d6', background: '#f9f9f9',
                                       color: '#1c1c1e', outline: 'none' }} />
                     </div>
-                    <button onClick={addInjection} disabled={!injDate || !injDose}
+                    <button onClick={addInjection} disabled={!injDate || !injDose || syncPending}
                             style={{ fontSize: 16, fontWeight: 600, padding: '8px 16px', borderRadius: 10,
-                                     background: (!injDate || !injDose) ? '#e5e5ea' : '#34c759',
-                                     color: (!injDate || !injDose) ? '#aeaeb2' : '#fff',
-                                     border: 'none', cursor: (!injDate || !injDose) ? 'default' : 'pointer' }}>
-                      Add
+                                     background: (!injDate || !injDose || syncPending) ? '#e5e5ea' : '#34c759',
+                                     color: (!injDate || !injDose || syncPending) ? '#aeaeb2' : '#fff',
+                                     border: 'none', cursor: (!injDate || !injDose || syncPending) ? 'default' : 'pointer' }}>
+                      {syncPending ? 'Saving…' : 'Add'}
                     </button>
                   </div>
                 )}
@@ -4724,9 +4800,10 @@
                     <div style={{ fontSize: 16, fontWeight: 600, color: '#4a90d9',
                                   fontVariantNumeric: 'tabular-nums' }}>{inj.doseMg} mg</div>
                     {isAdmin && (
-                      <button onClick={() => deleteInjection(inj.date)}
+                      <button onClick={() => deleteInjection(inj.date)} disabled={syncPending}
                               style={{ marginLeft: 12, fontSize: 15, color: '#c7c7cc', background: 'none',
-                                       border: 'none', cursor: 'pointer', padding: '2px 4px' }}>✕</button>
+                                       border: 'none', cursor: syncPending ? 'default' : 'pointer',
+                                       padding: '2px 4px', opacity: syncPending ? .5 : 1 }}>✕</button>
                     )}
                   </div>
                 ))}

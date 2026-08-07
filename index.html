@@ -584,27 +584,83 @@
       return { g: rec.g, dose: rec.dose, recWeekly, perInjMg: recWeekly / ds.injPerWeek };
     }
 
-    // Groups a date-sorted injection log into contiguous runs sharing the same
-    // per-injection doseMg — replaces the old "sum injections into a Sun-Sat
-    // calendar week" bucketing, which broke down under non-weekly cadences.
-    function buildDosePeriods(injections) {
+    // Computes a "weekly dose" timeline for the chart pills — two different
+    // strategies depending on schedule mode, because neither one alone covers
+    // both real cases:
+    //   - weekday mode (e.g. Sun+Thu): doses/week is a whole number and every
+    //     calendar week reliably contains that many shots, so summing whatever
+    //     actually landed in each Sun-Sat week is exact — including uneven
+    //     splits (e.g. 1mg + 1.25mg the same week while titrating).
+    //   - interval mode (e.g. every 2 days) or no schedule: doses/week is
+    //     often fractional (7/2 = 3.5) and calendar weeks don't align with the
+    //     cycle, so a literal per-calendar-week sum would just alternate
+    //     between two noisy counts (e.g. 3mg one week, 4mg the next) instead
+    //     of a stable figure. Use the same continuous estimate DosePanel/PkChart
+    //     already show instead: perInjectionDose × injPerWeek, re-evaluated
+    //     each time the per-injection dose itself changes.
+    // `ds` is a getDoseSchedule(...) result (or null/undefined).
+    function buildWeeklyDoseCycles(injections, ds) {
       const sortedInj = [...(injections || [])].sort((a, b) => a.date.localeCompare(b.date));
+      const injPerWeek = ds ? ds.injPerWeek : 1;
+
+      if (ds && ds.weekdayActive) {
+        const weekStartMs = ms => {
+          const d = new Date(ms);
+          d.setHours(0, 0, 0, 0);
+          d.setDate(d.getDate() - d.getDay());
+          return d.getTime();
+        };
+        const weekGroups = {};
+        for (const inj of sortedInj) {
+          const ms = new Date(inj.date + 'T12:00:00').getTime();
+          const wk = weekStartMs(ms);
+          if (!weekGroups[wk]) weekGroups[wk] = { doseMg: 0, firstMs: ms, count: 0 };
+          weekGroups[wk].doseMg += inj.doseMg;
+          weekGroups[wk].firstMs = Math.min(weekGroups[wk].firstMs, ms);
+          weekGroups[wk].count++;
+        }
+        const currentWkMs = weekStartMs(Date.now());
+        const cycles = Object.values(weekGroups)
+          .sort((a, b) => a.firstMs - b.firstMs)
+          .map((g, i, arr) => {
+            const doseMg = Math.round(g.doseMg * 1000) / 1000;
+            const isLast = i === arr.length - 1;
+            // Only in-progress current week gets projected, and only when partial
+            // (fewer shots logged so far than the schedule's usual doses/week).
+            const effectiveDose = (isLast && weekStartMs(g.firstMs) === currentWkMs && g.count < injPerWeek)
+              ? Math.round((doseMg / g.count) * injPerWeek * 1000) / 1000
+              : doseMg;
+            return { startMs: g.firstMs, doseMg: effectiveDose, count: g.count };
+          });
+        return dedupCycles(cycles);
+      }
+
+      // Interval mode / fallback: one cycle per contiguous run of same
+      // per-injection dose, shown as a continuous weekly estimate.
       const periods = [];
       for (const inj of sortedInj) {
         const ms = new Date(inj.date + 'T12:00:00').getTime();
         const last = periods[periods.length - 1];
-        if (last && last.doseMg === inj.doseMg) {
-          last.count++; last.lastMs = ms;
-        } else {
-          periods.push({ doseMg: inj.doseMg, startMs: ms, lastMs: ms, count: 1 });
-        }
+        if (last && last.rawDose === inj.doseMg) { last.count++; last.lastMs = ms; }
+        else { periods.push({ rawDose: inj.doseMg, startMs: ms, lastMs: ms, count: 1 }); }
       }
-      return periods;
+      const cycles = periods.map(p =>
+        ({ startMs: p.startMs, doseMg: Math.round(p.rawDose * injPerWeek * 1000) / 1000, count: p.count }));
+      return dedupCycles(cycles);
     }
-    // Which dose was active as of `ms` (most recent period at-or-before ms).
-    function doseActiveAt(periods, ms) {
+    // Dedup consecutive cycles that land on the same weekly total.
+    function dedupCycles(cycles) {
+      const deduped = [];
+      let prevDose = null;
+      for (const c of cycles) {
+        if (c.doseMg !== prevDose) { deduped.push(c); prevDose = c.doseMg; }
+      }
+      return deduped;
+    }
+    // Which weekly dose was active as of `ms` (most recent cycle at-or-before ms).
+    function doseActiveAt(cycles, ms) {
       let d = null;
-      for (const p of periods) { if (p.startMs <= ms) d = p.doseMg; else break; }
+      for (const c of cycles) { if (c.startMs <= ms) d = c.doseMg; else break; }
       return d;
     }
 
@@ -2132,7 +2188,7 @@
     const GOAL_LBS        = 155;
     const HEIGHT_IN       = 67; // 5'7"
 
-    function WeightChart({ rows, injections }) {
+    function WeightChart({ rows, injections, injSchedule }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
@@ -2167,12 +2223,13 @@
         lbs: r.lbs,
       }));
 
-      // Dose timeline: which per-injection tirz dose was active at any point in
-      // time, and where it actually changed (used to color-grade the weight
-      // line and place subtle markers — not every injection, just changes).
-      // A new period starts exactly when the logged doseMg changes, which
-      // works for any injection cadence (weekly, split, every-N-days, ...).
-      const dosePeriods = buildDosePeriods(injections);
+      // Dose timeline: which *weekly* tirz dose was active at any point in
+      // time, and where the weekly total actually changed (used to color-grade
+      // the weight line and place subtle markers — not every injection, just
+      // changes). Weekly totals, not per-injection amounts, so an uneven split
+      // (e.g. two different-dose shots the same week while titrating) reads as
+      // one combined figure instead of one pill per shot.
+      const dosePeriods = buildWeeklyDoseCycles(injections, getDoseSchedule(injections, injSchedule));
       const doseAt = ms => doseActiveAt(dosePeriods, ms);
       const doseChanges = dosePeriods.map(p =>
         ({ ms: p.startMs, doseMg: p.doseMg, count: p.count, date: msToLocalDate(p.startMs) }));
@@ -2624,7 +2681,7 @@
               ))}
             </g>
 
-            {/* Weight line — distinct color per tirz dose */}
+            {/* Weight line — distinct color per weekly tirz dose */}
             {doseSegments.map((seg, i) => (
               <polyline key={i}
                 points={seg.pts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
@@ -2643,7 +2700,7 @@
                   <rect x={p.cx - p.pillW / 2} y={p.rowY} width={p.pillW} height={pillH} rx={pillH / 2} fill={p.color} />
                   <text x={p.cx} y={p.rowY + pillH / 2 + 1.2} textAnchor="middle"
                         fontSize="3.2" fontWeight="700" fill="#fff">
-                    {p.dosePart}
+                    {p.dosePart}<tspan fontSize="2.5" fontWeight="600"> /wk</tspan>
                   </text>
                 </g>
               </g>
@@ -3055,7 +3112,7 @@
     }
 
     /* ─── Weight Loss Per Dose ──────────────────────────────────────────────── */
-    function DoseWeightLossChart({ rows, injections }) {
+    function DoseWeightLossChart({ rows, injections, injSchedule }) {
       const [hoveredDose, setHoveredDose] = useState(null);
       if (!rows || rows.length < 2 || !injections || injections.length < 2) return null;
 
@@ -3077,9 +3134,11 @@
         return pts[pts.length-1].lbs;
       };
 
-      // A period per contiguous run of same-doseMg injections (see buildDosePeriods) —
-      // works for any cadence, unlike the old Sun-Sat calendar-week summing.
-      const doseChanges = buildDosePeriods(injections).map(p => ({ ms: p.startMs, doseMg: p.doseMg }));
+      // Weekly totals/estimates, not per-injection amounts — matches
+      // WeightChart's dose pills so an uneven split (or a fractional every-N-
+      // days cadence) shows one meaningful combined figure per pill.
+      const doseChanges = buildWeeklyDoseCycles(injections, getDoseSchedule(injections, injSchedule))
+        .map(p => ({ ms: p.startMs, doseMg: p.doseMg }));
       if (doseChanges.length < 2) return null;
 
       const todayMs = new Date().setHours(12,0,0,0);
@@ -4565,7 +4624,7 @@
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Weight Trend</div>
                   <div style={{ fontSize: 12, color: '#aeaeb2' }}>goal: {GOAL_LBS} lbs</div>
                 </div>
-                <WeightChart rows={rows} injections={injections} />
+                <WeightChart rows={rows} injections={injections} injSchedule={injSchedule} />
               </div>
 
               {/* Weight Loss Per Dose */}
@@ -4578,7 +4637,7 @@
                       lbs lost during each dose period
                     </div>
                   </div>
-                  <DoseWeightLossChart rows={rows} injections={injections} />
+                  <DoseWeightLossChart rows={rows} injections={injections} injSchedule={injSchedule} />
                 </div>
               )}
 

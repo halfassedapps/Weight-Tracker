@@ -37,6 +37,7 @@
     const LS_POPOVER_DISMISS_KEY = 'weight-tracker-inj-popover-dismiss-date';
     const LS_INTERVALS_KEY       = 'weight-tracker-intervals-config';
     const LS_CALORIE_KEY         = 'weight-tracker-calories';
+    const LS_CALORIE_TARGETS_KEY = 'weight-tracker-calorie-targets';
     const LS_INTERVALS_CAL_KEY   = 'weight-tracker-intervals-calories';
     const LS_INTERVALS_RIDES_KEY = 'weight-tracker-intervals-rides';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
@@ -133,6 +134,84 @@
       try { localStorage.setItem(LS_SCHED_KEY, JSON.stringify(sched)); } catch (_) {}
     }
 
+    /* ─── Calorie target localStorage ────────────────────────────────────────── */
+    // Dated history, not a single value — the daily calorie budget changes over
+    // time (e.g. as MyFitnessPal's recommendation is updated), and past chart
+    // days need to compare against whatever target was active *then*, not today's.
+    const DEFAULT_CALORIE_TARGETS = [
+      { date: '2026-05-02', target: 1709 },
+      { date: '2026-07-30', target: 1500 },
+    ];
+    function lsLoadCalorieTargets() {
+      try {
+        const raw = localStorage.getItem(LS_CALORIE_TARGETS_KEY);
+        if (raw) { const p = JSON.parse(raw); if (Array.isArray(p) && p.length) return p; }
+      } catch (_) {}
+      return DEFAULT_CALORIE_TARGETS;
+    }
+    function lsSaveCalorieTargets(targets) {
+      try { localStorage.setItem(LS_CALORIE_TARGETS_KEY, JSON.stringify(targets)); } catch (_) {}
+    }
+    // Most recent target with date <= dateStr (both 'YYYY-MM-DD', so string
+    // comparison is safe). `targets` must be sorted ascending by date.
+    function targetActiveAt(targets, dateStr) {
+      let t = null;
+      for (const entry of targets) { if (entry.date <= dateStr) t = entry.target; else break; }
+      return t;
+    }
+
+    // How far off-target a day's *intake* was (consumed − target). TDEE cancels
+    // out of this on purpose: your net-calorie goal for a day is (target − TDEE),
+    // so actual-net-vs-goal-net simplifies to just consumed-vs-target regardless
+    // of how much you burned that day.
+    //
+    // Deliberately asymmetric: undereating relative to plan is treated as "bad"
+    // much sooner than overeating is — a big unplanned deficit risks muscle loss/
+    // metabolic adaptation and usually means a logging gap, while overshooting
+    // the target by the same amount is just a normal high-appetite day.
+    const NET_GOOD_BAND = 150;     // within ±150 cal of target = good, either direction
+    const NET_UNDEREAT_BAD = 400;  // more than 400 cal *under* target = bad
+    const NET_OVEREAT_BAD = 600;   // more than 600 cal *over* target = bad (more leeway)
+    const NET_TIER_COLOR = { good: '#0ca30c', ok: '#fab219', bad: '#d03b3b' };
+    function netTier(deviation) {
+      if (Math.abs(deviation) <= NET_GOOD_BAND) return 'good';
+      return deviation < 0
+        ? (deviation < -NET_UNDEREAT_BAD ? 'bad' : 'ok')
+        : (deviation > NET_OVEREAT_BAD ? 'bad' : 'ok');
+    }
+
+    /* ─── Protein target localStorage ────────────────────────────────────────── */
+    // Same dated-history shape as calorieTargets — the minimum-protein floor
+    // can change over time and past days must compare against whatever floor
+    // was active *then*.
+    const LS_PROTEIN_TARGETS_KEY = 'weight-tracker-protein-targets';
+    const DEFAULT_PROTEIN_TARGETS = [
+      { date: '2026-05-02', target: 171 },
+    ];
+    function lsLoadProteinTargets() {
+      try {
+        const raw = localStorage.getItem(LS_PROTEIN_TARGETS_KEY);
+        if (raw) { const p = JSON.parse(raw); if (Array.isArray(p) && p.length) return p; }
+      } catch (_) {}
+      return DEFAULT_PROTEIN_TARGETS;
+    }
+    function lsSaveProteinTargets(targets) {
+      try { localStorage.setItem(LS_PROTEIN_TARGETS_KEY, JSON.stringify(targets)); } catch (_) {}
+    }
+
+    // Protein is a floor, not a target with headroom — hitting or clearing it
+    // is simply "good," full stop, with no separate reward for going further
+    // over. Undershooting is asymmetric on purpose: a single day 85-99% of the
+    // floor isn't a problem if the weekly average still clears it, but a
+    // meaningful shortfall (<85%) is where muscle-preservation risk actually
+    // shows up, especially stacked on a ride day where net calories are tight.
+    const PROTEIN_SHORTFALL_RATIO = 0.85; // below this fraction of target = red
+    function proteinTier(value, target) {
+      if (target == null) return null;
+      if (value >= target) return 'good';
+      return value >= target * PROTEIN_SHORTFALL_RATIO ? 'ok' : 'bad';
+    }
+
     /* ─── Weight localStorage ────────────────────────────────────────────────── */
     function lsSave(rows, meta) {
       try {
@@ -186,14 +265,15 @@
     function mergeCaloriesWithStored(newCalRows) {
       const map = lsLoadCaloriesRaw();
       for (const d of newCalRows) {
-        map[d.date] = { date: d.date, Calories: d.Calories || 0, ActiveEnergy: d.ActiveEnergy || 0, BasalEnergy: d.BasalEnergy || 0 };
+        map[d.date] = { date: d.date, Calories: d.Calories || 0, ActiveEnergy: d.ActiveEnergy || 0, BasalEnergy: d.BasalEnergy || 0,
+                        Protein: d.Protein || 0, Carbs: d.Carbs || 0, Fat: d.Fat || 0, HasWorkout: !!d.HasWorkout };
       }
       try { localStorage.setItem(LS_CALORIE_KEY, JSON.stringify(map)); } catch (_) {}
       return Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsCfg = null }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsCfg = null, calorieTargets = [], proteinTargets = [] }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -206,6 +286,12 @@
         injSchedule:  (Array.isArray(injSchedule) || isIntervalSchedule(injSchedule)) ? injSchedule : [],
         calories:     Array.isArray(calories) ? calories.filter(c => c.date) : [],
         intervalsCfg: intervalsCfg && intervalsCfg.apiKey && intervalsCfg.athleteId ? intervalsCfg : null,
+        calorieTargets: Array.isArray(calorieTargets) && calorieTargets.length
+          ? [...calorieTargets].sort((a, b) => a.date.localeCompare(b.date))
+          : DEFAULT_CALORIE_TARGETS,
+        proteinTargets: Array.isArray(proteinTargets) && proteinTargets.length
+          ? [...proteinTargets].sort((a, b) => a.date.localeCompare(b.date))
+          : DEFAULT_PROTEIN_TARGETS,
       };
     }
 
@@ -252,13 +338,16 @@
       }
     }
 
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], intervalsCfg = null) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], intervalsCfg = null, calorieTargets = [], proteinTargets = []) {
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule,
         injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
-        calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy }) => ({ date, Calories, ActiveEnergy, BasalEnergy })),
+        calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy, Protein, Carbs, Fat, HasWorkout }) =>
+          ({ date, Calories, ActiveEnergy, BasalEnergy, Protein: Protein || 0, Carbs: Carbs || 0, Fat: Fat || 0, HasWorkout: !!HasWorkout })),
+        calorieTargets: calorieTargets.map(({ date, target }) => ({ date, target })),
+        proteinTargets: proteinTargets.map(({ date, target }) => ({ date, target })),
       };
       if (intervalsCfg?.apiKey && intervalsCfg?.athleteId) payload.intervalsCfg = { apiKey: intervalsCfg.apiKey, athleteId: intervalsCfg.athleteId };
       const content = JSON.stringify(payload, null, 2);
@@ -369,14 +458,20 @@
         if (isNaN(d.getTime())) continue;
         const metric = row[schema.metricCol];
         if (!metric) continue;
+        const key = msToLocalDate(d.getTime());
+        if (!map[key]) map[key] = { date: key, ts: d, Calories: 0, ActiveEnergy: 0, BasalEnergy: 0, Protein: 0, Carbs: 0, Fat: 0, HasWorkout: false };
+        // "Workout" rows use a different column layout (activity type + duration,
+        // not a plain numeric value) — just flag the day, don't try to parse a number.
+        if (metric.toLowerCase() === 'workout') { map[key].HasWorkout = true; continue; }
         const rawVal = (row[schema.valueCol] ?? '').replace(/,/g, '');
         const val = parseFloat(rawVal);
         if (isNaN(val)) continue;
-        const key = msToLocalDate(d.getTime());
-        if (!map[key]) map[key] = { date: key, ts: d, Calories: 0, ActiveEnergy: 0, BasalEnergy: 0 };
         if (metric.toLowerCase().includes('calor')) { calorieMetrics[key] = (calorieMetrics[key] ?? 0) + val; found++; }
         else if (metric.toLowerCase().includes('active energy')) { map[key].ActiveEnergy += val; found++; }
         else if (metric.toLowerCase().includes('basal energy')) { map[key].BasalEnergy += val; found++; }
+        else if (metric.toLowerCase().includes('protein')) { map[key].Protein += val; found++; }
+        else if (metric.toLowerCase().includes('carbohydrate')) { map[key].Carbs += val; found++; }
+        else if (metric.toLowerCase().includes('total fat')) { map[key].Fat += val; found++; }
       }
       Object.entries(calorieMetrics).forEach(([key, total]) => {
         if (map[key]) map[key].Calories = total;
@@ -716,33 +811,44 @@
       }
     }
 
-    /* ─── Calorie Chart ──────────────────────────────────────────────────────── */
-    function CalorieChart({ calorieData }) {
+    // An SVG <path> 'd' for a bar rounded only at the data-end — the end
+    // touching the baseline stays square. A plain <rect rx> rounds all 4
+    // corners, which is wrong for a bar (the baseline-touching end isn't a
+    // data-end). Handles bars that grow up from a bottom baseline (yEnd <
+    // yBaseline) and bars that flip direction by sign around a center
+    // baseline (diverging charts), since direction is a parameter here, not
+    // assumed.
+    function roundedBarPath(x, w, yBaseline, yEnd, r) {
+      const up = yEnd < yBaseline;
+      const rr = Math.max(0, Math.min(r, w / 2, Math.abs(yBaseline - yEnd)));
+      if (rr === 0) return `M${x},${yBaseline} H${x+w} V${yEnd} H${x} Z`;
+      return up
+        ? `M${x},${yBaseline} V${yEnd+rr} Q${x},${yEnd} ${x+rr},${yEnd} H${x+w-rr} Q${x+w},${yEnd} ${x+w},${yEnd+rr} V${yBaseline} Z`
+        : `M${x},${yBaseline} V${yEnd-rr} Q${x},${yEnd} ${x+rr},${yEnd} H${x+w-rr} Q${x+w},${yEnd} ${x+w},${yEnd-rr} V${yBaseline} Z`;
+    }
+
+    /* ─── Calories & Nutrition ───────────────────────────────────────────────── */
+    // Small shared bits used by all three cards below.
+    const CAL_CARD = { borderRadius: 18, overflow: 'hidden', background: '#fff',
+                        border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 };
+    const CAL_HEADER = { padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' };
+    const CAL_TITLE = { fontSize: 13, fontWeight: 700, color: '#1c1c1e' };
+    const swatch = (color) => ({ display: 'inline-block', width: 12, height: 12, background: color,
+                                  marginRight: 5, verticalAlign: 'middle', borderRadius: 3 });
+
+    function CaloriesActivitySection({ calorieData, rows, calorieTargets, proteinTargets, onSaveProteinTargets, isAdmin, onSaveCalorieTargets, intervalsCalories }) {
       const [rangeMode, setRangeMode] = useState('30d');
       const [customDays, setCustomDays] = useState(30);
       const [windowOffset, setWindowOffset] = useState(0);
-      const [tip, setTip] = useState(null);
-      const [sharing, setSharing] = useState(false);
-      const svgRef = useRef(null);
       const selectRange = (mode) => { setRangeMode(mode); setWindowOffset(0); };
 
       if (!calorieData || calorieData.length < 2) return null;
 
-      const VW = 360, VH = 140;
-      const PAD = { t: 10, r: 8, b: 28, l: 32 };
-      const cW = VW - PAD.l - PAD.r;
-      const cH = VH - PAD.t - PAD.b;
-      const GOAL = 1709;
       const STEP = 86400000;
-
       const sorted = [...calorieData].sort((a, b) => a.date.localeCompare(b.date));
-      if (sorted.length === 0) return null;
-
-      const todayMs = new Date().setHours(0,0,0,0);
+      const todayMs = new Date().setHours(0, 0, 0, 0);
       const startMs = new Date(sorted[0].date + 'T00:00:00').getTime();
 
-      // Window management — windowOffset is a page count (one full window per
-      // click), matching the PK chart's Earlier/Later paging behavior.
       const windowDays = windowDaysForRange(rangeMode, customDays);
       const refEnd = todayMs + STEP;
       const pageShift = windowOffset * windowDays * STEP;
@@ -751,302 +857,555 @@
       const canScrollEarlier = windowDays && startMs < visStartMs;
       const canScrollLater = windowDays && windowOffset > 0;
 
-      // Build data for view
-      let pts = [];
-      if (rangeMode === 'all') {
-        const weeks = {};
-        for (const d of sorted) {
-          const dms = new Date(d.date + 'T00:00:00').getTime();
-          const sunMs = new Date(dms).getTime() - (new Date(dms).getDay() || 7) * STEP;
-          const wk = new Date(sunMs).toISOString().slice(0, 10);
-          if (!weeks[wk]) weeks[wk] = [];
-          weeks[wk].push(d);
-        }
-        pts = Object.entries(weeks).map(([wk, days]) => {
-          const avgCals = days.reduce((sum, d) => sum + (d.Calories || 0), 0) / days.length;
-          const avgBurned = days.reduce((sum, d) => sum + (d.ActiveEnergy || 0), 0) / days.length;
-          return { date: wk, Calories: avgCals, burned: avgBurned, net: avgCals - avgBurned, ms: new Date(wk + 'T00:00:00').getTime() + 3*STEP };
-        });
-      } else {
-        pts = sorted
-          .filter(d => {
-            const ms = new Date(d.date + 'T00:00:00').getTime();
-            return ms >= visStartMs && ms < visEndMs;
-          })
-          .map(d => ({
-            date: d.date,
-            Calories: d.Calories || 0,
-            burned: d.ActiveEnergy || 0,
-            net: (d.Calories || 0) - (d.ActiveEnergy || 0),
-            ms: new Date(d.date + 'T00:00:00').getTime()
-          }));
-      }
+      const periodDaily = sorted
+        .filter(d => {
+          const ms = new Date(d.date + 'T00:00:00').getTime();
+          return ms >= visStartMs && ms < visEndMs;
+        })
+        .map(d => ({ ...d, ms: new Date(d.date + 'T00:00:00').getTime() }));
 
-      if (pts.length === 0) return null;
+      if (periodDaily.length === 0) return null;
 
-      // Dynamic y-axis based on data, with -500 minimum
-      const allVals = pts.flatMap(p => [p.Calories, p.burned, p.net]);
-      const dataMin = Math.min(...allVals);
-      const dataMax = Math.max(...allVals);
-      const minVal = Math.min(dataMin - 100, -500);
-      const maxVal = dataMax + 100;
-      const rangeVal = maxVal - minVal;
+      return (
+        <>
+          <div style={CAL_CARD}>
+            <div style={CAL_HEADER}><div style={CAL_TITLE}>Calories &amp; Nutrition</div></div>
+            <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px', alignItems: 'center' }}>
+              <select value={rangeMode} onChange={e => selectRange(e.target.value)}
+                      style={{ fontSize: 10, fontWeight: 600, padding: '5px 8px', borderRadius: 8,
+                               background: '#f2f2f7', color: '#3c3c43', border: 'none', outline: 'none', cursor: 'pointer' }}>
+                <option value="7d">7 Days</option>
+                <option value="14d">14 Days</option>
+                <option value="30d">Month</option>
+                <option value="all">All</option>
+                <option value="custom">Custom</option>
+              </select>
+              {rangeMode === 'custom' && (
+                <input type="number" min="1" step="1" value={customDays}
+                       onChange={e => setCustomDays(e.target.value)}
+                       placeholder="days"
+                       style={{ width: 56, fontSize: 10, fontWeight: 600, padding: '5px 6px', borderRadius: 8,
+                                border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' }} />
+              )}
+            </div>
+            {windowDays !== 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            padding: '0 14px 10px', fontSize: 9, color: '#aeaeb2' }}>
+                <button onClick={() => canScrollEarlier && setWindowOffset(o => o + 1)}
+                        disabled={!canScrollEarlier}
+                        style={{ fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 6,
+                                 background: canScrollEarlier ? '#e5e5ea' : 'transparent',
+                                 color: canScrollEarlier ? '#3c3c43' : '#c7c7cc',
+                                 border: 'none', cursor: canScrollEarlier ? 'pointer' : 'default' }}>
+                  ← Earlier
+                </button>
+                <span>{new Date(visStartMs).toISOString().slice(5,10)} – {new Date(Math.min(todayMs, visEndMs)).toISOString().slice(5,10)}</span>
+                <button onClick={() => canScrollLater && setWindowOffset(o => o - 1)}
+                        disabled={!canScrollLater}
+                        style={{ fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 6,
+                                 background: canScrollLater ? '#e5e5ea' : 'transparent',
+                                 color: canScrollLater ? '#3c3c43' : '#c7c7cc',
+                                 border: 'none', cursor: canScrollLater ? 'pointer' : 'default' }}>
+                  Later →
+                </button>
+              </div>
+            )}
+          </div>
 
-      const xOf = (ms) => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
-      const yOf = (val) => PAD.t + cH - ((val - minVal) / rangeVal) * cH;
+          <div style={CAL_CARD}>
+            <div style={CAL_HEADER}><div style={CAL_TITLE}>Calories: Intake vs Burn</div></div>
+            <TdeeChart periodDaily={periodDaily} visStartMs={visStartMs} visEndMs={visEndMs}
+                       calorieTargets={calorieTargets} isAdmin={isAdmin} onSaveCalorieTargets={onSaveCalorieTargets} />
+          </div>
 
-      // Bar width scales down as more days are shown, so the gap *between* days'
-      // bar-pairs stays visible even at wide ranges — the two bars within a single
-      // day touch (no inner gap), keeping the pair visually grouped instead of
-      // ambiguously merging with a neighboring day's bars once the chart is dense.
+          <div style={CAL_CARD}>
+            <div style={CAL_HEADER}><div style={CAL_TITLE}>Calories vs Target</div></div>
+            <CaloriesVsTargetChart periodDaily={periodDaily} visStartMs={visStartMs} visEndMs={visEndMs} todayMs={todayMs}
+                                   rows={rows} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories} />
+          </div>
+
+          <div style={CAL_CARD}>
+            <div style={CAL_HEADER}><div style={CAL_TITLE}>Protein</div></div>
+            <ProteinChart periodDaily={periodDaily} visStartMs={visStartMs} visEndMs={visEndMs}
+                          proteinTargets={proteinTargets} isAdmin={isAdmin} onSaveProteinTargets={onSaveProteinTargets} />
+          </div>
+        </>
+      );
+    }
+
+    /* ─── Card 1: Calories: Intake vs Burn ───────────────────────────────────── */
+    function TdeeChart({ periodDaily, visStartMs, visEndMs, calorieTargets, isAdmin, onSaveCalorieTargets }) {
+      const [tip, setTip] = useState(null);
+      const [editing, setEditing] = useState(false);
+      const [draftTarget, setDraftTarget] = useState('');
+      const [saving, setSaving] = useState(false);
+      const [saveErr, setSaveErr] = useState('');
+
+      const VW = 360, VH = 150;
+      const PAD = { t: 10, r: 8, b: 28, l: 34 };
+      const cW = VW - PAD.l - PAD.r;
+      const cH = VH - PAD.t - PAD.b;
+
+      const pts = periodDaily.map(d => ({
+        ...d,
+        tdee: (d.BasalEnergy || 0) + (d.ActiveEnergy || 0),
+        target: targetActiveAt(calorieTargets, d.date),
+      }));
+
+      const maxVal = Math.max(...pts.map(p => Math.max(p.Calories || 0, p.tdee, p.target || 0)), 100) * 1.15;
+      const xOf = ms => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
+      const yOf = v => PAD.t + cH - (v / maxVal) * cH;
+      const yBaseline = PAD.t + cH;
+
       const slotW = cW / pts.length;
-      const barW = Math.max(0.3, Math.min(2, slotW * 0.3));
+      // barW*2 + GAP is deliberately well under slotW so there's real
+      // whitespace between one day's pair and the next, not just between
+      // the two bars within a day.
+      const barW = Math.max(0.5, Math.min(12, slotW * 0.32));
+      const GAP = Math.max(0.3, slotW * 0.06);
 
-      // Period summary stats — computed from the full daily series, not the
-      // possibly weekly-averaged `pts` (averaging-then-summing would misrepresent totals in 'all' mode).
-      const periodDaily = sorted.filter(d => {
-        const ms = new Date(d.date + 'T00:00:00').getTime();
-        return ms >= visStartMs && ms < visEndMs;
-      });
-      const totalConsumed = periodDaily.reduce((s, d) => s + (d.Calories || 0), 0);
-      const totalBurned = periodDaily.reduce((s, d) => s + (d.ActiveEnergy || 0), 0);
-      const netForPeriod = totalConsumed - totalBurned;
-      const periodRangeStr = `${fmtShort(msToLocalDate(visStartMs))} – ${fmtShort(msToLocalDate(Math.min(todayMs, visEndMs)))}`;
+      const avgConsumed = avg(pts.map(p => p.Calories || 0));
+      const avgTdee = avg(pts.map(p => p.tdee));
+      const withTarget = pts.filter(p => p.target != null);
+      const pctOverTarget = withTarget.length
+        ? Math.round(withTarget.filter(p => (p.Calories || 0) > p.target).length / withTarget.length * 100)
+        : null;
 
-      // Renders the chart (header text + SVG) onto a canvas and shares it via
-      // the Web Share API (native share sheet) when available, falling back
-      // to a plain PNG download otherwise.
-      const shareChart = async () => {
-        if (!svgRef.current || sharing) return;
-        setSharing(true);
-        try {
-          const scale = 3, headerH = 54;
-          const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
-
-          const svgClone = svgRef.current.cloneNode(true);
-          svgClone.setAttribute('width', VW * scale);
-          svgClone.setAttribute('height', VH * scale);
-          const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-          styleEl.textContent = `text { font-family: ${FONT}; }`;
-          svgClone.insertBefore(styleEl, svgClone.firstChild);
-          const svgString = new XMLSerializer().serializeToString(svgClone);
-          const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
-
-          const img = new Image();
-          await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = reject;
-            img.src = svgUrl;
-          });
-
-          const canvas = document.createElement('canvas');
-          canvas.width = VW * scale;
-          canvas.height = (VH + headerH) * scale;
-          const ctx = canvas.getContext('2d');
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.scale(scale, scale);
-          ctx.fillStyle = '#1c1c1e';
-          ctx.font = `700 13px ${FONT}`;
-          ctx.fillText('My Net Calories', 14, 18);
-          ctx.fillStyle = '#8e73de';
-          ctx.font = `700 10px ${FONT}`;
-          ctx.fillText(`🍔 ${Math.round(totalConsumed).toLocaleString()} · 🔥 ${Math.round(totalBurned).toLocaleString()} · Net ${netForPeriod >= 0 ? '+' : ''}${Math.round(netForPeriod).toLocaleString()} cal`, 14, 34);
-          ctx.fillStyle = '#8e8e93';
-          ctx.font = `400 9px ${FONT}`;
-          ctx.fillText(periodRangeStr, 14, 46);
-          ctx.drawImage(img, 0, headerH, VW, VH);
-
-          const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-          const file = new File([fileBlob], 'net-calories.png', { type: 'image/png' });
-
-          if (navigator.canShare && navigator.canShare({ files: [file] })) {
-            await navigator.share({
-              files: [file],
-              title: 'My Net Calories',
-              text: `Net ${netForPeriod >= 0 ? '+' : ''}${Math.round(netForPeriod).toLocaleString()} cal · ${periodRangeStr}`,
-            });
-          } else {
-            const url = URL.createObjectURL(fileBlob);
-            const a = document.createElement('a');
-            a.href = url; a.download = 'net-calories.png';
-            document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-          }
-        } catch (e) {
-          if (e.name !== 'AbortError') console.warn('[CalorieChart] share failed:', e);
-        } finally {
-          setSharing(false);
-        }
+      const currentTarget = targetActiveAt(calorieTargets, today());
+      const startEdit = () => { setDraftTarget(String(currentTarget ?? 1500)); setEditing(true); setSaveErr(''); };
+      const saveTarget = async () => {
+        const n = parseFloat(draftTarget);
+        if (isNaN(n) || n <= 0) { setSaveErr('Enter a valid number'); return; }
+        setSaving(true); setSaveErr('');
+        const ok = await onSaveCalorieTargets(n);
+        setSaving(false);
+        if (ok) setEditing(false); else setSaveErr("Couldn't save — try again.");
       };
 
       return (
         <div>
-          {/* Controls */}
-          <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px', alignItems: 'center' }}>
-            <select value={rangeMode} onChange={e => selectRange(e.target.value)}
-                    style={{ fontSize: 10, fontWeight: 600, padding: '5px 8px', borderRadius: 8,
-                             background: '#f2f2f7', color: '#3c3c43', border: 'none', outline: 'none', cursor: 'pointer' }}>
-              <option value="7d">7 Days</option>
-              <option value="14d">14 Days</option>
-              <option value="30d">Month</option>
-              <option value="all">All</option>
-              <option value="custom">Custom</option>
-            </select>
-            {rangeMode === 'custom' && (
-              <input type="number" min="1" step="1" value={customDays}
-                     onChange={e => setCustomDays(e.target.value)}
-                     placeholder="days"
-                     style={{ width: 56, fontSize: 10, fontWeight: 600, padding: '5px 6px', borderRadius: 8,
-                              border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' }} />
-            )}
-          </div>
-
-          {/* Scroll controls */}
-          {windowDays !== 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                          padding: '0 14px 2px', fontSize: 9, color: '#aeaeb2' }}>
-              <button onClick={() => canScrollEarlier && setWindowOffset(o => o + 1)}
-                      disabled={!canScrollEarlier}
-                      style={{ fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 6,
-                               background: canScrollEarlier ? '#e5e5ea' : 'transparent',
-                               color: canScrollEarlier ? '#3c3c43' : '#c7c7cc',
-                               border: 'none', cursor: canScrollEarlier ? 'pointer' : 'default' }}>
-                ← Earlier
-              </button>
-              <span>{new Date(visStartMs).toISOString().slice(5,10)} – {new Date(Math.min(todayMs, visEndMs)).toISOString().slice(5,10)}</span>
-              <button onClick={() => canScrollLater && setWindowOffset(o => o - 1)}
-                      disabled={!canScrollLater}
-                      style={{ fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 6,
-                               background: canScrollLater ? '#e5e5ea' : 'transparent',
-                               color: canScrollLater ? '#3c3c43' : '#c7c7cc',
-                               border: 'none', cursor: canScrollLater ? 'pointer' : 'default' }}>
-                Later →
-              </button>
-            </div>
-          )}
-
-          {/* Chart */}
-          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block', overflow: 'hidden' }}
+          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}
                onMouseMove={(e) => {
                  const rect = e.currentTarget.getBoundingClientRect();
                  const x = (e.clientX - rect.left) / rect.width * VW;
                  if (x < PAD.l || x > PAD.l + cW) { setTip(null); return; }
-                 // Convert cursor x back to a timestamp, then find the nearest
-                 // data point by time — avoids index-space vs time-space mismatch
-                 // that caused the hit zone to appear shifted right.
                  const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
                  let idx = 0, minDist = Infinity;
-                 pts.forEach((p, i) => {
-                   const d = Math.abs(p.ms - targetMs);
-                   if (d < minDist) { minDist = d; idx = i; }
-                 });
-                 setTip({ idx, ...pts[idx] });
+                 pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
+                 setTip(pts[idx]);
                }}
                onMouseLeave={() => setTip(null)}>
-            {/* Bars: ingested (blue) and burned (orange) — touching, no inner gap,
-                so the slot's empty space all goes toward separating one day's
-                pair from the next rather than splitting the pair itself */}
             {pts.map(p => {
-              const x = xOf(p.ms);
+              const cx = xOf(p.ms);
+              const xTdee = cx - GAP / 2 - barW;
+              const xCons = cx + GAP / 2;
+              const yBasalTop = yOf(p.BasalEnergy || 0);
+              const stackGap = 1;
+              const yActiveBottom = Math.min(yBasalTop, yBaseline) - ((p.BasalEnergy||0) > 0 ? stackGap : 0);
+              const yActiveTop = yOf(p.tdee);
+              const rx = Math.min(2, barW * 0.3);
               return (
-                <g key={`bars-${p.date}`}>
-                  <rect x={x - barW} y={yOf(p.Calories)} width={barW} height={PAD.t + cH - yOf(p.Calories)}
-                        fill="#2c5f8a" />
-                  <rect x={x} y={yOf(p.burned)} width={barW} height={PAD.t + cH - yOf(p.burned)}
-                        fill="#f4a300" />
+                <g key={p.date}>
+                  {/* TDEE stack: basal (aqua) + active (orange), 1-unit gap between */}
+                  <rect x={xTdee} y={Math.min(yBasalTop, yBaseline)} width={barW}
+                        height={Math.max(0, yBaseline - Math.min(yBasalTop, yBaseline))} fill="#1baf7a" />
+                  <path d={roundedBarPath(xTdee, barW, yActiveBottom, yActiveTop, rx)} fill="#eb6834" />
+                  {/* Consumed */}
+                  <path d={roundedBarPath(xCons, barW, yBaseline, yOf(p.Calories || 0), rx)} fill="#2a78d6" />
+                  {/* Target — a solid tick over this day's Consumed bar, extending
+                      slightly past it so it reads as a line even at narrow bar
+                      widths (a dash pattern this short just looked like dots). */}
+                  {p.target != null && (
+                    <line x1={xCons - barW * 0.2} x2={xCons + barW * 1.2} y1={yOf(p.target)} y2={yOf(p.target)}
+                          stroke="#1c1c1e" strokeWidth="1.1" strokeLinecap="round" opacity="0.8" />
+                  )}
                 </g>
               );
             })}
 
-            {/* Goal line at 1709 */}
-            <line x1={PAD.l} y1={yOf(GOAL)} x2={PAD.l + cW} y2={yOf(GOAL)}
-                  stroke="#34c759" strokeWidth="0.8" strokeDasharray="2,2" opacity="0.5" />
+            <line x1={PAD.l} y1={yBaseline} x2={PAD.l + cW} y2={yBaseline} stroke="rgba(0,0,0,.12)" strokeWidth="0.5" />
 
-            {/* Net calories line */}
-            <polyline points={pts.map(p => `${xOf(p.ms)},${yOf(p.net)}`).join(' ')}
-                      fill="none" stroke="#8e73de" strokeWidth="1.2" />
-
-            {/* Axes */}
-            <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
-            <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
-
-            {/* Y labels: dynamic scale in 500-calorie intervals */}
             {(() => {
-              const step = 500;
+              const step = maxVal > 3000 ? 1000 : 500;
               const labels = [];
-              for (let v = Math.ceil(minVal / step) * step; v <= maxVal; v += step) {
-                labels.push(v);
-              }
+              for (let v = 0; v <= maxVal; v += step) labels.push(v);
               return labels.map(v => (
-                <g key={`yax-${v}`}>
-                  <line x1={PAD.l - 2} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)}
-                        stroke="rgba(0,0,0,.05)" strokeWidth="0.5" />
-                  <text x={PAD.l - 3} y={yOf(v) + 2} textAnchor="end"
-                        fontSize="7" fill="#aeaeb2">{v}</text>
+                <g key={`y-${v}`}>
+                  <line x1={PAD.l - 2} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)} stroke="rgba(0,0,0,.05)" strokeWidth="0.5" />
+                  <text x={PAD.l - 3} y={yOf(v) + 2} textAnchor="end" fontSize="7" fill="#aeaeb2">{v}</text>
                 </g>
               ));
             })()}
 
-            {/* X labels */}
             {pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / 4)) === 0).map(p => (
-              <text key={p.date} x={xOf(p.ms)} y={PAD.t + cH + 10} textAnchor="middle"
-                    fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
+              <text key={p.date} x={xOf(p.ms)} y={yBaseline + 10} textAnchor="middle" fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
             ))}
 
-            {/* Tooltip - anchored inside the top of the chart so it's never clipped */}
             {tip && (() => {
-              const TW = 66, TH = 19;
+              const TW = 86, TH = 32;
               const tx = Math.max(PAD.l, Math.min(xOf(tip.ms) - TW / 2, PAD.l + cW - TW));
               const ty = PAD.t + 2;
               return (
                 <g style={{ pointerEvents: 'none' }}>
-                  <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH}
-                        stroke="rgba(28,28,30,.25)" strokeWidth="1" />
-                  <rect x={tx} y={ty} width={TW} height={TH} rx={3} fill="#1c1c1e" opacity="0.9" />
-                  <text x={tx + TW / 2} y={ty + 7} textAnchor="middle" fontSize="4.5" fill="#aeaeb2">
-                    {(d => `${d.wd} ${d.mo} ${d.day}`)(fmtDate(tip.date))}
+                  <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={yBaseline} stroke="rgba(28,28,30,.2)" strokeWidth="1" />
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={3} fill="#1c1c1e" opacity="0.92" />
+                  <text x={tx + TW / 2} y={ty + 8} textAnchor="middle" fontSize="4.5" fill="#aeaeb2">{tip.date.slice(5)}</text>
+                  <text x={tx + TW / 2} y={ty + 16} textAnchor="middle" fontSize="5" fontWeight="600">
+                    <tspan fill="#6ba9e8">{Math.round(tip.Calories || 0)} consumed</tspan>
                   </text>
-                  <text x={tx + TW / 2} y={ty + 15} textAnchor="middle" fontSize="5.5" fontWeight="600">
-                    <tspan fill="#6cb2ff">🍔{parseInt(tip.Calories)}</tspan>
-                    <tspan fill="#48484a">  </tspan>
-                    <tspan fill="#ffb04d">🔥{parseInt(tip.burned)}</tspan>
-                    <tspan fill="#48484a">  </tspan>
-                    <tspan fill="#b9a6ef">{parseInt(tip.net)}</tspan>
+                  <text x={tx + TW / 2} y={ty + 23} textAnchor="middle" fontSize="4.5" fontWeight="600">
+                    <tspan fill="#5ec99a">{Math.round(tip.BasalEnergy || 0)} basal</tspan>
+                    <tspan fill="#48484a"> + </tspan>
+                    <tspan fill="#f0a978">{Math.round(tip.ActiveEnergy || 0)} active</tspan>
+                  </text>
+                  <text x={tx + TW / 2} y={ty + 29} textAnchor="middle" fontSize="4" fill="#aeaeb2">
+                    = {Math.round(tip.tdee)} burned
                   </text>
                 </g>
               );
             })()}
           </svg>
 
-          {/* Period stats */}
           <div style={{ display: 'flex', padding: '8px 14px 4px', gap: 12, alignItems: 'flex-start' }}>
-            <PkStat label="Consumed" value={Math.round(totalConsumed).toLocaleString() + ' cal'} color="#4a90d9" />
-            <PkStat label="Burned" value={Math.round(totalBurned).toLocaleString() + ' cal'} color="#ff9500" />
-            <PkStat label="Net" value={(netForPeriod >= 0 ? '+' : '') + Math.round(netForPeriod).toLocaleString() + ' cal'} color="#8e73de" />
+            <PkStat label="Avg Consumed" value={Math.round(avgConsumed).toLocaleString() + ' cal'} color="#2a78d6" />
+            <PkStat label="Avg TDEE" value={Math.round(avgTdee).toLocaleString() + ' cal'} color="#eb6834" />
+            <PkStat label="Over Target" value={pctOverTarget != null ? pctOverTarget + '%' : '—'} note="of days" color="#3c3c43" />
           </div>
 
-          {/* Legend */}
-          <div style={{ padding: '6px 14px', fontSize: 11, fontWeight: 600, color: '#3c3c43', display: 'flex', gap: 14 }}>
-            <div><span style={{ display: 'inline-block', width: 12, height: 12, background: '#2c5f8a', marginRight: 5, verticalAlign: 'middle' }}></span>Ingested</div>
-            <div><span style={{ display: 'inline-block', width: 12, height: 12, background: '#f4a300', marginRight: 5, verticalAlign: 'middle' }}></span>Burned</div>
-            <div><span style={{ display: 'inline-block', width: 12, height: 12, background: '#8e73de', marginRight: 5, verticalAlign: 'middle' }}></span>Net</div>
-            <div><span style={{ display: 'inline-block', width: 12, height: 2, background: '#34c759', marginRight: 5, verticalAlign: 'middle' }}></span>Goal</div>
+          <div style={{ padding: '6px 14px', fontSize: 11, fontWeight: 600, color: '#3c3c43', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <div><span style={swatch('#1baf7a')}></span>Basal</div>
+            <div><span style={swatch('#eb6834')}></span>Active</div>
+            <div><span style={swatch('#2a78d6')}></span>Consumed</div>
+            <div><span style={{ display: 'inline-block', width: 12, height: 2, background: '#1c1c1e',
+                                 marginRight: 5, verticalAlign: 'middle', opacity: .8 }}></span>Target</div>
           </div>
 
-          {/* Share */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        gap: 10, padding: '6px 14px 10px' }}>
-            <button onClick={shareChart} disabled={sharing}
-                    style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
-                             color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,
-                             padding: '4px 10px', cursor: sharing ? 'default' : 'pointer', opacity: sharing ? .6 : 1 }}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
-                   strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
-              </svg>
-              {sharing ? 'Preparing…' : 'Share'}
-            </button>
+          <div style={{ padding: '0 14px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {!editing ? (
+              <>
+                <span style={{ fontSize: 11, color: '#8e8e93' }}>
+                  Target: {currentTarget != null ? `${currentTarget} cal` : 'not set'}
+                </span>
+                {isAdmin && (
+                  <button onClick={startEdit}
+                          style={{ fontSize: 11, color: '#2a78d6', background: 'none', border: 'none',
+                                   cursor: 'pointer', fontWeight: 600 }}>Edit</button>
+                )}
+              </>
+            ) : (
+              <>
+                <input type="number" step="10" value={draftTarget} onChange={e => setDraftTarget(e.target.value)}
+                       style={{ width: 68, fontSize: 12, padding: '4px 6px', borderRadius: 6,
+                                border: '1px solid #d1d1d6', background: '#f9f9f9', outline: 'none' }} />
+                <button onClick={saveTarget} disabled={saving}
+                        style={{ fontSize: 11, fontWeight: 600, color: '#fff',
+                                 background: saving ? '#a9c8ea' : '#2a78d6', border: 'none', borderRadius: 6,
+                                 padding: '5px 10px', cursor: saving ? 'default' : 'pointer' }}>
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button onClick={() => { setEditing(false); setSaveErr(''); }} disabled={saving}
+                        style={{ fontSize: 11, color: '#8e8e93', background: 'none', border: 'none', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+                {saveErr && <span style={{ fontSize: 11, color: '#d03b3b' }}>{saveErr}</span>}
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Card 2: Calories vs Target ─────────────────────────────────────────── */
+    // Deliberately does NOT re-derive a "goal deficit" from TDEE. Your calorie
+    // target already has an estimated TDEE baked in from when it was set (MFP's
+    // own methodology) — subtracting today's actual, noisy Basal+Active on top
+    // of that double-counts TDEE and produces a wildly swinging "goal" that can
+    // look like a prescribed 1800-calorie deficit on a big exercise day. It
+    // isn't one; it's a measurement artifact (Apple's active-energy estimate
+    // alone carries ~30% error). The only thing that's actually safe to hold
+    // you to daily is whether you hit the number you *chose*: consumed vs
+    // target. TDEE/energy-balance still matters, but only as a multi-day
+    // trend (the Predicted Pace stat below), never a single day's headline.
+    //
+    // Exercise credit: the target is bumped up on workout days, mirroring
+    // MFP's own "Goal + Exercise − Food" convention. Prefers the *real*
+    // per-workout calorie figure from intervals.icu (same source RidesChart
+    // shows — all logged activities there, not just cycling, despite the
+    // chart's name — e.g. the actual 1590 cal Strava reported for a given
+    // ride), since that's the one source in this app precise enough to
+    // trust. Only falls back to that day's HealthKit Active Energy total (on
+    // days flagged via a "Workout" row in the Health export, e.g. an activity
+    // intervals.icu never saw) when no intervals.icu figure exists for the
+    // date — that fallback runs lower than Strava's own number, since
+    // HealthKit's day-level aggregate isn't workout-specific.
+    // Crediting Active Energy on *every* day (tried first, before the
+    // HasWorkout gate existed) is wrong regardless of source: ordinary NEAT
+    // (walking, chores, standing) happens every day, not just workout days,
+    // and inflating the target daily painted almost the whole chart red as a
+    // fake "way under" reading. Still additive only (never lowers the target
+    // below the base MFP number), so it can't reproduce the TDEE-subtraction
+    // danger warned about above.
+    function CaloriesVsTargetChart({ periodDaily, visStartMs, visEndMs, todayMs, rows, calorieTargets, intervalsCalories }) {
+      const [tip, setTip] = useState(null);
+
+      const VW = 360, VH = 140;
+      const PAD = { t: 10, r: 8, b: 28, l: 34 };
+      const cW = VW - PAD.l - PAD.r;
+      const cH = VH - PAD.t - PAD.b;
+
+      const pts = periodDaily.map(d => {
+        const tdee = (d.BasalEnergy || 0) + (d.ActiveEnergy || 0);
+        const net = (d.Calories || 0) - tdee;
+        const baseTarget = targetActiveAt(calorieTargets, d.date);
+        const rideCal = intervalsCalories ? intervalsCalories[d.date] : null;
+        const exercise = rideCal != null ? rideCal : (d.HasWorkout ? (d.ActiveEnergy || 0) : 0);
+        const target = baseTarget != null ? baseTarget + exercise : null;
+        const deviation = target != null ? (d.Calories || 0) - target : null;
+        const tier = deviation != null ? netTier(deviation) : null;
+        return { ...d, tdee, net, baseTarget, exercise, target, deviation, tier };
+      });
+      const withDeviation = pts.filter(p => p.deviation != null);
+
+      const maxAbs = Math.max(...withDeviation.map(p => Math.abs(p.deviation)), 300) * 1.15;
+      const yZero = PAD.t + cH / 2;
+      const yOf = v => yZero - (v / maxAbs) * (cH / 2);
+      const xOf = ms => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
+      const barW = Math.max(0.5, Math.min(10, (cW / pts.length) * 0.55));
+
+      // Multi-day energy-balance trend — averaging over the whole visible
+      // window (not any single day) is what makes this a reasonable estimate
+      // despite daily TDEE being noisy; see the comment above the component.
+      const avgNet = avg(pts.map(p => p.net));
+      const predictedLbsPerWeek = avgNet * 7 / 3500;
+      const avgDeviation = withDeviation.length ? avg(withDeviation.map(p => p.deviation)) : null;
+      const avgTier = avgDeviation != null ? netTier(avgDeviation) : null;
+
+      const windowStartDate = msToLocalDate(visStartMs);
+      const windowEndDate = msToLocalDate(Math.min(todayMs, visEndMs));
+      const actualRates = (rows || [])
+        .filter(r => r.date >= windowStartDate && r.date < windowEndDate && r.rate != null)
+        .map(r => r.rate);
+      const actualLbsPerWeek = actualRates.length ? avg(actualRates) : null;
+
+      return (
+        <div>
+          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+               onMouseMove={(e) => {
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const x = (e.clientX - rect.left) / rect.width * VW;
+                 if (x < PAD.l || x > PAD.l + cW) { setTip(null); return; }
+                 const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
+                 let idx = 0, minDist = Infinity;
+                 pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
+                 setTip(pts[idx]);
+               }}
+               onMouseLeave={() => setTip(null)}>
+            {withDeviation.map(p => {
+              const x = xOf(p.ms) - barW / 2;
+              const rx = Math.min(3, barW * 0.3);
+              return <path key={p.date} d={roundedBarPath(x, barW, yZero, yOf(p.deviation), rx)} fill={NET_TIER_COLOR[p.tier]} opacity="0.88" />;
+            })}
+
+            <line x1={PAD.l} y1={yZero} x2={PAD.l + cW} y2={yZero} stroke="rgba(0,0,0,.2)" strokeWidth="0.7" />
+
+            {/* Nudged in from the very top/bottom edge so they don't collide
+                with the x-axis date row directly below the chart. */}
+            <text x={PAD.l - 3} y={PAD.t + 6} textAnchor="end" fontSize="7" fill="#aeaeb2">+{Math.round(maxAbs)}</text>
+            <text x={PAD.l - 3} y={PAD.t + cH - 2} textAnchor="end" fontSize="7" fill="#aeaeb2">-{Math.round(maxAbs)}</text>
+            <text x={PAD.l - 3} y={yZero + 2} textAnchor="end" fontSize="7" fill="#aeaeb2">0</text>
+
+            {pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / 4)) === 0).map(p => (
+              <text key={p.date} x={xOf(p.ms)} y={PAD.t + cH + 10} textAnchor="middle" fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
+            ))}
+
+            {tip && tip.deviation != null && (() => {
+              const hasExercise = tip.exercise > 0;
+              const TW = 88, TH = hasExercise ? 33 : 27;
+              const tx = Math.max(PAD.l, Math.min(xOf(tip.ms) - TW / 2, PAD.l + cW - TW));
+              const ty = PAD.t + 2;
+              return (
+                <g style={{ pointerEvents: 'none' }}>
+                  <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={PAD.t + cH} stroke="rgba(28,28,30,.2)" strokeWidth="1" />
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={3} fill="#1c1c1e" opacity="0.92" />
+                  <text x={tx + TW / 2} y={ty + 7} textAnchor="middle" fontSize="4.5" fill="#aeaeb2">{tip.date.slice(5)}</text>
+                  <text x={tx + TW / 2} y={ty + 16} textAnchor="middle" fontSize="6" fontWeight="700" fill={NET_TIER_COLOR[tip.tier]}>
+                    {Math.round(Math.abs(tip.deviation))} {tip.deviation >= 0 ? 'over' : 'under'}
+                  </text>
+                  <text x={tx + TW / 2} y={ty + 23} textAnchor="middle" fontSize="4" fill="#aeaeb2">
+                    {Math.round(tip.Calories || 0)} of {Math.round(tip.target)} cal
+                  </text>
+                  {hasExercise && (
+                    <text x={tx + TW / 2} y={ty + 29} textAnchor="middle" fontSize="4" fill="#aeaeb2">
+                      ({tip.baseTarget} + {Math.round(tip.exercise)} workout)
+                    </text>
+                  )}
+                </g>
+              );
+            })()}
+          </svg>
+
+          <div style={{ display: 'flex', padding: '8px 14px 4px', gap: 12, alignItems: 'flex-start' }}>
+            <PkStat label="Avg Off Target" value={avgDeviation != null ? `${avgDeviation >= 0 ? '+' : ''}${Math.round(avgDeviation)} cal` : '—'}
+                    color={avgTier != null ? NET_TIER_COLOR[avgTier] : '#3c3c43'} />
+            <PkStat label="Predicted Pace" note="from TDEE, noisy"
+                    value={`${predictedLbsPerWeek >= 0 ? '+' : ''}${predictedLbsPerWeek.toFixed(2)} lb/wk`}
+                    color={predictedLbsPerWeek <= 0 ? '#0ca30c' : '#d03b3b'} />
+            <PkStat label="Actual Pace" note="from scale"
+                    value={actualLbsPerWeek != null ? `${actualLbsPerWeek >= 0 ? '+' : ''}${actualLbsPerWeek.toFixed(2)} lb/wk` : '—'}
+                    color={actualLbsPerWeek == null ? '#3c3c43' : (actualLbsPerWeek <= 0 ? '#0ca30c' : '#d03b3b')} />
+          </div>
+
+          <div style={{ padding: '2px 14px 4px', fontSize: 10, color: '#aeaeb2' }}>
+            Bars show consumed vs. target — bumped up on workout days by real logged-activity calories (intervals.icu) or, when unavailable, that day's measured Active Energy (MFP-style exercise credit; not a recomputed deficit). TDEE-based pace (above) is a multi-day estimate, not a daily one.
+          </div>
+          <div style={{ padding: '6px 14px 12px', fontSize: 11, fontWeight: 600, color: '#3c3c43', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <div><span style={swatch(NET_TIER_COLOR.good)}></span>On Plan</div>
+            <div><span style={swatch(NET_TIER_COLOR.ok)}></span>Off Plan</div>
+            <div><span style={swatch(NET_TIER_COLOR.bad)}></span>Way Off</div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Card 3: Protein ─────────────────────────────────────────────────────── */
+    // Protein is colored by proteinTier (see definition near the top of the
+    // file) — a floor, not a two-sided target, so anything at/above the floor
+    // is just "good" with no extra credit for going further over.
+    function ProteinChart({ periodDaily, visStartMs, visEndMs, proteinTargets, isAdmin, onSaveProteinTargets }) {
+      const [tip, setTip] = useState(null);
+      const [editing, setEditing] = useState(false);
+      const [draftTarget, setDraftTarget] = useState('');
+      const [saving, setSaving] = useState(false);
+      const [saveErr, setSaveErr] = useState('');
+
+      const VW = 360, VH = 110;
+      const PAD = { t: 10, r: 8, b: 26, l: 28 };
+      const cW = VW - PAD.l - PAD.r;
+      const cH = VH - PAD.t - PAD.b;
+
+      const pts = periodDaily.map(d => {
+        const target = targetActiveAt(proteinTargets, d.date);
+        const value = d.Protein || 0;
+        return { ...d, target, tier: proteinTier(value, target) };
+      });
+
+      const maxVal = Math.max(...pts.map(p => Math.max(p.Protein || 0, p.target || 0)), 20) * 1.15;
+      const xOf = ms => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
+      const yOf = v => PAD.t + cH - (v / maxVal) * cH;
+      const yBaseline = PAD.t + cH;
+      const barW = Math.max(0.5, Math.min(10, (cW / pts.length) * 0.55));
+
+      const avgProtein = avg(pts.map(p => p.Protein || 0));
+      const withTarget = pts.filter(p => p.target != null);
+      const pctAtFloor = withTarget.length
+        ? Math.round(withTarget.filter(p => (p.Protein || 0) >= p.target).length / withTarget.length * 100)
+        : null;
+
+      const currentTarget = targetActiveAt(proteinTargets, today());
+      const startEdit = () => { setDraftTarget(String(currentTarget ?? 171)); setEditing(true); setSaveErr(''); };
+      const saveTarget = async () => {
+        const n = parseFloat(draftTarget);
+        if (isNaN(n) || n <= 0) { setSaveErr('Enter a valid number'); return; }
+        setSaving(true); setSaveErr('');
+        const ok = await onSaveProteinTargets(n);
+        setSaving(false);
+        if (ok) setEditing(false); else setSaveErr("Couldn't save — try again.");
+      };
+
+      return (
+        <div>
+          <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+               onMouseMove={(e) => {
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const x = (e.clientX - rect.left) / rect.width * VW;
+                 if (x < PAD.l || x > PAD.l + cW) { setTip(null); return; }
+                 const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
+                 let idx = 0, minDist = Infinity;
+                 pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
+                 setTip(pts[idx]);
+               }}
+               onMouseLeave={() => setTip(null)}>
+            {pts.map(p => {
+              const x = xOf(p.ms) - barW / 2;
+              const rx = Math.min(3, barW * 0.3);
+              const fill = p.tier ? NET_TIER_COLOR[p.tier] : '#2a78d6';
+              return <path key={p.date} d={roundedBarPath(x, barW, yBaseline, yOf(p.Protein || 0), rx)} fill={fill} opacity="0.9" />;
+            })}
+            <line x1={PAD.l} y1={yBaseline} x2={PAD.l + cW} y2={yBaseline} stroke="rgba(0,0,0,.12)" strokeWidth="0.5" />
+            {/* Floor line — a solid tick per day (not a full-width line) so a
+                changed target mid-window still reads correctly per-day. */}
+            {pts.map(p => p.target != null && (
+              <line key={`t-${p.date}`} x1={xOf(p.ms) - barW * 0.7} x2={xOf(p.ms) + barW * 0.7}
+                    y1={yOf(p.target)} y2={yOf(p.target)}
+                    stroke="#1c1c1e" strokeWidth="1" strokeLinecap="round" opacity="0.7" />
+            ))}
+            {pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / 4)) === 0).map(p => (
+              <text key={p.date} x={xOf(p.ms)} y={yBaseline + 10} textAnchor="middle" fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
+            ))}
+            {tip && (() => {
+              const TW = 58, TH = 24;
+              const tx = Math.max(PAD.l, Math.min(xOf(tip.ms) - TW / 2, PAD.l + cW - TW));
+              const ty = PAD.t + 2;
+              return (
+                <g style={{ pointerEvents: 'none' }}>
+                  <line x1={xOf(tip.ms)} y1={PAD.t} x2={xOf(tip.ms)} y2={yBaseline} stroke="rgba(28,28,30,.2)" strokeWidth="1" />
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={3} fill="#1c1c1e" opacity="0.92" />
+                  <text x={tx + TW / 2} y={ty + 7} textAnchor="middle" fontSize="4.5" fill="#aeaeb2">{tip.date.slice(5)}</text>
+                  <text x={tx + TW / 2} y={ty + 16} textAnchor="middle" fontSize="7" fontWeight="700"
+                        fill={tip.tier ? NET_TIER_COLOR[tip.tier] : '#6ba9e8'}>
+                    {Math.round(tip.Protein || 0)}g
+                  </text>
+                  {tip.target != null && (
+                    <text x={tx + TW / 2} y={ty + 22} textAnchor="middle" fontSize="4" fill="#aeaeb2">
+                      of {tip.target}g floor
+                    </text>
+                  )}
+                </g>
+              );
+            })()}
+          </svg>
+
+          <div style={{ display: 'flex', padding: '8px 14px 4px', gap: 12, alignItems: 'flex-start' }}>
+            <PkStat label="Avg Protein" value={`${Math.round(avgProtein)} g/day`} color="#2a78d6" />
+            <PkStat label="Days at Floor" value={pctAtFloor != null ? pctAtFloor + '%' : '—'} note="of days" color="#3c3c43" />
+          </div>
+
+          <div style={{ padding: '6px 14px', fontSize: 11, fontWeight: 600, color: '#3c3c43', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <div><span style={swatch(NET_TIER_COLOR.good)}></span>At floor</div>
+            <div><span style={swatch(NET_TIER_COLOR.ok)}></span>Close (85–99%)</div>
+            <div><span style={swatch(NET_TIER_COLOR.bad)}></span>Short (&lt;85%)</div>
+          </div>
+
+          <div style={{ padding: '0 14px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {!editing ? (
+              <>
+                <span style={{ fontSize: 11, color: '#8e8e93' }}>
+                  Floor: {currentTarget != null ? `${currentTarget}g` : 'not set'}
+                </span>
+                {isAdmin && (
+                  <button onClick={startEdit}
+                          style={{ fontSize: 11, color: '#2a78d6', background: 'none', border: 'none',
+                                   cursor: 'pointer', fontWeight: 600 }}>Edit</button>
+                )}
+              </>
+            ) : (
+              <>
+                <input type="number" step="1" value={draftTarget} onChange={e => setDraftTarget(e.target.value)}
+                       style={{ width: 68, fontSize: 12, padding: '4px 6px', borderRadius: 6,
+                                border: '1px solid #d1d1d6', background: '#f9f9f9', outline: 'none' }} />
+                <button onClick={saveTarget} disabled={saving}
+                        style={{ fontSize: 11, fontWeight: 600, color: '#fff',
+                                 background: saving ? '#a9c8ea' : '#2a78d6', border: 'none', borderRadius: 6,
+                                 padding: '5px 10px', cursor: saving ? 'default' : 'pointer' }}>
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button onClick={() => { setEditing(false); setSaveErr(''); }} disabled={saving}
+                        style={{ fontSize: 11, color: '#8e8e93', background: 'none', border: 'none', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+                {saveErr && <span style={{ fontSize: 11, color: '#d03b3b' }}>{saveErr}</span>}
+              </>
+            )}
           </div>
         </div>
       );
@@ -3320,7 +3679,7 @@
                 {connected ? 'intervals.icu connected' : 'intervals.icu — tap to connect'}
               </div>
               <div style={{ fontSize: 12, color: msg ? '#ff3b30' : '#8e8e93', marginTop: 1 }}>
-                {msg || (connected ? 'Ride calories feed the Net Calories chart' : 'Enter API key + athlete ID')}
+                {msg || (connected ? 'Ride data powers the Rides chart below' : 'Enter API key + athlete ID')}
               </div>
             </div>
             <div style={{ fontSize: 16, color: connected ? '#34c759' : '#8e8e93', marginLeft: 8 }}>
@@ -3907,6 +4266,8 @@
       const [calories,    setCalories]    = useState(() =>
         Object.values(lsLoadCaloriesRaw()).sort((a, b) => a.date.localeCompare(b.date))
       );
+      const [calorieTargets, setCalorieTargets] = useState(lsLoadCalorieTargets);
+      const [proteinTargets, setProteinTargets] = useState(lsLoadProteinTargets);
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
       const [activeTab,  setActiveTab]   = useState('weight');
@@ -3952,7 +4313,7 @@
       // Returns true/false so callers can commit local state only on a confirmed
       // write — a mutation must never appear to "succeed" locally while silently
       // failing to reach the shared Gist.
-      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule) => {
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) {
           setGistOk(false); setGistMsg('Not logged in');
@@ -3961,7 +4322,7 @@
         let icuCfg = null;
         try { icuCfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) {}
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, icuCfg);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, icuCfg, targets, protTargets);
           setGistOk(true); setGistMsg('');
           return true;
         } catch (e) {
@@ -3980,8 +4341,10 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
+              if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
+              if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
                 const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
@@ -4023,13 +4386,15 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, null, calorieTargets, proteinTargets);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
+            if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
+            if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
@@ -4042,7 +4407,7 @@
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections, injSchedule, calories]);
+      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets]);
 
       // Admin login (view-only user entering PAT)
       const adminLogin = useCallback(async (rawPat, setMsg) => {
@@ -4053,9 +4418,11 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
+            if (gistTargets) setCalorieTargets(gistTargets);
+            if (gistProtTargets) setProteinTargets(gistProtTargets);
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
@@ -4080,6 +4447,39 @@
           setSyncPending(false);
         }
       }, [rows, meta, injections, calories]);
+
+      // Sets today's calorie target, replacing any entry already dated today
+      // (repeated same-day edits don't create duplicate history rows) — past
+      // entries are never rewritten, matching "applies today and forward only."
+      const saveCalorieTargets = useCallback(async (newTarget) => {
+        const todayStr = today();
+        const next = [...calorieTargets.filter(t => t.date !== todayStr), { date: todayStr, target: newTarget }]
+          .sort((a, b) => a.date.localeCompare(b.date));
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, next);
+          if (ok) { setCalorieTargets(next); lsSaveCalorieTargets(next); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets]);
+
+      // Sets today's protein-floor target, same dated-history/dedup convention
+      // as saveCalorieTargets above.
+      const saveProteinTargets = useCallback(async (newTarget) => {
+        const todayStr = today();
+        const next = [...proteinTargets.filter(t => t.date !== todayStr), { date: todayStr, target: newTarget }]
+          .sort((a, b) => a.date.localeCompare(b.date));
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, next);
+          if (ok) { setProteinTargets(next); lsSaveProteinTargets(next); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets]);
 
       // Admin logout
       const adminLogout = useCallback(() => {
@@ -4111,13 +4511,6 @@
           setSyncPending(false);
         }
       }, [injections, calories, injSchedule]);
-
-      // Daily chart data with Active Energy replaced by intervals.icu ride calories
-      // (0 on non-ride days) once connected — matches MFP's net-calorie definition.
-      const calorieDataForChart = useMemo(() => {
-        if (!intervalsCfg) return calories;
-        return calories.map(d => ({ ...d, ActiveEnergy: intervalsCalories[d.date] ?? 0 }));
-      }, [calories, intervalsCfg, intervalsCalories]);
 
       // Fetch ride calories from intervals.icu and merge into intervalsCalories map.
       // Reads config fresh from localStorage (mirrors writeToGist) so callers don't
@@ -4496,7 +4889,7 @@
             {!loading && rows.length > 0 && (
               <div style={{ display:'flex', gap:6, padding:'0 12px 8px',
                             overflowX:'auto', WebkitOverflowScrolling:'touch' }}>
-                {[['weight','Weight'],['tirz','Tirzepatide'],['dosing','Dosing'],['activity','Activity'],['videos','Progress Videos']].map(([id,label]) => (
+                {[['weight','Weight'],['tirz','Tirzepatide'],['dosing','Dosing'],['nutrition','Nutrition'],['activity','Activity'],['videos','Progress Videos']].map(([id,label]) => (
                   <button key={id} onClick={() => setActiveTab(id)}
                           style={{ flexShrink:0, fontSize:13, fontWeight:600, padding:'6px 18px',
                                    borderRadius:20, border:'none', cursor:'pointer', whiteSpace:'nowrap',
@@ -4643,20 +5036,17 @@
 
               </div>{/* end weight tab inner content */}
               {/* ── ACTIVITY TAB ── */}
-              <div style={{ display: activeTab==='activity' ? undefined : 'none' }}>
-              {/* Calorie Chart */}
+              <div style={{ display: activeTab==='nutrition' ? undefined : 'none' }}>
+              {/* Calories & Nutrition */}
               {calories.length > 0 && (
-                <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
-                              border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
-                  <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Daily Net Calories</div>
-                  </div>
-                  <div style={{ padding: '0 14px 8px' }}>
-                    <CalorieChart calorieData={calorieDataForChart} />
-                  </div>
-                </div>
+                <CaloriesActivitySection calorieData={calories} rows={rows} calorieTargets={calorieTargets}
+                                         proteinTargets={proteinTargets} onSaveProteinTargets={saveProteinTargets}
+                                         isAdmin={isAdmin} onSaveCalorieTargets={saveCalorieTargets}
+                                         intervalsCalories={intervalsCalories} />
               )}
+              </div>{/* end nutrition tab */}
 
+              <div style={{ display: activeTab==='activity' ? undefined : 'none' }}>
               {/* Rides Chart */}
               {Object.keys(intervalRides).length > 0 && (
                 <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',

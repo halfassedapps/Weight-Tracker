@@ -198,20 +198,32 @@ def build_calorie_map(rows, schema):
         metric = row.get(metric_col)
         if not metric:
             continue
+        key = local_date_key(dt)
+        if key not in m:
+            m[key] = {'date': key, 'Calories': 0.0, 'ActiveEnergy': 0.0, 'BasalEnergy': 0.0,
+                       'Protein': 0.0, 'Carbs': 0.0, 'Fat': 0.0, 'HasWorkout': False}
+        ml = metric.lower()
+        # "Workout" rows use a different column layout (activity type + duration,
+        # not a plain numeric value) — just flag the day, don't try to parse a number.
+        if ml == 'workout':
+            m[key]['HasWorkout'] = True
+            continue
         try:
             val = float((row.get(value_col) or '').replace(',', ''))
         except ValueError:
             continue
-        key = local_date_key(dt)
-        if key not in m:
-            m[key] = {'date': key, 'Calories': 0.0, 'ActiveEnergy': 0.0, 'BasalEnergy': 0.0}
-        ml = metric.lower()
         if 'calor' in ml:
             calorie_totals[key] = calorie_totals.get(key, 0.0) + val
         elif 'active energy' in ml:
             m[key]['ActiveEnergy'] += val
         elif 'basal energy' in ml:
             m[key]['BasalEnergy'] += val
+        elif 'protein' in ml:
+            m[key]['Protein'] += val
+        elif 'carbohydrate' in ml:
+            m[key]['Carbs'] += val
+        elif 'total fat' in ml:
+            m[key]['Fat'] += val
     for key, total in calorie_totals.items():
         if key in m:
             m[key]['Calories'] = total
@@ -260,7 +272,9 @@ def merge_entries(existing_entries, new_daily):
 def merge_calories(existing_calories, new_cal_rows):
     def norm(c):
         return {'date': c['date'], 'Calories': c.get('Calories') or 0,
-                'ActiveEnergy': c.get('ActiveEnergy') or 0, 'BasalEnergy': c.get('BasalEnergy') or 0}
+                'ActiveEnergy': c.get('ActiveEnergy') or 0, 'BasalEnergy': c.get('BasalEnergy') or 0,
+                'Protein': c.get('Protein') or 0, 'Carbs': c.get('Carbs') or 0, 'Fat': c.get('Fat') or 0,
+                'HasWorkout': bool(c.get('HasWorkout'))}
     m = {c['date']: norm(c) for c in existing_calories if c.get('date')}
     for d in new_cal_rows:
         m[d['date']] = norm(d)
@@ -332,7 +346,15 @@ def main():
         'injections': gist.get('injections', []),
         'entries': merged_entries,
         'calories': merged_calories,
+        # This is a full-file PATCH, not a merge — any field fetched-and-not-
+        # re-sent here gets silently deleted from the Gist. calorieTargets,
+        # proteinTargets (and intervalsCfg) have no watcher-side concept of
+        # their own, so just pass through whatever's already there untouched.
+        'calorieTargets': gist.get('calorieTargets', []),
+        'proteinTargets': gist.get('proteinTargets', []),
     }
+    if gist.get('intervalsCfg'):
+        payload['intervalsCfg'] = gist['intervalsCfg']
     patch_gist(pat, payload)
 
     state['lastFile'] = latest.name

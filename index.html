@@ -2831,10 +2831,12 @@
       const pctGoal       = Math.min((totalLost / (startLbs - GOAL_LBS)) * 100, 100);
       const goalDateStr   = goalMs ? new Date(goalMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : '—';
 
-      const startDateStr = new Date(startMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+      const startDateStr   = new Date(startMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+      const currentDateStr = new Date(pts[pts.length - 1].ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
 
       const stats = [
         { label: 'Starting',    value: startLbs.toFixed(1) + ' lbs', sub: startDateStr },
+        { label: 'Current',     value: currentLbs.toFixed(1) + ' lbs', sub: currentDateStr },
         { label: 'Goal',        value: GOAL_LBS + ' lbs' },
         { label: '% to Goal',   value: pctGoal.toFixed(1) + '%',   color: '#34c759' },
         { label: 'Lost',        value: totalLost.toFixed(1) + ' lbs', color: '#34c759' },
@@ -2848,7 +2850,7 @@
         if (!svgRef.current || sharing) return;
         setSharing(true);
         try {
-          const scale = 3, headerH = 54;
+          const scale = 3, headerH = 66;
           const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
 
           // Explicit pixel width/height (not just viewBox) so the browser
@@ -2884,13 +2886,16 @@
           ctx.scale(scale, scale);
           ctx.fillStyle = '#1c1c1e';
           ctx.font = `700 13px ${FONT}`;
-          ctx.fillText('My Weight Trend', 14, 18);
+          ctx.textAlign = 'left';
+          ctx.fillText('My Weight Trend', 14, 16);
+          ctx.font = `600 10px ${FONT}`;
+          ctx.fillText(`Starting: ${startLbs.toFixed(1)} lbs · Current: ${currentLbs.toFixed(1)} lbs`, 14, 30);
           ctx.fillStyle = '#34c759';
           ctx.font = `700 10px ${FONT}`;
-          ctx.fillText(`↓ ${totalLost.toFixed(1)} lbs lost (${pctBodyLost.toFixed(1)}%) · ${pctGoal.toFixed(1)}% to goal`, 14, 34);
+          ctx.fillText(`↓ ${totalLost.toFixed(1)} lbs lost (${pctBodyLost.toFixed(1)}%) · ${pctGoal.toFixed(1)}% to goal`, 14, 44);
           ctx.fillStyle = '#8e8e93';
           ctx.font = `400 9px ${FONT}`;
-          ctx.fillText(`Since ${startDateStr}`, 14, 46);
+          ctx.fillText(`Since ${startDateStr}`, 14, 56);
           ctx.drawImage(img, 0, headerH, VW, VH);
 
           const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
@@ -2900,7 +2905,7 @@
             await navigator.share({
               files: [file],
               title: 'My Weight Trend',
-              text: `Down ${totalLost.toFixed(1)} lbs since ${startDateStr}!`,
+              text: `${currentLbs.toFixed(1)} lbs — down ${totalLost.toFixed(1)} lbs since ${startDateStr}!`,
             });
           } else {
             const url = URL.createObjectURL(fileBlob);
@@ -2919,7 +2924,7 @@
       return (
         <div>
           {/* Stats header */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)',
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)',
                         borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
             {stats.map(({ label, value, color, sub }) => (
               <div key={label} style={{ padding: '10px 4px', textAlign: 'center',
@@ -5012,10 +5017,8 @@
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
-                <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)',
-                              display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Weight Trend</div>
-                  <div style={{ fontSize: 12, color: '#aeaeb2' }}>goal: {GOAL_LBS} lbs</div>
                 </div>
                 <WeightChart rows={rows} injections={injections} injSchedule={injSchedule} />
               </div>

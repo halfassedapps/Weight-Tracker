@@ -188,6 +188,40 @@
         : (deviation > NET_OVEREAT_BAD ? 'bad' : 'ok');
     }
 
+    // Per-day deviation from calorie target, crediting exercise back into the
+    // budget (MFP-style Goal + Exercise − Food). Prefers real per-workout
+    // calories from intervals.icu, falling back to that day's HealthKit Active
+    // Energy on other logged-workout days — see CaloriesVsTargetChart's own
+    // comment block for the full reasoning. Shared so the Nutrition tab's chart
+    // and the dosing recommendation's appetite-suppression signal are always
+    // looking at the exact same number, never two silently-diverging ones.
+    function calorieDeviationFor(d, calorieTargets, intervalsCalories) {
+      const baseTarget = targetActiveAt(calorieTargets, d.date);
+      const rideCal = intervalsCalories ? intervalsCalories[d.date] : null;
+      const exercise = rideCal != null ? rideCal : (d.HasWorkout ? (d.ActiveEnergy || 0) : 0);
+      const target = baseTarget != null ? baseTarget + exercise : null;
+      const deviation = target != null ? (d.Calories || 0) - target : null;
+      return { baseTarget, exercise, target, deviation };
+    }
+
+    // Trailing-window average calorie-target deviation — a secondary signal for
+    // the dosing recommendation. A deep, sustained deficit (especially with
+    // exercise credited back in) suggests appetite is already well-suppressed
+    // at the current dose, which argues for caution before increasing further,
+    // independent of what the weight-trend signal alone would say. Returns null
+    // when there's too little data to say anything meaningful (falls back to
+    // today's existing weight-only behavior — never a regression).
+    function appetiteSuppressionSignal(calories, calorieTargets, intervalsCalories, todayMs, windowDays = 14) {
+      const cutoff = msToLocalDate(todayMs - windowDays * 86400000);
+      const today = msToLocalDate(todayMs);
+      const deviations = (calories || [])
+        .filter(d => d.date >= cutoff && d.date <= today)
+        .map(d => calorieDeviationFor(d, calorieTargets, intervalsCalories).deviation)
+        .filter(v => v != null);
+      if (deviations.length < 7) return null;
+      return { avgDeviation: avg(deviations), days: deviations.length };
+    }
+
     /* ─── Protein target localStorage ────────────────────────────────────────── */
     // Same dated-history shape as calorieTargets — the minimum-protein floor
     // can change over time and past days must compare against whatever floor
@@ -540,16 +574,35 @@
     const MAX_DOSE_MG = 15;
     const DOSE_STEP_MG = 0.5;
 
-    function doseGuidance(twoWeekLbs) {
+    // appetiteSignal may only ever soften an 'increase' into a 'stay' — it must
+    // never touch 'stay'/'monitor'/'contact', which exist to catch weight loss
+    // that's too *fast* (a safety concern orthogonal to appetite mechanism and
+    // never softened by how much someone is or isn't eating).
+    function doseGuidance(twoWeekLbs, appetiteSignal) {
       if (twoWeekLbs == null) return null;
       if (twoWeekLbs > 8)  return { action: 'contact', label: 'Contact prescriber', note: '>8 lbs/2wk', color: '#ff3b30', bg: '#fff1f0' };
       if (twoWeekLbs >= 5) return { action: 'monitor', label: 'Stay — monitor',     note: '5–8 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
       if (twoWeekLbs >= 3) return { action: 'stay',    label: 'Stay at dose',       note: '3–5 lbs/2wk', color: '#34c759', bg: '#f0fdf4' };
+      // Would otherwise be "consider increasing" — but a deep, sustained
+      // calorie deficit (same 400-cal/day threshold that marks a Nutrition-tab
+      // day as concerning undereating) suggests appetite is already well
+      // suppressed at the current dose, so hold instead. Restricted to actual
+      // (if slow) weight *loss* — twoWeekLbs < 0 means gaining weight despite
+      // a supposedly deep deficit, a contradictory signal that needs a look,
+      // not a reassuring "you're fine, hold."
+      if (twoWeekLbs >= 0 && appetiteSignal && appetiteSignal.avgDeviation <= -NET_UNDEREAT_BAD) {
+        return {
+          action: 'stay', overridden: true,
+          label: 'Stay — appetite well suppressed',
+          note: `${Math.round(Math.abs(appetiteSignal.avgDeviation))} cal/day under target`,
+          color: '#34c759', bg: '#f0fdf4',
+        };
+      }
       return { action: 'increase', label: 'Consider ↑ dose', note: '<3 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
     }
 
-    function recommendedDose(currentDoseMg, twoWeekLbs) {
-      const g = doseGuidance(twoWeekLbs);
+    function recommendedDose(currentDoseMg, twoWeekLbs, appetiteSignal) {
+      const g = doseGuidance(twoWeekLbs, appetiteSignal);
       if (!g) return null;
       if (g.action === 'increase') {
         const next = Math.round((currentDoseMg + DOSE_STEP_MG) * 10) / 10;
@@ -678,13 +731,14 @@
     // Trend-based increase/stay/monitor/contact guidance, expressed at the
     // schedule's current cadence (perInjMg = the true partial per-injection
     // amount, not the weekly total).
-    function getRecommendation(rows, ds) {
+    function getRecommendation(rows, ds, calories, calorieTargets, intervalsCalories, todayMs) {
       if (!ds) return null;
       const recent = rows.find(r => r.twoWeekLoss != null);
       if (!recent) return null;
-      const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss);
+      const appetite = appetiteSuppressionSignal(calories, calorieTargets, intervalsCalories, todayMs);
+      const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss, appetite);
       const recWeekly = rec.dose != null ? rec.dose : ds.weeklyDose;
-      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg: recWeekly / ds.injPerWeek };
+      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg: recWeekly / ds.injPerWeek, appetite };
     }
 
     // Computes a "weekly dose" timeline for the chart pills — two different
@@ -1164,11 +1218,7 @@
       const pts = periodDaily.map(d => {
         const tdee = (d.BasalEnergy || 0) + (d.ActiveEnergy || 0);
         const net = (d.Calories || 0) - tdee;
-        const baseTarget = targetActiveAt(calorieTargets, d.date);
-        const rideCal = intervalsCalories ? intervalsCalories[d.date] : null;
-        const exercise = rideCal != null ? rideCal : (d.HasWorkout ? (d.ActiveEnergy || 0) : 0);
-        const target = baseTarget != null ? baseTarget + exercise : null;
-        const deviation = target != null ? (d.Calories || 0) - target : null;
+        const { baseTarget, exercise, target, deviation } = calorieDeviationFor(d, calorieTargets, intervalsCalories);
         const tier = deviation != null ? netTier(deviation) : null;
         return { ...d, tdee, net, baseTarget, exercise, target, deviation, tier };
       });
@@ -2335,7 +2385,7 @@
     /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
     // Standalone component for the dose recommendation, calculator, and syringe.
     // Extracted from PkChart so it can live in the "Dosing" tab independently.
-    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule }) {
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories }) {
       const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
@@ -2391,14 +2441,17 @@
 
       const recent = (rows ?? []).find(r => r.twoWeekLoss != null);
       if (!recent) return null;
-      const rec = getRecommendation(rows ?? [], ds);
+      const todayMs = new Date().setHours(0, 0, 0, 0);
+      const rec = getRecommendation(rows ?? [], ds, calories, calorieTargets, intervalsCalories, todayMs);
       if (!rec) return null;
 
       const { g, dose, recWeekly, perInjMg } = rec;
       const lossSign   = recent.twoWeekLoss >= 0 ? '↓' : '↑';
       const nextInjDate  = new Date(nextInjMs);
       const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
-      const subtext = g.action === 'increase'
+      const subtext = g.overridden
+        ? `You're averaging ${Math.round(Math.abs(rec.appetite.avgDeviation))} cal/day under your exercise-adjusted target over the last ${rec.appetite.days} days — appetite appears well-suppressed at the current dose, so this holds rather than increasing. Confirm with your prescriber.`
+        : g.action === 'increase'
         ? (recent.twoWeekLoss < 0
             ? `Weight trending up — increase by ${DOSE_STEP_MG} mg`
             : `Progress below 3 lbs/2wk — increase by ${DOSE_STEP_MG} mg`)
@@ -4212,7 +4265,7 @@
     }
 
     /* ─── Injection-day banner ───────────────────────────────────────────────── */
-    function InjectionDayBanner({ rows, injections, injSchedule }) {
+    function InjectionDayBanner({ rows, injections, injSchedule, calories, calorieTargets, intervalsCalories }) {
       const [dismissedDate, setDismissedDate] = useState(
         () => localStorage.getItem(LS_POPOVER_DISMISS_KEY)
       );
@@ -4225,7 +4278,8 @@
       const alreadyLogged = injections.some(i => i.date === todayStr);
       if (!isToday || alreadyLogged || dismissedDate === todayStr) return null;
 
-      const rec = getRecommendation(rows ?? [], ds);
+      const todayMs = new Date().setHours(0, 0, 0, 0);
+      const rec = getRecommendation(rows ?? [], ds, calories, calorieTargets, intervalsCalories, todayMs);
       if (!rec) return null;
       const { g, perInjMg } = rec;
       const currentPerInjMg = ds.lastDose;
@@ -5041,7 +5095,8 @@
 
               <div style={{ padding:'12px 12px 32px' }}>
 
-              <InjectionDayBanner rows={rows} injections={injections} injSchedule={injSchedule} />
+              <InjectionDayBanner rows={rows} injections={injections} injSchedule={injSchedule}
+                                  calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories} />
 
               {/* ── TIRZEPATIDE TAB ── */}
               <div style={{ display: activeTab==='tirz' ? undefined : 'none' }}>
@@ -5237,7 +5292,8 @@
               {/* ── DOSING TAB ── */}
               <div style={{ display: activeTab==='dosing' ? undefined : 'none' }}>
                 <DosePanel rows={rows} injections={injections} injSchedule={injSchedule}
-                           isAdmin={isAdmin} onSaveSchedule={saveInjSchedule} />
+                           isAdmin={isAdmin} onSaveSchedule={saveInjSchedule}
+                           calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories} />
 
               {/* Injection log */}
               <div style={{ marginTop: 10, borderRadius: 18, background: '#fff',

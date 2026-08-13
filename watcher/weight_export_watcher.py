@@ -313,6 +313,30 @@ def patch_gist(pat, payload):
         raise RuntimeError(f'Gist write failed: {e.code} {e.read().decode(errors="replace")}') from e
 
 
+# A live client (phone/laptop) can successfully write to the Gist between our
+# fetch and our eventual patch — since this is a full-file PATCH, not a
+# merge, that write would otherwise be silently reverted the moment we patch
+# with a payload built from a fetch taken before it landed. (This is exactly
+# how a shot logged from a phone went missing: the phone's write succeeded,
+# then this watcher's next scheduled run patched over it with stale state.)
+# Re-fetch immediately before patching and rebuild the payload against
+# whatever's actually there if anything changed; retry a few times in case
+# of back-to-back writes, so the final patch is always built from state
+# we've verified is current as of just before we sent it.
+def fetch_build_and_patch(pat, build_payload, max_attempts=4,
+                           fetch_gist=fetch_gist, patch_gist=patch_gist):
+    gist = fetch_gist(pat)
+    payload = build_payload(gist)
+    for _ in range(max_attempts):
+        fresh = fetch_gist(pat)
+        if fresh.get('savedAt') == gist.get('savedAt'):
+            break
+        gist = fresh
+        payload = build_payload(gist)
+    patch_gist(pat, payload)
+    return payload
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 def main():
     folder = EXPORT_FOLDER
@@ -335,31 +359,32 @@ def main():
     new_daily, meta, calorie_data = process_csv_text(text)
 
     pat = get_pat()
-    gist = fetch_gist(pat)
-    merged_entries = merge_entries(gist.get('entries', []), new_daily)
-    merged_calories = merge_calories(gist.get('calories', []), calorie_data)
-    payload = {
-        'version': 1,
-        'savedAt': datetime.now(timezone.utc).isoformat(),
-        'meta': meta,
-        'injSchedule': gist.get('injSchedule', []),
-        'injections': gist.get('injections', []),
-        'entries': merged_entries,
-        'calories': merged_calories,
-        # This is a full-file PATCH, not a merge — any field fetched-and-not-
-        # re-sent here gets silently deleted from the Gist. calorieTargets,
-        # proteinTargets (and intervalsCfg) have no watcher-side concept of
-        # their own, so just pass through whatever's already there untouched.
-        'calorieTargets': gist.get('calorieTargets', []),
-        'proteinTargets': gist.get('proteinTargets', []),
-    }
-    if gist.get('intervalsCfg'):
-        payload['intervalsCfg'] = gist['intervalsCfg']
-    patch_gist(pat, payload)
+
+    def build_payload(gist):
+        payload = {
+            'version': 1,
+            'savedAt': datetime.now(timezone.utc).isoformat(),
+            'meta': meta,
+            'injSchedule': gist.get('injSchedule', []),
+            'injections': gist.get('injections', []),
+            'entries': merge_entries(gist.get('entries', []), new_daily),
+            'calories': merge_calories(gist.get('calories', []), calorie_data),
+            # This is a full-file PATCH, not a merge — any field fetched-and-not-
+            # re-sent here gets silently deleted from the Gist. calorieTargets,
+            # proteinTargets (and intervalsCfg) have no watcher-side concept of
+            # their own, so just pass through whatever's already there untouched.
+            'calorieTargets': gist.get('calorieTargets', []),
+            'proteinTargets': gist.get('proteinTargets', []),
+        }
+        if gist.get('intervalsCfg'):
+            payload['intervalsCfg'] = gist['intervalsCfg']
+        return payload
+
+    payload = fetch_build_and_patch(pat, build_payload)
 
     state['lastFile'] = latest.name
     save_state(state)
-    print(f'[watcher] Pushed {len(merged_entries)} weight rows, {len(merged_calories)} calorie rows to Gist. ({latest.name})')
+    print(f"[watcher] Pushed {len(payload['entries'])} weight rows, {len(payload['calories'])} calorie rows to Gist. ({latest.name})")
 
 
 if __name__ == '__main__':

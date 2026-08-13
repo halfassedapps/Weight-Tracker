@@ -110,6 +110,14 @@
       }
     }
 
+    /* ─── Injection sites ────────────────────────────────────────────────────── */
+    const INJECTION_SITES = [
+      'Abdomen – Left, Upper', 'Abdomen – Left, Middle', 'Abdomen – Left, Lower',
+      'Abdomen – Right, Upper', 'Abdomen – Right, Middle', 'Abdomen – Right, Lower',
+      'Left Thigh', 'Right Thigh',
+      'Left Upper Arm', 'Right Upper Arm',
+    ];
+
     /* ─── Injection localStorage ─────────────────────────────────────────────── */
     function lsLoadInjections() {
       try {
@@ -342,7 +350,7 @@
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule,
-        injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
+        injections: injections.map(({ date, doseMg, site }) => site ? { date, doseMg, site } : { date, doseMg }),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
         calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy, Protein, Carbs, Fat, HasWorkout }) =>
           ({ date, Calories, ActiveEnergy, BasalEnergy, Protein: Protein || 0, Carbs: Carbs || 0, Fat: Fat || 0, HasWorkout: !!HasWorkout })),
@@ -4281,6 +4289,7 @@
       const [showInj,    setShowInj]    = useState(false);
       const [injDate,    setInjDate]    = useState(today);
       const [injDose,    setInjDose]    = useState('');
+      const [injSite,    setInjSite]    = useState('');
       // Export folder auto-import
       const [exportDir,  setExportDir]  = useState(null);   // FileSystemDirectoryHandle
       const [autoMsg,    setAutoMsg]    = useState('');      // transient status line
@@ -4755,7 +4764,8 @@
       const addInjection = useCallback(async () => {
         const dose = parseFloat(injDose);
         if (!injDate || isNaN(dose) || dose <= 0) return;
-        const next = [...injections.filter(i => i.date !== injDate), { date: injDate, doseMg: dose }]
+        const entry = injSite ? { date: injDate, doseMg: dose, site: injSite } : { date: injDate, doseMg: dose };
+        const next = [...injections.filter(i => i.date !== injDate), entry]
           .sort((a, b) => b.date.localeCompare(a.date));
         setSyncPending(true);
         try {
@@ -4764,12 +4774,13 @@
           setInjections(next);
           lsSaveInjections(next);
           setInjDose('');
+          setInjSite('');
           setInjDate(today());
           setShowInj(false);
         } finally {
           setSyncPending(false);
         }
-      }, [injections, injDate, injDose, rows, meta]);
+      }, [injections, injDate, injDose, injSite, rows, meta]);
 
       const deleteInjection = useCallback(async (date) => {
         const next = injections.filter(i => i.date !== date);
@@ -4783,6 +4794,43 @@
           setSyncPending(false);
         }
       }, [injections, rows, meta]);
+
+      // editingDate tracks the *original* date of the row being edited — kept
+      // separate from editDate (the field's current draft value) so a date
+      // change can still find and remove the right original entry on save,
+      // and so it doubles as a collision target: if the edited date is
+      // changed to match a different existing entry, that entry is replaced
+      // too (same last-write-wins behavior as addInjection).
+      const [editingDate, setEditingDate] = useState(null);
+      const [editDate,    setEditDate]    = useState('');
+      const [editDose,    setEditDose]    = useState('');
+      const [editSite,    setEditSite]    = useState('');
+
+      const startEditInjection = (inj) => {
+        setEditingDate(inj.date);
+        setEditDate(inj.date);
+        setEditDose(String(inj.doseMg));
+        setEditSite(inj.site || '');
+      };
+      const cancelEditInjection = () => setEditingDate(null);
+
+      const saveEditInjection = useCallback(async () => {
+        const dose = parseFloat(editDose);
+        if (!editDate || isNaN(dose) || dose <= 0) return;
+        const entry = editSite ? { date: editDate, doseMg: dose, site: editSite } : { date: editDate, doseMg: dose };
+        const next = [...injections.filter(i => i.date !== editingDate && i.date !== editDate), entry]
+          .sort((a, b) => b.date.localeCompare(a.date));
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, next);
+          if (!ok) return;
+          setInjections(next);
+          lsSaveInjections(next);
+          setEditingDate(null);
+        } finally {
+          setSyncPending(false);
+        }
+      }, [injections, editingDate, editDate, editDose, editSite, rows, meta]);
 
       // Load body scan videos from the body-scans/ folder in the repo.
       // Filename drives everything — no form, no Gist storage needed.
@@ -4810,7 +4858,7 @@
           version: 1, savedAt: new Date().toISOString(), meta,
           injSchedule,
           vialConc: vialConc ? parseFloat(vialConc) : 12.5,
-          injections: injections.map(({ date, doseMg }) => ({ date, doseMg })),
+          injections: injections.map(({ date, doseMg, site }) => site ? { date, doseMg, site } : { date, doseMg }),
           entries: rows.map(r => ({ date: r.date, wKg: r.wKg })),
         }, null, 2);
         const a = document.createElement('a');
@@ -5210,54 +5258,125 @@
 
                 {isAdmin && showInj && (
                   <div style={{ padding: '12px 14px', borderBottom: '.5px solid rgba(0,0,0,.06)',
-                                display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
-                                    letterSpacing: .4, marginBottom: 4 }}>Date</div>
-                      <input type="date" value={injDate} onChange={e => setInjDate(e.target.value)}
-                             style={{ width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
-                                      border: '1px solid #d1d1d6', background: '#f9f9f9',
-                                      color: '#1c1c1e', outline: 'none' }} />
+                                display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                                      letterSpacing: .4, marginBottom: 4 }}>Date</div>
+                        <input type="date" value={injDate} onChange={e => setInjDate(e.target.value)}
+                               style={{ width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
+                                        border: '1px solid #d1d1d6', background: '#f9f9f9',
+                                        color: '#1c1c1e', outline: 'none' }} />
+                      </div>
+                      <div style={{ width: 90 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                                      letterSpacing: .4, marginBottom: 4 }}>Dose (mg)</div>
+                        <input type="number" step="0.25" min="0.25" placeholder="2.5"
+                               value={injDose} onChange={e => setInjDose(e.target.value)}
+                               style={{ width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
+                                        border: '1px solid #d1d1d6', background: '#f9f9f9',
+                                        color: '#1c1c1e', outline: 'none' }} />
+                      </div>
+                      <button onClick={addInjection} disabled={!injDate || !injDose || syncPending}
+                              style={{ fontSize: 16, fontWeight: 600, padding: '8px 16px', borderRadius: 10,
+                                       background: (!injDate || !injDose || syncPending) ? '#e5e5ea' : '#34c759',
+                                       color: (!injDate || !injDose || syncPending) ? '#aeaeb2' : '#fff',
+                                       border: 'none', cursor: (!injDate || !injDose || syncPending) ? 'default' : 'pointer' }}>
+                        {syncPending ? 'Saving…' : 'Add'}
+                      </button>
                     </div>
-                    <div style={{ width: 90 }}>
+                    <div>
                       <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
-                                    letterSpacing: .4, marginBottom: 4 }}>Dose (mg)</div>
-                      <input type="number" step="0.25" min="0.25" placeholder="2.5"
-                             value={injDose} onChange={e => setInjDose(e.target.value)}
-                             style={{ width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
-                                      border: '1px solid #d1d1d6', background: '#f9f9f9',
-                                      color: '#1c1c1e', outline: 'none' }} />
+                                    letterSpacing: .4, marginBottom: 4 }}>Site (optional)</div>
+                      <select value={injSite} onChange={e => setInjSite(e.target.value)}
+                              style={{ width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
+                                       border: '1px solid #d1d1d6', background: '#f9f9f9',
+                                       color: '#1c1c1e', outline: 'none' }}>
+                        <option value="">— Not specified —</option>
+                        {INJECTION_SITES.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
                     </div>
-                    <button onClick={addInjection} disabled={!injDate || !injDose || syncPending}
-                            style={{ fontSize: 16, fontWeight: 600, padding: '8px 16px', borderRadius: 10,
-                                     background: (!injDate || !injDose || syncPending) ? '#e5e5ea' : '#34c759',
-                                     color: (!injDate || !injDose || syncPending) ? '#aeaeb2' : '#fff',
-                                     border: 'none', cursor: (!injDate || !injDose || syncPending) ? 'default' : 'pointer' }}>
-                      {syncPending ? 'Saving…' : 'Add'}
-                    </button>
                   </div>
                 )}
 
                 <div style={{ maxHeight: 440, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
                 {[...injections].sort((a, b) => b.date.localeCompare(a.date)).map((inj, i, arr) => (
-                  <div key={inj.date}
-                       style={{ display: 'flex', alignItems: 'center', padding: '10px 14px',
-                                borderBottom: i < arr.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
-                    <div style={{ flex: 1, fontSize: 16, fontWeight: 600, color: '#1c1c1e' }}>
-                      {fmtShort(inj.date)}
-                      <span style={{ fontSize: 13, color: '#aeaeb2', marginLeft: 6 }}>
-                        {WD[new Date(inj.date + 'T12:00:00').getDay()]}
-                      </span>
+                  editingDate === inj.date ? (
+                    <div key={inj.date}
+                         style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 8,
+                                  borderBottom: i < arr.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none',
+                                  background: '#f9f9fb' }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                                        letterSpacing: .4, marginBottom: 4 }}>Date</div>
+                          <input type="date" value={editDate} onChange={e => setEditDate(e.target.value)}
+                                 style={{ width: '100%', fontSize: 15, padding: '7px 9px', borderRadius: 9,
+                                          border: '1px solid #d1d1d6', background: '#fff',
+                                          color: '#1c1c1e', outline: 'none' }} />
+                        </div>
+                        <div style={{ width: 80 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                                        letterSpacing: .4, marginBottom: 4 }}>Dose (mg)</div>
+                          <input type="number" step="0.25" min="0.25"
+                                 value={editDose} onChange={e => setEditDose(e.target.value)}
+                                 style={{ width: '100%', fontSize: 15, padding: '7px 9px', borderRadius: 9,
+                                          border: '1px solid #d1d1d6', background: '#fff',
+                                          color: '#1c1c1e', outline: 'none' }} />
+                        </div>
+                      </div>
+                      <select value={editSite} onChange={e => setEditSite(e.target.value)}
+                              style={{ width: '100%', fontSize: 15, padding: '7px 9px', borderRadius: 9,
+                                       border: '1px solid #d1d1d6', background: '#fff',
+                                       color: '#1c1c1e', outline: 'none' }}>
+                        <option value="">— Not specified —</option>
+                        {INJECTION_SITES.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button onClick={saveEditInjection} disabled={!editDate || !editDose || syncPending}
+                                style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '8px', borderRadius: 9,
+                                         background: (!editDate || !editDose || syncPending) ? '#e5e5ea' : '#34c759',
+                                         color: (!editDate || !editDose || syncPending) ? '#aeaeb2' : '#fff',
+                                         border: 'none', cursor: (!editDate || !editDose || syncPending) ? 'default' : 'pointer' }}>
+                          {syncPending ? 'Saving…' : 'Save'}
+                        </button>
+                        <button onClick={cancelEditInjection} disabled={syncPending}
+                                style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '8px', borderRadius: 9,
+                                         background: '#e5e5ea', color: '#1c1c1e', border: 'none',
+                                         cursor: syncPending ? 'default' : 'pointer' }}>
+                          Cancel
+                        </button>
+                      </div>
                     </div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: '#4a90d9',
-                                  fontVariantNumeric: 'tabular-nums' }}>{inj.doseMg} mg</div>
-                    {isAdmin && (
-                      <button onClick={() => deleteInjection(inj.date)} disabled={syncPending}
-                              style={{ marginLeft: 12, fontSize: 15, color: '#c7c7cc', background: 'none',
-                                       border: 'none', cursor: syncPending ? 'default' : 'pointer',
-                                       padding: '2px 4px', opacity: syncPending ? .5 : 1 }}>✕</button>
-                    )}
-                  </div>
+                  ) : (
+                    <div key={inj.date}
+                         style={{ display: 'flex', alignItems: 'center', padding: '10px 14px',
+                                  borderBottom: i < arr.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
+                      <div style={{ flex: 1, fontSize: 16, fontWeight: 600, color: '#1c1c1e' }}>
+                        {fmtShort(inj.date)}
+                        <span style={{ fontSize: 13, color: '#aeaeb2', marginLeft: 6 }}>
+                          {WD[new Date(inj.date + 'T12:00:00').getDay()]}
+                        </span>
+                        {inj.site && (
+                          <span style={{ fontSize: 13, color: '#8e8e93', marginLeft: 6 }}>· {inj.site}</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 600, color: '#4a90d9',
+                                    fontVariantNumeric: 'tabular-nums' }}>{inj.doseMg} mg</div>
+                      {isAdmin && (
+                        <>
+                          <button onClick={() => startEditInjection(inj)} disabled={syncPending}
+                                  style={{ marginLeft: 12, fontSize: 13, fontWeight: 600, color: '#4a90d9',
+                                           background: 'none', border: 'none', cursor: syncPending ? 'default' : 'pointer',
+                                           padding: '2px 4px', opacity: syncPending ? .5 : 1 }}>Edit</button>
+                          <button onClick={() => deleteInjection(inj.date)} disabled={syncPending}
+                                  style={{ marginLeft: 4, fontSize: 15, color: '#c7c7cc', background: 'none',
+                                           border: 'none', cursor: syncPending ? 'default' : 'pointer',
+                                           padding: '2px 4px', opacity: syncPending ? .5 : 1 }}>✕</button>
+                        </>
+                      )}
+                    </div>
+                  )
                 ))}
                 </div>
               </div>

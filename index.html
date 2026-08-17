@@ -2895,9 +2895,22 @@
       const startDateStr   = new Date(startMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
       const currentDateStr = new Date(pts[pts.length - 1].ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
 
+      // Weight change over the *selected trend period* (same cutoffMs the
+      // regression line itself uses) — kept next to Current so the headline
+      // number always matches whatever window the Trend period selector is
+      // currently showing, not a fixed span.
+      const TREND_PERIOD_PHRASE = {
+        14: 'last 2 weeks', 21: 'last 3 weeks', 30: 'last month',
+        42: 'last 6 weeks', 90: 'last 3 months', 0: 'all time',
+      };
+      const periodLoss = lbsAt(cutoffMs) - currentLbs;
+      const periodLossSign = periodLoss >= 0 ? '↓' : '↑';
+
       const stats = [
         { label: 'Starting',    value: startLbs.toFixed(1) + ' lbs', sub: startDateStr },
         { label: 'Current',     value: currentLbs.toFixed(1) + ' lbs', sub: currentDateStr },
+        { label: 'Weight Loss', value: `${periodLossSign}${Math.abs(periodLoss).toFixed(1)} lbs`,
+          sub: TREND_PERIOD_PHRASE[trendDays] ?? '', color: periodLoss >= 0 ? '#34c759' : '#ff3b30' },
         { label: 'Goal',        value: GOAL_LBS + ' lbs' },
         { label: '% to Goal',   value: pctGoal.toFixed(1) + '%',   color: '#34c759' },
         { label: 'Lost',        value: totalLost.toFixed(1) + ' lbs', color: '#34c759' },
@@ -2985,7 +2998,7 @@
       return (
         <div>
           {/* Stats header */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)',
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)',
                         borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
             {stats.map(({ label, value, color, sub }) => (
               <div key={label} style={{ padding: '10px 4px', textAlign: 'center',

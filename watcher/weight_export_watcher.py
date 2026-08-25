@@ -21,6 +21,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -69,6 +70,24 @@ def save_state(state):
 
 
 # ─── Export folder ───────────────────────────────────────────────────────────
+# Running headless under launchd (rather than an interactive Terminal session)
+# can hit iCloud Drive files that haven't finished materializing locally yet —
+# read_text() then raises OSError: [Errno 11] Resource deadlock avoided instead
+# of just blocking. Nudge iCloud to fetch the file, then retry with backoff
+# rather than failing the whole run (and waiting for the next 5-minute tick).
+def read_export_text(path, attempts=6, delay=5):
+    subprocess.run(['brctl', 'download', str(path)], capture_output=True)
+    last_err = None
+    for attempt in range(attempts):
+        try:
+            return path.read_text(encoding='utf-8', errors='replace')
+        except OSError as e:
+            last_err = e
+            print(f'[watcher] Read failed (attempt {attempt + 1}/{attempts}): {e}')
+            time.sleep(delay)
+    raise last_err
+
+
 def export_ts(name):
     m = TS_RE.search(name)
     return m.group(1) if m else ''
@@ -355,7 +374,7 @@ def main():
         return
 
     print(f'[watcher] New export found: {latest.name}')
-    text = latest.read_text(encoding='utf-8', errors='replace')
+    text = read_export_text(latest)
     new_daily, meta, calorie_data = process_csv_text(text)
 
     pat = get_pat()

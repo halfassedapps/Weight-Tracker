@@ -2762,15 +2762,20 @@
         rateGoalMsById[opt.id] = goalDaysFixed != null ? ratesAnchorMs + goalDaysFixed * 86400000 : null;
       });
 
-      // Chart x range: start → latest checked line's goal + 2wk buffer (cap at 18
-      // months) — so a slower hypothetical rate line that reaches goal later than
-      // the current trend still fits on-chart instead of running off the edge.
+      // Chart x range: start → latest checked line's goal + 2wk buffer — so a
+      // slower hypothetical rate line that reaches goal later than the current
+      // trend still fits on-chart instead of running off the edge. The future
+      // cap is relative to how much real history there is (at least 90d),
+      // not a flat 18 months — otherwise a shaky short trend-period slope
+      // (e.g. "Last 2 weeks" over a near-flat stretch) can project a goal date
+      // so far out that it squeezes all the actual logged data into a sliver.
       const checkedGoalDates = trendModes
         .map(id => id === 'current' ? goalMs : rateGoalMsById[id])
         .filter(g => g != null);
       const latestGoalMs = checkedGoalDates.length ? Math.max(...checkedGoalDates) : null;
+      const maxFutureMs = Math.max(todayMs - startMs, 90 * 86400000);
       const endMs = latestGoalMs
-        ? Math.min(latestGoalMs + 14 * 86400000, startMs + 548 * 86400000)
+        ? Math.min(latestGoalMs + 14 * 86400000, todayMs + maxFutureMs)
         : startMs + 180 * 86400000;
 
       // Y range: full history max → goal - 8.

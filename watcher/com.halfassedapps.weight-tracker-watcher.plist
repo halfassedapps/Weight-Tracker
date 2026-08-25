@@ -17,7 +17,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>exec /usr/bin/python3 "/Users/jeffreymiesemer/Library/Mobile Documents/com~apple~CloudDocs/Projects/Weight-Tracker/watcher/weight_export_watcher.py"</string>
+    <string>exec /usr/local/bin/python3 "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Projects/Weight-Tracker/watcher/weight_export_watcher.py"</string>
   </array>
 
   <key>StartInterval</key>
@@ -27,9 +27,9 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/jeffreymiesemer/Library/Logs/weight-tracker-watcher.log</string>
+  <string>/Users/miesemer/Library/Logs/weight-tracker-watcher.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/jeffreymiesemer/Library/Logs/weight-tracker-watcher.log</string>
+  <string>/Users/miesemer/Library/Logs/weight-tracker-watcher.log</string>
 </dict>
 </plist>

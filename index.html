@@ -40,6 +40,7 @@
     const LS_CALORIE_TARGETS_KEY = 'weight-tracker-calorie-targets';
     const LS_INTERVALS_CAL_KEY   = 'weight-tracker-intervals-calories';
     const LS_INTERVALS_RIDES_KEY = 'weight-tracker-intervals-rides';
+    const LS_BP_KEY               = 'weight-tracker-blood-pressure';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     function lastImportIsToday() {
       const name = localStorage.getItem(LS_LAST_CSV_KEY) ?? '';
@@ -314,8 +315,28 @@
       return Object.values(map).sort((a, b) => a.date.localeCompare(b.date));
     }
 
+    /* ─── Blood pressure localStorage ────────────────────────────────────────── */
+    // Raw readings only (not reduced) — keyed by ms, each reading's own
+    // timestamp, since that's already a stable, naturally-unique identity
+    // across re-imports.
+    function lsLoadBpRaw() {
+      try {
+        const raw = localStorage.getItem(LS_BP_KEY);
+        const map = raw ? JSON.parse(raw) : {};
+        return (map && typeof map === 'object') ? map : {};
+      } catch (_) { return {}; }
+    }
+    function mergeBpWithStored(newReadings) {
+      const map = lsLoadBpRaw();
+      for (const r of newReadings) {
+        map[r.ms] = r;
+      }
+      try { localStorage.setItem(LS_BP_KEY, JSON.stringify(map)); } catch (_) {}
+      return Object.values(map).sort((a, b) => a.ms - b.ms);
+    }
+
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsCfg = null, calorieTargets = [], proteinTargets = [] }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsCfg = null, calorieTargets = [], proteinTargets = [], bloodPressure = [] }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -334,6 +355,9 @@
         proteinTargets: Array.isArray(proteinTargets) && proteinTargets.length
           ? [...proteinTargets].sort((a, b) => a.date.localeCompare(b.date))
           : DEFAULT_PROTEIN_TARGETS,
+        bloodPressure: Array.isArray(bloodPressure)
+          ? bloodPressure.filter(s => s.date && s.systolic != null && s.diastolic != null)
+          : [],
       };
     }
 
@@ -380,7 +404,7 @@
       }
     }
 
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], intervalsCfg = null, calorieTargets = [], proteinTargets = []) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], intervalsCfg = null, calorieTargets = [], proteinTargets = [], bloodPressure = []) {
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule,
@@ -390,6 +414,8 @@
           ({ date, Calories, ActiveEnergy, BasalEnergy, Protein: Protein || 0, Carbs: Carbs || 0, Fat: Fat || 0, HasWorkout: !!HasWorkout })),
         calorieTargets: calorieTargets.map(({ date, target }) => ({ date, target })),
         proteinTargets: proteinTargets.map(({ date, target }) => ({ date, target })),
+        bloodPressure: bloodPressure.map(({ date, ms, systolic, diastolic }) =>
+          ({ date, ms, systolic, diastolic })),
       };
       if (intervalsCfg?.apiKey && intervalsCfg?.athleteId) payload.intervalsCfg = { apiKey: intervalsCfg.apiKey, athleteId: intervalsCfg.athleteId };
       const content = JSON.stringify(payload, null, 2);
@@ -493,6 +519,16 @@
       return { format: 'unknown', dateCol, valueCol, unitCol };
     }
 
+    // Blood Pressure metric name matching — unlike weight/calories there are two
+    // paired metrics (systolic + diastolic) sharing one timestamp per reading.
+    const BP_SYSTOLIC_RE  = /blood pressure.*systolic|systolic.*blood pressure/i;
+    const BP_DIASTOLIC_RE = /blood pressure.*diastolic|diastolic.*blood pressure/i;
+    function findBpMetrics(allMetrics) {
+      const systolic  = (allMetrics || []).find(m => BP_SYSTOLIC_RE.test(m));
+      const diastolic = (allMetrics || []).find(m => BP_DIASTOLIC_RE.test(m));
+      return { systolic, diastolic };
+    }
+
     /* ─── Data processing ────────────────────────────────────────────────────── */
     function toKg(weight, unit) {
       const u = (unit ?? '').toLowerCase().trim();
@@ -536,6 +572,114 @@
         .sort((a, b) => b.date.localeCompare(a.date));
       console.log(`[Calorie] Extracted ${result.length} days, found ${found} metrics`);
       return result;
+    }
+
+    /* ─── Blood pressure extraction ──────────────────────────────────────────── */
+    // Pairs Systolic/Diastolic rows sharing the same exact timestamp into single
+    // readings. Long-format CSV: two rows per real-world cuff reading.
+    function buildBpReadings(rows, schema) {
+      if (schema.format !== 'long') return [];
+      const { systolic, diastolic } = findBpMetrics(schema.allMetrics);
+      if (!systolic || !diastolic) return [];
+      const byTs = {}; // ms-as-string -> { ms, systolic, diastolic }
+      for (const row of rows) {
+        const metric = row[schema.metricCol];
+        if (metric !== systolic && metric !== diastolic) continue;
+        const rawDate = row[schema.dateCol];
+        if (!rawDate) continue;
+        const d = new Date(rawDate);
+        if (isNaN(d.getTime())) continue;
+        const val = parseFloat((row[schema.valueCol] ?? '').replace(/,/g, ''));
+        if (isNaN(val)) continue;
+        const key = String(d.getTime());
+        if (!byTs[key]) byTs[key] = { ms: d.getTime() };
+        if (metric === systolic) byTs[key].systolic = val;
+        else byTs[key].diastolic = val;
+      }
+      return Object.values(byTs)
+        .filter(r => r.systolic != null && r.diastolic != null) // only fully-paired readings
+        .sort((a, b) => a.ms - b.ms);
+    }
+
+    // Raw readings, shaped for storage — one row per real-world cuff reading,
+    // no reduction. Sitting/outlier/daily-average logic lives entirely in
+    // BpChart at display time (see clusterBpReadings/computeDailyBp) so the
+    // stored data stays a single source of truth and the UI can always show
+    // every actual reading on hover, regardless of how they get combined.
+    function buildBpMap(rows, schema) {
+      return buildBpReadings(rows, schema).map(r => ({ date: msToLocalDate(r.ms), ...r }));
+    }
+
+    const BP_SESSION_GAP_MIN = 15;
+
+    // Groups same local-day raw readings into "sittings" purely by time gap (no
+    // fixed AM/PM cutoff): a gap > BP_SESSION_GAP_MIN minutes to the previous
+    // reading starts a new sitting. Within a sitting of 2+ readings, keeps the
+    // lowest-two-by-systolic and averages their systolic/diastolic as a paired
+    // unit (never mixing systolic from one reading with diastolic from
+    // another) — this discards an artificially-high first reading the way
+    // retaking your BP a couple minutes later to "get a truer number" intends.
+    // A lone reading passes through as-is. Display-time only; not persisted.
+    function clusterBpReadings(readings) {
+      if (!readings.length) return [];
+      const gapMs = BP_SESSION_GAP_MIN * 60000;
+      const sittings = [];
+      let cur = [readings[0]];
+      for (let i = 1; i < readings.length; i++) {
+        const prev = readings[i - 1], r = readings[i];
+        if (r.ms - prev.ms <= gapMs && msToLocalDate(r.ms) === msToLocalDate(prev.ms)) {
+          cur.push(r);
+        } else {
+          sittings.push(cur); cur = [r];
+        }
+      }
+      sittings.push(cur);
+
+      return sittings.map(group => {
+        const firstMs = group[0].ms;
+        const date = msToLocalDate(firstMs);
+        let systolic, diastolic;
+        if (group.length === 1) {
+          systolic = group[0].systolic; diastolic = group[0].diastolic;
+        } else if (group.length === 2) {
+          // Exactly two: use the lower reading outright, not an average of both.
+          const lower = group[0].systolic <= group[1].systolic ? group[0] : group[1];
+          systolic = lower.systolic; diastolic = lower.diastolic;
+        } else {
+          // Three or more: average the lowest two (paired, not cross-matched).
+          const lowest2 = [...group].sort((a, b) => a.systolic - b.systolic).slice(0, 2);
+          systolic = avg(lowest2.map(r => r.systolic));
+          diastolic = avg(lowest2.map(r => r.diastolic));
+        }
+        return {
+          date, ms: firstMs,
+          systolic:  Math.round(systolic * 10) / 10,
+          diastolic: Math.round(diastolic * 10) / 10,
+          readingCount: group.length,
+        };
+      });
+    }
+
+    // One point per calendar day: groups raw readings into sittings (see
+    // clusterBpReadings), then averages sitting-level results together when a
+    // day holds more than one sitting (e.g. separate AM and PM readings, or
+    // two readings far enough apart not to count as the same sitting) — so a
+    // day always renders as exactly one chart point, however many times BP
+    // was actually taken that day. Each point carries its day's raw readings
+    // (sorted) for a hover table showing exactly what went into it.
+    function computeDailyBp(readings) {
+      const sittings = clusterBpReadings(readings);
+      const byDate = {};
+      for (const s of sittings) (byDate[s.date] ??= []).push(s);
+      const rawByDate = {};
+      for (const r of readings) (rawByDate[msToLocalDate(r.ms)] ??= []).push(r);
+      return Object.entries(byDate).map(([date, sits]) => ({
+        date, ms: sits[0].ms,
+        systolic:  Math.round(avg(sits.map(s => s.systolic)) * 10) / 10,
+        diastolic: Math.round(avg(sits.map(s => s.diastolic)) * 10) / 10,
+        sittingCount: sits.length,
+        readings: (rawByDate[date] || []).slice().sort((a, b) => a.ms - b.ms),
+      })).sort((a, b) => a.ms - b.ms);
     }
 
     function buildDailyMap(rows, schema) {
@@ -644,7 +788,8 @@
       const source  = srcCol ? [...new Set(wRows.map(r => r[srcCol]).filter(Boolean))].join(', ') : '';
       const meta    = { metric: schema.weightMetric ?? 'Weight', source };
       const calorieData = schema.format === 'long' ? buildCalorieMap(parsed, schema) : [];
-      return { logbook, meta, calorieData };
+      const bpData = schema.format === 'long' ? buildBpMap(parsed, schema) : [];
+      return { logbook, meta, calorieData, bpData };
     }
 
     /* ─── Pharmacokinetics ───────────────────────────────────────────────────── */
@@ -1477,6 +1622,257 @@
                 {saveErr && <span style={{ fontSize: 11, color: '#d03b3b' }}>{saveErr}</span>}
               </>
             )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Blood Pressure Chart ───────────────────────────────────────────────── */
+    const BP_SYS_COLOR = '#e05252';
+    const BP_DIA_COLOR = '#4a90d9';
+
+    // Soft background bands for the standard AHA systolic categories — context
+    // only, not a medical judgment. Diastolic isn't separately banded (its
+    // thresholds differ from systolic's) to avoid a cluttered dual-threshold
+    // overlay sharing one y-axis.
+    const BP_BANDS = [
+      { max: 120,      color: '#34c759', label: 'Normal' },
+      { max: 130,      color: '#ffd60a', label: 'Elevated' },
+      { max: 140,      color: '#ff9500', label: 'Stage 1' },
+      { max: Infinity, color: '#ff3b30', label: 'Stage 2' },
+    ];
+
+    const fmtTime = ms => {
+      const d = new Date(ms);
+      let h = d.getHours(); const m = d.getMinutes();
+      const ap = h < 12 ? 'am' : 'pm';
+      h = h % 12; if (h === 0) h = 12;
+      return `${h}:${String(m).padStart(2, '0')}${ap}`;
+    };
+
+    function BpChart({ bpData }) {
+      const [rangeMode, setRangeMode] = useState('all');
+      const [customDays, setCustomDays] = useState(30);
+      const [windowOffset, setWindowOffset] = useState(0);
+      const [tip, setTip] = useState(null);
+      const selectRange = mode => { setRangeMode(mode); setWindowOffset(0); };
+
+      const sorted = computeDailyBp(bpData);
+      if (sorted.length === 0) return null;
+
+      const VW = 360, VH = 180;
+      const PAD = { t: 14, r: 10, b: 28, l: 32 };
+      const cW = VW - PAD.l - PAD.r;
+      const cH = VH - PAD.t - PAD.b;
+      const STEP = 86400000;
+
+      const todayMs = new Date().setHours(0, 0, 0, 0);
+      const startMs = sorted[0].ms;
+
+      const windowDays = windowDaysForRange(rangeMode, customDays);
+      const refEnd = todayMs + STEP;
+      const pageShift = windowOffset * windowDays * STEP;
+      const visStartMs = windowDays ? refEnd - windowDays * STEP - pageShift : startMs;
+      const visEndMs   = windowDays ? refEnd - pageShift : todayMs + STEP;
+      const canScrollEarlier = windowDays && startMs < visStartMs;
+      const canScrollLater   = windowDays && windowOffset > 0;
+
+      const pts = sorted.filter(s => s.ms >= visStartMs && s.ms < visEndMs);
+      const periodRangeStr = `${fmtShort(msToLocalDate(visStartMs))} – ${fmtShort(msToLocalDate(Math.min(todayMs, visEndMs)))}`;
+
+      const avgSys = pts.length ? avg(pts.map(p => p.systolic))  : null;
+      const avgDia = pts.length ? avg(pts.map(p => p.diastolic)) : null;
+
+      const dataMax = pts.length ? Math.max(...pts.map(p => p.systolic))  : 140;
+      const dataMin = pts.length ? Math.min(...pts.map(p => p.diastolic)) : 60;
+      const yMax = Math.max(160, Math.ceil((dataMax + 10) / 10) * 10);
+      const yMin = Math.min(50,  Math.floor((dataMin - 10) / 10) * 10);
+
+      const xOf = ms    => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
+      const yOf = mmHg  => PAD.t + cH - ((mmHg - yMin) / (yMax - yMin)) * cH;
+
+      const yTicks = [];
+      for (let v = Math.ceil(yMin / 20) * 20; v <= yMax; v += 20) yTicks.push(v);
+
+      // Reference bands, clipped to the visible [yMin, yMax] window.
+      const bandRects = [];
+      let prevMax = yMin;
+      for (const b of BP_BANDS) {
+        const top = Math.min(b.max, yMax);
+        if (top > prevMax) bandRects.push({ y1: prevMax, y2: top, color: b.color });
+        prevMax = top;
+        if (prevMax >= yMax) break;
+      }
+
+      const sysPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.ms)},${yOf(p.systolic)}`).join(' ');
+      const diaPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.ms)},${yOf(p.diastolic)}`).join(' ');
+      const bandPath = pts.length > 1
+        ? pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.ms)},${yOf(p.systolic)}`).join(' ')
+          + ' ' + [...pts].reverse().map(p => `L ${xOf(p.ms)},${yOf(p.diastolic)}`).join(' ') + ' Z'
+        : '';
+
+      return (
+        <div>
+          {/* Controls */}
+          <div style={{ display:'flex', gap:6, padding:'8px 14px 4px', alignItems:'center' }}>
+            <select value={rangeMode} onChange={e => selectRange(e.target.value)}
+                    style={{ fontSize:10, fontWeight:600, padding:'5px 8px', borderRadius:8,
+                             background:'#f2f2f7', color:'#3c3c43', border:'none', outline:'none', cursor:'pointer' }}>
+              <option value="7d">7 Days</option>
+              <option value="14d">14 Days</option>
+              <option value="30d">Month</option>
+              <option value="all">All</option>
+              <option value="custom">Custom</option>
+            </select>
+            {rangeMode === 'custom' && (
+              <input type="number" min="1" step="1" value={customDays}
+                     onChange={e => setCustomDays(e.target.value)} placeholder="days"
+                     style={{ width:56, fontSize:10, fontWeight:600, padding:'5px 6px', borderRadius:8,
+                              border:'1px solid #d1d1d6', background:'#f9f9f9', color:'#1c1c1e', outline:'none' }} />
+            )}
+          </div>
+
+          {/* Earlier/Later */}
+          {windowDays !== 0 && (
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+                          padding:'0 14px 2px', fontSize:9, color:'#aeaeb2' }}>
+              <button onClick={() => canScrollEarlier && setWindowOffset(o => o + 1)} disabled={!canScrollEarlier}
+                      style={{ fontSize:9, fontWeight:600, padding:'2px 8px', borderRadius:6,
+                               background: canScrollEarlier ? '#e5e5ea' : 'transparent',
+                               color: canScrollEarlier ? '#3c3c43' : '#c7c7cc',
+                               border:'none', cursor: canScrollEarlier ? 'pointer' : 'default' }}>← Earlier</button>
+              <span>{periodRangeStr}</span>
+              <button onClick={() => canScrollLater && setWindowOffset(o => o - 1)} disabled={!canScrollLater}
+                      style={{ fontSize:9, fontWeight:600, padding:'2px 8px', borderRadius:6,
+                               background: canScrollLater ? '#e5e5ea' : 'transparent',
+                               color: canScrollLater ? '#3c3c43' : '#c7c7cc',
+                               border:'none', cursor: canScrollLater ? 'pointer' : 'default' }}>Later →</button>
+            </div>
+          )}
+
+          {/* Header stats */}
+          <div style={{ display:'flex', padding:'8px 14px 4px', gap:12, alignItems:'flex-start' }}>
+            <PkStat label="Avg Systolic"  value={avgSys != null ? Math.round(avgSys) + ' mmHg' : '—'} color={BP_SYS_COLOR} />
+            <PkStat label="Avg Diastolic" value={avgDia != null ? Math.round(avgDia) + ' mmHg' : '—'} color={BP_DIA_COLOR} />
+            <PkStat label="Readings" value={String(pts.reduce((s, p) => s + p.readings.length, 0))}
+                    note={pts.length ? periodRangeStr : ''} color="#8e8e93" />
+          </div>
+
+          {/* Chart */}
+          {pts.length > 0 ? (
+            <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width:'100%', height:'auto', display:'block' }}
+                 onMouseMove={e => {
+                   const rect = e.currentTarget.getBoundingClientRect();
+                   const x = (e.clientX - rect.left) / rect.width * VW;
+                   if (x < PAD.l || x > PAD.l + cW) { setTip(null); return; }
+                   const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
+                   let idx = 0, minDist = Infinity;
+                   pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
+                   setTip({ ...pts[idx], x: xOf(pts[idx].ms) });
+                 }}
+                 onMouseLeave={() => setTip(null)}>
+
+              {/* Reference bands */}
+              {bandRects.map((b, i) => (
+                <rect key={i} x={PAD.l} y={yOf(b.y2)} width={cW} height={yOf(b.y1) - yOf(b.y2)}
+                      fill={b.color} opacity="0.07" />
+              ))}
+
+              {/* Y grid + labels */}
+              {yTicks.map(v => (
+                <g key={v}>
+                  <line x1={PAD.l} y1={yOf(v)} x2={PAD.l + cW} y2={yOf(v)} stroke="rgba(0,0,0,.05)" strokeWidth="0.5" />
+                  <text x={PAD.l - 3} y={yOf(v) + 2} textAnchor="end" fontSize="7" fill="#aeaeb2">{v}</text>
+                </g>
+              ))}
+
+              {/* Axes */}
+              <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+              <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+
+              {/* Shaded pulse-pressure band */}
+              {pts.length > 1 && <path d={bandPath} fill="rgba(74,144,217,0.08)" />}
+
+              {/* Systolic / diastolic trend lines */}
+              <path d={sysPath} fill="none" stroke={BP_SYS_COLOR} strokeWidth="1.6" />
+              <path d={diaPath} fill="none" stroke={BP_DIA_COLOR} strokeWidth="1.6" />
+
+              {/* Markers — one point per day, however many readings went into it */}
+              {pts.map(p => (
+                <g key={p.date}>
+                  <circle cx={xOf(p.ms)} cy={yOf(p.systolic)}  r="2.2" fill={BP_SYS_COLOR} />
+                  <circle cx={xOf(p.ms)} cy={yOf(p.diastolic)} r="2.2" fill={BP_DIA_COLOR} />
+                </g>
+              ))}
+
+              {/* X labels */}
+              {(() => {
+                const winMs = visEndMs - visStartMs;
+                const tickMs = winMs > 60 * STEP ? 14 * STEP : winMs > 20 * STEP ? 7 * STEP : 3 * STEP;
+                const first = Math.ceil(visStartMs / tickMs) * tickMs;
+                const ticks = [];
+                for (let ms = first; ms <= visEndMs; ms += tickMs) ticks.push(ms);
+                return ticks.map(ms => (
+                  <text key={ms} x={xOf(ms)} y={PAD.t + cH + 10} textAnchor="middle" fontSize="7" fill="#aeaeb2">
+                    {fmtShort(msToLocalDate(ms))}
+                  </text>
+                ));
+              })()}
+
+              {/* Tooltip — date + averaged value, plus every raw reading that
+                  went into it (a day can hold more than one sitting). */}
+              {tip && (() => {
+                const TW = 96, TR = 3;
+                const rowH = 6.5;
+                const headH = 21; // date line + big avg line
+                const TH = headH + (tip.readings.length ? 5 + tip.readings.length * rowH : 0) + 4;
+                const tx = Math.max(PAD.l, Math.min(tip.x - TW / 2, PAD.l + cW - TW));
+                const ty = PAD.t + 2;
+                const { wd, mo, day } = fmtDate(tip.date);
+                const colT = tx + 5, colS = tx + 46, colD = tx + 70;
+                let row = ty + 7;
+                return (
+                  <g style={{ pointerEvents:'none' }}>
+                    <line x1={tip.x} y1={PAD.t} x2={tip.x} y2={PAD.t + cH} stroke="rgba(28,28,30,.25)" strokeWidth="1" />
+                    <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.9)" />
+                    <text x={tx+5} y={row} fontSize="5" fill="rgba(255,255,255,.5)">
+                      {wd} {mo} {day}{tip.readings.length > 1 ? ` · ${tip.readings.length} readings` : ''}
+                    </text>
+                    <text x={tx+5} y={row+=10} fontSize="8" fontWeight="700">
+                      <tspan fill={BP_SYS_COLOR}>{Math.round(tip.systolic)}</tspan>
+                      <tspan fill="rgba(255,255,255,.5)"> / </tspan>
+                      <tspan fill={BP_DIA_COLOR}>{Math.round(tip.diastolic)}</tspan>
+                    </text>
+                    {tip.readings.length > 0 && (
+                      <>
+                        <text x={colT} y={row+=8} fontSize="4.5" fill="rgba(255,255,255,.35)">TIME</text>
+                        <text x={colS} y={row} fontSize="4.5" fill="rgba(255,255,255,.35)">SYS</text>
+                        <text x={colD} y={row} fontSize="4.5" fill="rgba(255,255,255,.35)">DIA</text>
+                        {tip.readings.map((r, i) => (
+                          <g key={r.ms}>
+                            <text x={colT} y={row + (i+1) * rowH} fontSize="5" fill="rgba(255,255,255,.85)">{fmtTime(r.ms)}</text>
+                            <text x={colS} y={row + (i+1) * rowH} fontSize="5" fill={BP_SYS_COLOR}>{Math.round(r.systolic)}</text>
+                            <text x={colD} y={row + (i+1) * rowH} fontSize="5" fill={BP_DIA_COLOR}>{Math.round(r.diastolic)}</text>
+                          </g>
+                        ))}
+                      </>
+                    )}
+                  </g>
+                );
+              })()}
+            </svg>
+          ) : (
+            <div style={{ padding:'24px 16px', textAlign:'center', color:'#aeaeb2', fontSize:13 }}>
+              No readings in this range.
+            </div>
+          )}
+
+          {/* Legend */}
+          <div style={{ display:'flex', gap:14, alignItems:'center', justifyContent:'center',
+                        padding:'4px 14px 10px', fontSize:10, color:'#8e8e93' }}>
+            <span><span style={swatch(BP_SYS_COLOR)} />Systolic</span>
+            <span><span style={swatch(BP_DIA_COLOR)} />Diastolic</span>
+            <span style={{ color:'#c7c7cc' }}>Hover a point for readings</span>
           </div>
         </div>
       );
@@ -4096,6 +4492,33 @@
       );
     }
 
+    // Small "i" badge that toggles an explanatory popover on click — for
+    // chart headers where a brief methodology note helps (e.g. how BP
+    // readings get averaged) but would clutter the header if always visible.
+    function InfoDot({ children }) {
+      const [open, setOpen] = useState(false);
+      return (
+        <span style={{ position: 'relative', display: 'inline-block', marginLeft: 6 }}>
+          <button onClick={() => setOpen(o => !o)}
+                  style={{ width: 15, height: 15, borderRadius: '50%', border: 'none',
+                           background: '#e5e5ea', color: '#8e8e93', fontSize: 10, fontWeight: 700,
+                           lineHeight: '15px', textAlign: 'center', padding: 0, cursor: 'pointer',
+                           fontStyle: 'italic', fontFamily: 'Georgia, serif' }}>
+            i
+          </button>
+          {open && (
+            <div style={{ position: 'absolute', top: 20, left: 0, zIndex: 10, width: 230,
+                          background: '#1c1c1e', color: '#fff', fontSize: 11, fontWeight: 400,
+                          lineHeight: 1.45, borderRadius: 10, padding: '10px 12px',
+                          boxShadow: '0 4px 16px rgba(0,0,0,.25)' }}
+                 onClick={() => setOpen(false)}>
+              {children}
+            </div>
+          )}
+        </span>
+      );
+    }
+
     /* ─── Injection Schedule Modal ───────────────────────────────────────────── */
     const SCHED_DAYS     = ['Su','Mo','Tu','We','Th','Fr','Sa'];
     const SCHED_DAYS_LNG = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -4364,6 +4787,9 @@
       const [calories,    setCalories]    = useState(() =>
         Object.values(lsLoadCaloriesRaw()).sort((a, b) => a.date.localeCompare(b.date))
       );
+      const [bloodPressure, setBloodPressure] = useState(() =>
+        Object.values(lsLoadBpRaw()).sort((a, b) => a.ms - b.ms)
+      );
       const [calorieTargets, setCalorieTargets] = useState(lsLoadCalorieTargets);
       const [proteinTargets, setProteinTargets] = useState(lsLoadProteinTargets);
       const [videos,      setVideos]      = useState([]);
@@ -4412,7 +4838,7 @@
       // Returns true/false so callers can commit local state only on a confirmed
       // write — a mutation must never appear to "succeed" locally while silently
       // failing to reach the shared Gist.
-      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets) => {
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) {
           setGistOk(false); setGistMsg('Not logged in');
@@ -4421,7 +4847,7 @@
         let icuCfg = null;
         try { icuCfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) {}
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, icuCfg, targets, protTargets);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, icuCfg, targets, protTargets, newBp);
           setGistOk(true); setGistMsg('');
           return true;
         } catch (e) {
@@ -4440,7 +4866,7 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
               if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
@@ -4455,6 +4881,7 @@
                 setRows(newLogbook); setMeta(m); setInjections(inj);
                 lsSave(newLogbook, m); lsSaveInjections(inj);
                 if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
+                if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
                 // Restore intervals config on new/reset device
                 if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
                   localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
@@ -4464,6 +4891,7 @@
                 // View-only: show gist data directly
                 setRows(logbook); setMeta(m); setInjections(inj);
                 if (gistCals) setCalories(gistCals);
+                if (gistBp) setBloodPressure(gistBp);
                 // Use intervals config from gist so anyone can see ride data
                 if (gistIcuCfg) setIntervalsCfg(prev => prev ?? gistIcuCfg);
               }
@@ -4485,17 +4913,18 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, null, calorieTargets, proteinTargets);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, null, calorieTargets, proteinTargets, bloodPressure);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
             if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
+            if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
             if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
               localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
               setIntervalsCfg(gistIcuCfg);
@@ -4506,7 +4935,7 @@
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets]);
+      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure]);
 
       // Admin login (view-only user entering PAT)
       const adminLogin = useCallback(async (rawPat, setMsg) => {
@@ -4517,13 +4946,14 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             if (gistTargets) setCalorieTargets(gistTargets);
             if (gistProtTargets) setProteinTargets(gistProtTargets);
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
+            if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
             if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
               localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
               setIntervalsCfg(gistIcuCfg);
@@ -4590,11 +5020,12 @@
       // Imported data isn't committed to local state until the Gist write is
       // confirmed — an import that parses fine but fails to sync shouldn't
       // silently leave this device out of step with everywhere else.
-      const applyResult = useCallback(async ({ logbook, meta: newMeta, injSchedule: newSched, calorieData: newCals }) => {
+      const applyResult = useCallback(async ({ logbook, meta: newMeta, injSchedule: newSched, calorieData: newCals, bpData: newBp }) => {
         const mergedCalories = (newCals && newCals.length > 0) ? mergeCaloriesWithStored(newCals) : calories;
+        const mergedBp       = (newBp  && newBp.length  > 0) ? mergeBpWithStored(newBp)       : bloodPressure;
         setSyncPending(true);
         try {
-          const ok = await writeToGist(logbook, newMeta, injections, mergedCalories, newSched || injSchedule);
+          const ok = await writeToGist(logbook, newMeta, injections, mergedCalories, newSched || injSchedule, calorieTargets, proteinTargets, mergedBp);
           if (!ok) {
             setError("Import parsed fine but failed to sync to the Gist — try again.");
             return false;
@@ -4603,13 +5034,14 @@
           setMeta(newMeta);
           if (newSched) { setInjSchedule(newSched); lsSaveSchedule(newSched); }
           if (newCals && newCals.length > 0) setCalories(mergedCalories);
+          if (newBp && newBp.length > 0) setBloodPressure(mergedBp);
           setError('');
           lsSave(logbook, newMeta);
           return true;
         } finally {
           setSyncPending(false);
         }
-      }, [injections, calories, injSchedule]);
+      }, [injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure]);
 
       // Fetch ride calories from intervals.icu and merge into intervalsCalories map.
       // Reads config fresh from localStorage (mirrors writeToGist) so callers don't
@@ -5039,7 +5471,7 @@
             {!loading && rows.length > 0 && (
               <div style={{ display:'flex', gap:6, padding:'0 12px 8px',
                             overflowX:'auto', WebkitOverflowScrolling:'touch' }}>
-                {[['weight','Weight'],['tirz','Tirzepatide'],['dosing','Dosing'],['nutrition','Nutrition'],['activity','Activity'],['videos','Progress Videos']].map(([id,label]) => (
+                {[['weight','Weight'],['bp','Blood Pressure'],['tirz','Tirzepatide'],['dosing','Dosing'],['nutrition','Nutrition'],['activity','Activity'],['videos','Progress Videos']].map(([id,label]) => (
                   <button key={id} onClick={() => setActiveTab(id)}
                           style={{ flexShrink:0, fontSize:13, fontWeight:600, padding:'6px 18px',
                                    borderRadius:20, border:'none', cursor:'pointer', whiteSpace:'nowrap',
@@ -5184,6 +5616,31 @@
               )}
 
               </div>{/* end weight tab inner content */}
+              {/* ── BLOOD PRESSURE TAB ── */}
+              <div style={{ display: activeTab==='bp' ? undefined : 'none' }}>
+              {bloodPressure.length > 0 ? (
+                <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
+                              border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
+                  <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e', display: 'flex', alignItems: 'center' }}>
+                      Blood Pressure
+                      <InfoDot>
+                        Readings within 15 minutes of each other count as one sitting: with 2, the lower
+                        is used; with 3+, the lowest two are averaged — filtering out an artificially
+                        high first reading. If a day has more than one sitting (e.g. morning and
+                        evening), those results are averaged into one daily point. Hover any point to
+                        see every individual reading that went into it.
+                      </InfoDot>
+                    </div>
+                  </div>
+                  <BpChart bpData={bloodPressure} />
+                </div>
+              ) : (
+                <div style={{ padding: '24px 16px', textAlign: 'center', color: '#aeaeb2', fontSize: 14 }}>
+                  No blood pressure data yet — import a Health Auto Export CSV with BP readings.
+                </div>
+              )}
+              </div>{/* end bp tab */}
               {/* ── ACTIVITY TAB ── */}
               <div style={{ display: activeTab==='nutrition' ? undefined : 'none' }}>
               {/* Calories & Nutrition */}

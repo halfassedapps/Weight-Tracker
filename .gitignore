@@ -1,3 +1,4 @@
 .DS_Store
 .claude/
 weight-data-from-gist.json
+__pycache__/

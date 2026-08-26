@@ -7,7 +7,9 @@ needing to be open.
 
 Mirrors (does not call) the parsing/merge logic in index.html, since that
 logic runs in a browser: EXPORT_RE, detectSchema, buildDailyMap,
-buildCalorieMap, fetchGist/patchGist, mergeWithStored/mergeCaloriesWithStored.
+buildCalorieMap, buildBpMap (raw readings only — the sitting/outlier/daily-
+average reduction is display-time-only, in BpChart, not mirrored here),
+fetchGist/patchGist, mergeWithStored/mergeCaloriesWithStored/mergeBpWithStored.
 
 One-time setup:
     security add-generic-password -s weight-tracker-watcher -a github-pat -w <your-github-pat>
@@ -251,6 +253,63 @@ def build_calorie_map(rows, schema):
     return result
 
 
+# ─── Blood pressure extraction (mirrors findBpMetrics/buildBpReadings/
+# buildBpMap in index.html) ───────────────────────────────────────────────
+# Raw readings only — no reduction here. Sitting/outlier/daily-average logic
+# (clusterBpReadings/computeDailyBp in index.html) is display-time-only, lives
+# entirely in BpChart, and isn't mirrored server-side: the watcher's job is
+# just to get real readings into the Gist, not to decide how they're shown.
+BP_SYSTOLIC_RE = re.compile(r'blood pressure.*systolic|systolic.*blood pressure', re.IGNORECASE)
+BP_DIASTOLIC_RE = re.compile(r'blood pressure.*diastolic|diastolic.*blood pressure', re.IGNORECASE)
+
+
+def find_bp_metrics(all_metrics):
+    systolic = next((m for m in all_metrics if BP_SYSTOLIC_RE.search(m)), None)
+    diastolic = next((m for m in all_metrics if BP_DIASTOLIC_RE.search(m)), None)
+    return systolic, diastolic
+
+
+def build_bp_readings(rows, schema):
+    if schema['format'] != 'long':
+        return []
+    systolic, diastolic = find_bp_metrics(schema.get('allMetrics') or [])
+    if not systolic or not diastolic:
+        return []
+    date_col, metric_col, value_col = schema['dateCol'], schema['metricCol'], schema['valueCol']
+    by_ms = {}
+    for row in rows:
+        metric = row.get(metric_col)
+        if metric not in (systolic, diastolic):
+            continue
+        raw_date = row.get(date_col)
+        if not raw_date:
+            continue
+        dt = parse_dt(raw_date)
+        if dt is None:
+            continue
+        try:
+            val = float((row.get(value_col) or '').replace(',', ''))
+        except ValueError:
+            continue
+        ms = int(dt.timestamp() * 1000)
+        entry = by_ms.setdefault(ms, {'ms': ms})
+        if metric == systolic:
+            entry['systolic'] = val
+        else:
+            entry['diastolic'] = val
+    readings = [r for r in by_ms.values() if 'systolic' in r and 'diastolic' in r]
+    readings.sort(key=lambda r: r['ms'])
+    return readings
+
+
+def build_bp_map(rows, schema):
+    out = []
+    for r in build_bp_readings(rows, schema):
+        date = datetime.fromtimestamp(r['ms'] / 1000, tz=timezone.utc).astimezone().date().isoformat()
+        out.append({'date': date, **r})
+    return out
+
+
 def process_csv_text(text):
     rows = list(csv.DictReader(io.StringIO(text)))
     if not rows:
@@ -277,7 +336,8 @@ def process_csv_text(text):
                 seen.add(s)
                 sources.append(s)
     meta = {'metric': schema.get('weightMetric') or 'Weight', 'source': ', '.join(sources)}
-    return new_daily, meta, calorie_data
+    bp_data = build_bp_map(rows, schema) if schema['format'] == 'long' else []
+    return new_daily, meta, calorie_data, bp_data
 
 
 # ─── Merge against current Gist (mirrors mergeWithStored/mergeCaloriesWithStored) ─
@@ -298,6 +358,15 @@ def merge_calories(existing_calories, new_cal_rows):
     for d in new_cal_rows:
         m[d['date']] = norm(d)
     return sorted(m.values(), key=lambda c: c['date'])
+
+
+# Keyed by ms — each raw reading's own timestamp, a naturally stable and
+# unique identity across re-imports. Mirrors mergeBpWithStored in index.html.
+def merge_bp(existing_bp, new_readings):
+    m = {r['ms']: r for r in existing_bp if r.get('ms') is not None}
+    for r in new_readings:
+        m[r['ms']] = r
+    return sorted(m.values(), key=lambda r: r['ms'])
 
 
 # ─── GitHub Gist (mirrors fetchGist/patchGist, index.html:204-242) ──────────
@@ -375,7 +444,7 @@ def main():
 
     print(f'[watcher] New export found: {latest.name}')
     text = read_export_text(latest)
-    new_daily, meta, calorie_data = process_csv_text(text)
+    new_daily, meta, calorie_data, bp_data = process_csv_text(text)
 
     pat = get_pat()
 
@@ -388,6 +457,7 @@ def main():
             'injections': gist.get('injections', []),
             'entries': merge_entries(gist.get('entries', []), new_daily),
             'calories': merge_calories(gist.get('calories', []), calorie_data),
+            'bloodPressure': merge_bp(gist.get('bloodPressure', []), bp_data),
             # This is a full-file PATCH, not a merge — any field fetched-and-not-
             # re-sent here gets silently deleted from the Gist. calorieTargets,
             # proteinTargets (and intervalsCfg) have no watcher-side concept of
@@ -403,7 +473,8 @@ def main():
 
     state['lastFile'] = latest.name
     save_state(state)
-    print(f"[watcher] Pushed {len(payload['entries'])} weight rows, {len(payload['calories'])} calorie rows to Gist. ({latest.name})")
+    print(f"[watcher] Pushed {len(payload['entries'])} weight rows, {len(payload['calories'])} calorie rows, "
+          f"{len(payload['bloodPressure'])} BP readings to Gist. ({latest.name})")
 
 
 if __name__ == '__main__':

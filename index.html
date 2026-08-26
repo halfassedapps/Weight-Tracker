@@ -435,6 +435,19 @@
       return { calMap, ridesMap };
     }
 
+    // Pushes a single day's weight to intervals.icu's wellness log (kg), so
+    // ride power-to-weight figures there reflect current weight without a
+    // separate manual entry. PUT is idempotent — safe to call every refresh.
+    async function pushWeightToIntervals(apiKey, athleteId, dateKey, wKg) {
+      const auth = btoa(`API_KEY:${apiKey}`);
+      const res = await fetch(`https://intervals.icu/api/v1/athlete/${athleteId}/wellness/${dateKey}`, {
+        method: 'PUT',
+        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ weight: wKg }),
+      });
+      if (!res.ok) throw new Error(`intervals.icu wellness ${res.status}`);
+    }
+
     /* ─── CSV parser ─────────────────────────────────────────────────────────── */
     function splitLine(line) {
       const out = []; let cur = ''; let q = false;
@@ -4608,14 +4621,14 @@
         let cfg;
         try { cfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) { cfg = null; }
         if (!cfg?.apiKey || !cfg?.athleteId) return;
-        const rows = (calRows && calRows.length > 0) ? calRows : calories;
-        if (!rows.length) return;
+        const calList = (calRows && calRows.length > 0) ? calRows : calories;
+        if (!calList.length) return;
         // Rides cache is checked separately — it was added later than calorie cache,
         // so existing calorie history doesn't imply rides history exists.
         const hasCalCache   = Object.keys(intervalsCalories).length > 0;
         const hasRidesCache = Object.keys(intervalRides).length > 0;
         const hasCache = hasCalCache && hasRidesCache;
-        const earliest = [...rows].map(d => d.date).sort()[0];
+        const earliest = [...calList].map(d => d.date).sort()[0];
         const recentCutoff = msToLocalDate(Date.now() - REFRESH_WINDOW_DAYS * 86400000);
         const oldest = hasCache ? recentCutoff : earliest;
         const newest = msToLocalDate(Date.now());
@@ -4628,11 +4641,23 @@
           setIntervalRides(mergedRides);
           try { localStorage.setItem(LS_INTERVALS_CAL_KEY,   JSON.stringify(mergedCal));   } catch (_) {}
           try { localStorage.setItem(LS_INTERVALS_RIDES_KEY, JSON.stringify(mergedRides)); } catch (_) {}
+
+          // Piggyback today's weight onto the same sync, if it's been logged.
+          const todayKey    = msToLocalDate(new Date().setHours(0, 0, 0, 0));
+          const todayEntry  = rows.find(r => r.date === todayKey && r.wKg != null);
+          if (todayEntry) {
+            try {
+              await pushWeightToIntervals(cfg.apiKey, cfg.athleteId, todayKey, todayEntry.wKg);
+            } catch (e) {
+              console.warn('intervals.icu weight push failed:', e.message);
+            }
+          }
+
           setIntervalsMsg('');
         } catch (e) {
           setIntervalsMsg(e.message);
         }
-      }, [calories, intervalsCalories, intervalRides]);
+      }, [calories, intervalsCalories, intervalRides, rows]);
 
       // Clears only the rides cache then forces a full re-fetch from the beginning
       // of the weight data — useful when an activity was updated on intervals.icu

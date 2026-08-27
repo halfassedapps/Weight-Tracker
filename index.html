@@ -1794,14 +1794,14 @@
               {pts.length > 1 && <path d={bandPath} fill="rgba(74,144,217,0.08)" />}
 
               {/* Systolic / diastolic trend lines */}
-              <path d={sysPath} fill="none" stroke={BP_SYS_COLOR} strokeWidth="1.6" />
-              <path d={diaPath} fill="none" stroke={BP_DIA_COLOR} strokeWidth="1.6" />
+              <path d={sysPath} fill="none" stroke={BP_SYS_COLOR} strokeWidth="1" />
+              <path d={diaPath} fill="none" stroke={BP_DIA_COLOR} strokeWidth="1" />
 
               {/* Markers — one point per day, however many readings went into it */}
               {pts.map(p => (
                 <g key={p.date}>
-                  <circle cx={xOf(p.ms)} cy={yOf(p.systolic)}  r="2.2" fill={BP_SYS_COLOR} />
-                  <circle cx={xOf(p.ms)} cy={yOf(p.diastolic)} r="2.2" fill={BP_DIA_COLOR} />
+                  <circle cx={xOf(p.ms)} cy={yOf(p.systolic)}  r="1.5" fill={BP_SYS_COLOR} />
+                  <circle cx={xOf(p.ms)} cy={yOf(p.diastolic)} r="1.5" fill={BP_DIA_COLOR} />
                 </g>
               ))}
 

@@ -35,6 +35,11 @@
     const LS_VIAL_VOL_KEY     = 'weight-tracker-vial-vol';
     const LS_SYRINGE_UNITS_KEY = 'weight-tracker-syringe-units';
     const LS_POPOVER_DISMISS_KEY = 'weight-tracker-inj-popover-dismiss-date';
+    // Local-only staging value for a banner-completed survey before its
+    // injection has actually been logged — deliberately not synced to the
+    // Gist (transient same-device convenience, consumed once the matching
+    // injection is logged; see addInjection).
+    const LS_PENDING_SURVEY_KEY = 'weight-tracker-pending-injection-survey';
     const LS_INTERVALS_KEY       = 'weight-tracker-intervals-config';
     const LS_CALORIE_KEY         = 'weight-tracker-calories';
     const LS_CALORIE_TARGETS_KEY = 'weight-tracker-calorie-targets';
@@ -118,6 +123,32 @@
       'Left Thigh', 'Right Thigh',
       'Left Upper Arm', 'Right Upper Arm',
     ];
+
+    // Shared by addInjection/saveEditInjection (and mirrored by patchGist's/
+    // exportJSON's own re-serialization) — site/nausea/hunger/foodNoise are
+    // all optional and omitted entirely when unanswered, same convention.
+    function buildInjEntry(date, doseMg, site, nausea, hunger, foodNoise) {
+      const e = { date, doseMg };
+      if (site) e.site = site;
+      if (nausea != null && nausea !== '') e.nausea = Number(nausea);
+      if (hunger != null && hunger !== '') e.hunger = Number(hunger);
+      if (foodNoise != null && foodNoise !== '') e.foodNoise = Number(foodNoise);
+      return e;
+    }
+
+    // Re-serializes an already-built injection object for the Gist/export —
+    // same optional-field convention as buildInjEntry, just from an object
+    // instead of raw form fields (used by patchGist and exportJSON, which
+    // both explicitly reconstruct injection objects rather than passing them
+    // through as-is, so any field missing here would be silently dropped).
+    function serializeInjEntry({ date, doseMg, site, nausea, hunger, foodNoise }) {
+      const e = { date, doseMg };
+      if (site) e.site = site;
+      if (nausea != null) e.nausea = nausea;
+      if (hunger != null) e.hunger = hunger;
+      if (foodNoise != null) e.foodNoise = foodNoise;
+      return e;
+    }
 
     /* ─── Injection localStorage ─────────────────────────────────────────────── */
     function lsLoadInjections() {
@@ -221,6 +252,66 @@
         .filter(v => v != null);
       if (deviations.length < 7) return null;
       return { avgDeviation: avg(deviations), days: deviations.length };
+    }
+
+    // Trailing-window average nausea across injections with a nausea score
+    // logged — a safety-relevant signal that takes priority over the
+    // appetite-suppression override above (checked first in doseGuidance).
+    // windowDays is picked at the upper end of "2-4 weeks" so a typical
+    // weekly/biweekly injection cadence still reliably captures 2+ readings.
+    const GI_TOLERANCE_WINDOW_DAYS = 28;
+    const GI_NAUSEA_BAD = 7;
+    const GI_SEVERE_TODAY_BAD = 9;
+
+    function giToleranceSignal(sortedInj, todayMs, windowDays = GI_TOLERANCE_WINDOW_DAYS) {
+      const cutoff = msToLocalDate(todayMs - windowDays * 86400000);
+      const withNausea = (sortedInj || []).filter(inj => inj.nausea != null);
+      const inWindow = withNausea.filter(inj => inj.date >= cutoff);
+      if (!inWindow.length) return null;
+      const avgNausea = avg(inWindow.map(inj => inj.nausea));
+      // Most recent surveyed reading, independent of the window average — a
+      // single severe day (>= GI_SEVERE_TODAY_BAD) can hold the dose even
+      // when the trailing average is otherwise fine, since one bad reading
+      // shouldn't get smoothed away by a mild recent history. See doseGuidance.
+      const latestNausea = withNausea[withNausea.length - 1].nausea;
+      // Persistent-intolerance flag: the last two SURVEYED injections (not
+      // necessarily the last two calendar injections) at the same dose both
+      // individually >= 7 — informational only, never changes the mechanical
+      // recommendation on its own.
+      let persistent = false, persistentDoseMg = null;
+      if (withNausea.length >= 2) {
+        const [prev, last] = withNausea.slice(-2);
+        if (prev.doseMg === last.doseMg && prev.nausea >= GI_NAUSEA_BAD && last.nausea >= GI_NAUSEA_BAD) {
+          persistent = true;
+          persistentDoseMg = last.doseMg;
+        }
+      }
+      return { avgNausea, latestNausea, count: inWindow.length, persistent, persistentDoseMg };
+    }
+
+    // Cross-checks the existing appetite-suppression override against
+    // reported hunger/food-noise: corroborates it when both are low, flags a
+    // possible alternate explanation (checking nausea first) when either is
+    // still high despite the deep calorie deficit. Only meaningful — and
+    // only called — when appetiteSuppressionSignal already fired.
+    function subjectiveAppetiteCrossCheck(sortedInj, todayMs, giSignal, windowDays = GI_TOLERANCE_WINDOW_DAYS) {
+      const cutoff = msToLocalDate(todayMs - windowDays * 86400000);
+      const inWindow = (sortedInj || []).filter(inj => inj.date >= cutoff);
+      const hungerVals = inWindow.map(i => i.hunger).filter(v => v != null);
+      const noiseVals  = inWindow.map(i => i.foodNoise).filter(v => v != null);
+      if (!hungerVals.length && !noiseVals.length) return null;
+      const avgHunger = hungerVals.length ? avg(hungerVals) : null;
+      const avgNoise  = noiseVals.length ? avg(noiseVals) : null;
+      const stillHungry = (avgHunger != null && avgHunger >= 6) || (avgNoise != null && avgNoise >= 6);
+      if (!stillHungry) {
+        return (avgHunger != null && avgNoise != null && avgHunger <= 3 && avgNoise <= 3)
+          ? { type: 'corroborated', note: 'consistent with reported low hunger/food noise' }
+          : null;
+      }
+      const note = giSignal && giSignal.avgNausea >= GI_NAUSEA_BAD
+        ? 'still hungry despite the deficit — may reflect GI symptoms rather than true appetite suppression'
+        : 'still hungry despite the deficit — the deficit may not reflect true appetite suppression';
+      return { type: 'contradicted', note };
     }
 
     /* ─── Protein target localStorage ────────────────────────────────────────── */
@@ -408,7 +499,7 @@
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule,
-        injections: injections.map(({ date, doseMg, site }) => site ? { date, doseMg, site } : { date, doseMg }),
+        injections: injections.map(serializeInjEntry),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
         calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy, Protein, Carbs, Fat, HasWorkout }) =>
           ({ date, Calories, ActiveEnergy, BasalEnergy, Protein: Protein || 0, Carbs: Carbs || 0, Fat: Fat || 0, HasWorkout: !!HasWorkout })),
@@ -735,19 +826,51 @@
     // never touch 'stay'/'monitor'/'contact', which exist to catch weight loss
     // that's too *fast* (a safety concern orthogonal to appetite mechanism and
     // never softened by how much someone is or isn't eating).
-    function doseGuidance(twoWeekLbs, appetiteSignal) {
+    function doseGuidance(twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck) {
       if (twoWeekLbs == null) return null;
-      if (twoWeekLbs > 8)  return { action: 'contact', label: 'Contact prescriber', note: '>8 lbs/2wk', color: '#ff3b30', bg: '#fff1f0' };
-      if (twoWeekLbs >= 5) return { action: 'monitor', label: 'Stay — monitor',     note: '5–8 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
-      if (twoWeekLbs >= 3) return { action: 'stay',    label: 'Stay at dose',       note: '3–5 lbs/2wk', color: '#34c759', bg: '#f0fdf4' };
-      // Would otherwise be "consider increasing" — but a deep, sustained
-      // calorie deficit (same 400-cal/day threshold that marks a Nutrition-tab
-      // day as concerning undereating) suggests appetite is already well
-      // suppressed at the current dose, so hold instead. Restricted to actual
-      // (if slow) weight *loss* — twoWeekLbs < 0 means gaining weight despite
-      // a supposedly deep deficit, a contradictory signal that needs a look,
-      // not a reassuring "you're fine, hold."
-      if (twoWeekLbs >= 0 && appetiteSignal && appetiteSignal.avgDeviation <= -NET_UNDEREAT_BAD) {
+      // giSignal never changes the action for these three safety bands — it
+      // can only append context to the message (checked once, appended below).
+      // Fires on either the sustained window average OR today's reading alone
+      // being severe — a single very bad day shouldn't get smoothed away by
+      // an otherwise-mild recent history.
+      const giAvgBad    = giSignal && giSignal.avgNausea >= GI_NAUSEA_BAD;
+      const giTodayBad  = giSignal && giSignal.latestNausea != null && giSignal.latestNausea >= GI_SEVERE_TODAY_BAD;
+      const giNote = (giAvgBad || giTodayBad)
+        ? ` — also reporting significant GI symptoms (avg nausea ${giSignal.avgNausea.toFixed(1)}/10)` : '';
+      if (twoWeekLbs > 8)  return { action: 'contact', label: 'Contact prescriber', note: `>8 lbs/2wk${giNote}`, color: '#ff3b30', bg: '#fff1f0' };
+      if (twoWeekLbs >= 5) return { action: 'monitor', label: 'Stay — monitor',     note: `5–8 lbs/2wk${giNote}`, color: '#ff9500', bg: '#fff8ee' };
+      if (twoWeekLbs >= 3) return { action: 'stay',    label: 'Stay at dose',       note: `3–5 lbs/2wk${giNote}`, color: '#34c759', bg: '#f0fdf4' };
+      // Would otherwise be "consider increasing" — GI tolerance is checked
+      // first (safety-relevant, takes priority), then the calorie-deficit
+      // appetite override only if GI didn't already downgrade the rec.
+      if (giAvgBad || giTodayBad) {
+        return {
+          action: 'stay', giOverride: true,
+          label: 'Stay — GI tolerability limiting',
+          note: giAvgBad
+            ? `avg nausea ${giSignal.avgNausea.toFixed(1)}/10 over the last ${GI_TOLERANCE_WINDOW_DAYS} days`
+            : `today's nausea (${giSignal.latestNausea}/10) is severe enough to hold this week`,
+          color: '#34c759', bg: '#f0fdf4',
+        };
+      }
+      // A deep, sustained calorie deficit (same 400-cal/day threshold that
+      // marks a Nutrition-tab day as concerning undereating) suggests
+      // appetite is already well suppressed at the current dose, so hold
+      // instead. Restricted to actual (if slow) weight *loss* — twoWeekLbs <
+      // 0 means gaining weight despite a supposedly deep deficit, a
+      // contradictory signal that needs a look, not a reassuring "you're
+      // fine, hold."
+      //
+      // But: if the hunger/food-noise cross-check *contradicts* this story
+      // (still hungry despite the deficit), don't hold on an explanation the
+      // subjective data doesn't support — a deficit maintained through
+      // apparent effort rather than suppressed appetite is a case for more
+      // drug, not confirmation none is needed. Let the trend-based increase
+      // stand instead; crossCheckBypassed flags this specific case so the UI
+      // can show the contradiction alongside the increase.
+      const deficitQualifies = twoWeekLbs >= 0 && appetiteSignal && appetiteSignal.avgDeviation <= -NET_UNDEREAT_BAD;
+      const contradicted = appetiteCrossCheck && appetiteCrossCheck.type === 'contradicted';
+      if (deficitQualifies && !contradicted) {
         return {
           action: 'stay', overridden: true,
           label: 'Stay — appetite well suppressed',
@@ -755,11 +878,15 @@
           color: '#34c759', bg: '#f0fdf4',
         };
       }
-      return { action: 'increase', label: 'Consider ↑ dose', note: '<3 lbs/2wk', color: '#ff9500', bg: '#fff8ee' };
+      return {
+        action: 'increase', label: 'Consider ↑ dose', note: `<3 lbs/2wk${giNote}`,
+        color: '#ff9500', bg: '#fff8ee',
+        crossCheckBypassed: deficitQualifies && contradicted,
+      };
     }
 
-    function recommendedDose(currentDoseMg, twoWeekLbs, appetiteSignal) {
-      const g = doseGuidance(twoWeekLbs, appetiteSignal);
+    function recommendedDose(currentDoseMg, twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck) {
+      const g = doseGuidance(twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck);
       if (!g) return null;
       if (g.action === 'increase') {
         const next = Math.round((currentDoseMg + DOSE_STEP_MG) * 10) / 10;
@@ -889,14 +1016,31 @@
     // Trend-based increase/stay/monitor/contact guidance, expressed at the
     // schedule's current cadence (perInjMg = the true partial per-injection
     // amount, not the weekly total).
-    function getRecommendation(rows, ds, calories, calorieTargets, intervalsCalories, todayMs) {
+    function getRecommendation(rows, ds, calories, calorieTargets, intervalsCalories, todayMs, pendingSurvey) {
       if (!ds) return null;
       const recent = rows.find(r => r.twoWeekLoss != null);
       if (!recent) return null;
       const appetite = appetiteSuppressionSignal(calories, calorieTargets, intervalsCalories, todayMs);
-      const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss, appetite);
+      // Fold in today's saved-but-not-yet-logged survey (if any) as a
+      // synthetic entry at the current dose — otherwise the whole point of
+      // asking before you draw up today's dose is defeated, since the
+      // recommendation would only ever reflect it *after* the injection (and
+      // its side effects) already happened. Only applies when today isn't
+      // already logged for real — once it is, the real record takes over.
+      const todayStr = msToLocalDate(todayMs);
+      const alreadyLoggedToday = ds.sortedInj.some(i => i.date === todayStr);
+      const sortedInjForSignals = (pendingSurvey && pendingSurvey.date === todayStr && !alreadyLoggedToday)
+        ? [...ds.sortedInj, { date: todayStr, doseMg: ds.lastDose, ...pendingSurvey }]
+        : ds.sortedInj;
+      const gi = giToleranceSignal(sortedInjForSignals, todayMs);
+      // Computed unconditionally, ahead of recommendedDose — doseGuidance
+      // needs to know whether hunger/food-noise contradict the appetite
+      // signal *before* deciding whether to apply the override at all, not
+      // just to annotate it afterward.
+      const crossCheck = subjectiveAppetiteCrossCheck(sortedInjForSignals, todayMs, gi);
+      const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss, appetite, gi, crossCheck);
       const recWeekly = rec.dose != null ? rec.dose : ds.weeklyDose;
-      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg: recWeekly / ds.injPerWeek, appetite };
+      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg: recWeekly / ds.injPerWeek, appetite, gi, crossCheck };
     }
 
     // Computes a "weekly dose" timeline for the chart pills — two different
@@ -2794,7 +2938,7 @@
     /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
     // Standalone component for the dose recommendation, calculator, and syringe.
     // Extracted from PkChart so it can live in the "Dosing" tab independently.
-    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories }) {
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories, pendingSurvey }) {
       const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
@@ -2851,15 +2995,21 @@
       const recent = (rows ?? []).find(r => r.twoWeekLoss != null);
       if (!recent) return null;
       const todayMs = new Date().setHours(0, 0, 0, 0);
-      const rec = getRecommendation(rows ?? [], ds, calories, calorieTargets, intervalsCalories, todayMs);
+      const rec = getRecommendation(rows ?? [], ds, calories, calorieTargets, intervalsCalories, todayMs, pendingSurvey);
       if (!rec) return null;
 
-      const { g, dose, recWeekly, perInjMg } = rec;
+      const { g, dose, recWeekly, perInjMg, gi, crossCheck } = rec;
       const lossSign   = recent.twoWeekLoss >= 0 ? '↓' : '↑';
       const nextInjDate  = new Date(nextInjMs);
       const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
-      const subtext = g.overridden
+      const subtext = g.giOverride
+        ? (gi.avgNausea >= GI_NAUSEA_BAD
+            ? `You're averaging ${gi.avgNausea.toFixed(1)}/10 nausea over the last ${GI_TOLERANCE_WINDOW_DAYS} days — GI tolerability appears to be the limiting factor, so this holds rather than increasing. Confirm with your prescriber.`
+            : `Today's nausea (${gi.latestNausea}/10) is severe enough on its own to hold this week, even though your recent average is milder. Confirm with your prescriber.`)
+        : g.overridden
         ? `You're averaging ${Math.round(Math.abs(rec.appetite.avgDeviation))} cal/day under your exercise-adjusted target over the last ${rec.appetite.days} days — appetite appears well-suppressed at the current dose, so this holds rather than increasing. Confirm with your prescriber.`
+        : g.crossCheckBypassed
+        ? `You're averaging ${Math.round(Math.abs(rec.appetite.avgDeviation))} cal/day under target, but still reporting real hunger/food noise — that deficit may be coming from effort rather than suppressed appetite, so this increases rather than holding.`
         : g.action === 'increase'
         ? (recent.twoWeekLoss < 0
             ? `Weight trending up — increase by ${DOSE_STEP_MG} mg`
@@ -2874,6 +3024,14 @@
         { range: '3–5 lbs / 2 wks',  action: 'Stay at current dose',      color: '#34c759' },
         { range: '< 3 lbs / 2 wks',  action: `Increase by ${DOSE_STEP_MG} mg (incl. weight gain)`, color: '#ff9500' },
       ];
+
+      // Last up to 4 injections with any survey data logged — so the
+      // subjective data isn't just write-only. Purely a display convenience,
+      // not used by the recommendation logic (that reads the trailing window
+      // directly off ds.sortedInj).
+      const surveyTrend = ds.sortedInj
+        .filter(inj => inj.nausea != null || inj.hunger != null || inj.foodNoise != null)
+        .slice(-4);
 
       return (
         <div>
@@ -2913,6 +3071,11 @@
                   <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,.5)', marginTop: 8,
                                 paddingTop: 7, borderTop: '1px solid rgba(255,255,255,.15)' }}>
                     Based on weight change over the trailing 2 weeks. Capped at {MAX_DOSE_MG} mg/week.
+                    An "Increase" can still be held for high reported nausea — either a sustained average
+                    (≥{GI_NAUSEA_BAD}/10 over {GI_TOLERANCE_WINDOW_DAYS} days) or one severe day alone
+                    (≥{GI_SEVERE_TODAY_BAD}/10) — or for a deep calorie deficit, unless you're still
+                    reporting real hunger/food noise despite that deficit, in which case it increases
+                    anyway (all logged via the injection-day survey). Never for the three bands above.
                   </div>
                 </div>
               )}
@@ -2948,8 +3111,29 @@
                   <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 3 }}>
                     Your next injection is planned for {nextInjLabel}.
                   </div>
+                  {/* Only relevant when it actually bore on this recommendation —
+                      crossCheck is now computed unconditionally, so this guard
+                      keeps it from showing up next to an unrelated band. */}
+                  {(g.overridden || g.crossCheckBypassed) && crossCheck && (
+                    <div style={{ fontSize: 11.5, color: '#8e8e93', marginTop: 5, fontStyle: 'italic' }}>
+                      {crossCheck.type === 'corroborated' ? '✓ ' : '⚠ '}{crossCheck.note}
+                    </div>
+                  )}
                 </div>
               </div>
+              {/* Persistent GI intolerance — informational only, never changes
+                  the mechanical action above; visually distinct on purpose. */}
+              {gi?.persistent && (
+                <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10,
+                              background: '#fff8ee', border: '1px solid #ff950055' }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: '#b8720a' }}>
+                    ⚠ Nausea ≥7/10 at your last two injections at {gi.persistentDoseMg} mg
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#8e8e93', marginTop: 2 }}>
+                    Consider discussing stepping back down to your prior dose with your prescriber.
+                  </div>
+                </div>
+              )}
               {/* Schedule */}
               <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 12, color: '#8e8e93' }}>Injection schedule</span>
@@ -4477,6 +4661,32 @@
               )}
             </div>
           </div>
+
+          {/* Recent survey trend — so the subjective data isn't write-only */}
+          {surveyTrend.length > 0 && (
+            <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 14,
+                          background: '#fff', border: '.5px solid rgba(0,0,0,.08)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
+                            letterSpacing: .6, marginBottom: 6 }}>Recent Survey Trend</div>
+              {[
+                { key: 'nausea',    label: 'Nausea' },
+                { key: 'hunger',    label: 'Hunger' },
+                { key: 'foodNoise', label: 'Food noise' },
+              ].map(({ key, label }) => (
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
+                  <span style={{ fontSize: 12, color: '#8e8e93', width: 78, flexShrink: 0 }}>{label}</span>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {surveyTrend.map(inj => (
+                      <span key={inj.date} style={{ fontSize: 12, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+                                    color: inj[key] == null ? '#c7c7cc' : '#1c1c1e' }}>
+                        {inj[key] != null ? inj[key] : '—'}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       );
     }
@@ -4516,6 +4726,24 @@
             </div>
           )}
         </span>
+      );
+    }
+
+    // Compact 0-10 slider used by the injection add/edit forms and the
+    // banner's quick survey — value is the raw form-state string ('' = unset).
+    function SurveySlider({ label, value, onChange }) {
+      return (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                           letterSpacing: .4 }}>{label}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#4a90d9',
+                           fontVariantNumeric: 'tabular-nums' }}>{value === '' ? '—' : value}</span>
+          </div>
+          <input type="range" min="0" max="10" step="1" value={value === '' ? 0 : value}
+                 onChange={e => onChange(e.target.value)}
+                 style={{ width: '100%', accentColor: '#4a90d9' }} />
+        </div>
       );
     }
 
@@ -4719,10 +4947,18 @@
     }
 
     /* ─── Injection-day banner ───────────────────────────────────────────────── */
-    function InjectionDayBanner({ rows, injections, injSchedule, calories, calorieTargets, intervalsCalories }) {
+    function InjectionDayBanner({ rows, injections, injSchedule, calories, calorieTargets, intervalsCalories,
+                                   pendingSurvey, onSavePendingSurvey }) {
       const [dismissedDate, setDismissedDate] = useState(
         () => localStorage.getItem(LS_POPOVER_DISMISS_KEY)
       );
+      // Hooks must run unconditionally (before the early returns below), so
+      // these are declared here even though they're only rendered further down.
+      const [surveyOpen, setSurveyOpen] = useState(false);
+      const hasPendingToday = pendingSurvey && pendingSurvey.date === today();
+      const [surveyNausea,    setSurveyNausea]    = useState(() => hasPendingToday && pendingSurvey.nausea    != null ? String(pendingSurvey.nausea)    : '0');
+      const [surveyHunger,    setSurveyHunger]    = useState(() => hasPendingToday && pendingSurvey.hunger    != null ? String(pendingSurvey.hunger)    : '0');
+      const [surveyFoodNoise, setSurveyFoodNoise] = useState(() => hasPendingToday && pendingSurvey.foodNoise != null ? String(pendingSurvey.foodNoise) : '0');
 
       const ds = getDoseSchedule(injections, injSchedule);
       if (!ds || !ds.scheduleActive) return null;
@@ -4733,7 +4969,7 @@
       if (!isToday || alreadyLogged || dismissedDate === todayStr) return null;
 
       const todayMs = new Date().setHours(0, 0, 0, 0);
-      const rec = getRecommendation(rows ?? [], ds, calories, calorieTargets, intervalsCalories, todayMs);
+      const rec = getRecommendation(rows ?? [], ds, calories, calorieTargets, intervalsCalories, todayMs, pendingSurvey);
       if (!rec) return null;
       const { g, perInjMg } = rec;
       const currentPerInjMg = ds.lastDose;
@@ -4745,6 +4981,13 @@
       const dismiss = () => {
         localStorage.setItem(LS_POPOVER_DISMISS_KEY, todayStr);
         setDismissedDate(todayStr);
+      };
+
+      const saveSurvey = () => {
+        onSavePendingSurvey(todayStr, {
+          nausea: Number(surveyNausea), hunger: Number(surveyHunger), foodNoise: Number(surveyFoodNoise),
+        });
+        setSurveyOpen(false);
       };
 
       return (
@@ -4771,8 +5014,32 @@
                 )}
               </div>
               <div style={{ fontSize: 12.5, fontWeight: 600, color: g.color }}>{g.label}</div>
+              <button onClick={() => setSurveyOpen(v => !v)}
+                      style={{ fontSize: 11.5, fontWeight: 600, color: g.color, background: 'none',
+                               border: 'none', padding: 0, marginTop: 5, cursor: 'pointer',
+                               textDecoration: 'underline', opacity: .85 }}>
+                {surveyOpen ? 'Cancel' : hasPendingToday ? '✓ Update how you’re feeling' : 'Log how you’re feeling'}
+              </button>
             </div>
           </div>
+          {surveyOpen && (
+            <div style={{ padding: '0 16px 14px' }}>
+              <div style={{ padding: '10px 12px', borderRadius: 12, background: 'rgba(255,255,255,.55)',
+                            display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 11, color: '#8e8e93', marginTop: -2 }}>
+                  Symptoms since last injection
+                </div>
+                <SurveySlider label="Nausea"     value={surveyNausea}    onChange={setSurveyNausea} />
+                <SurveySlider label="Hunger"     value={surveyHunger}    onChange={setSurveyHunger} />
+                <SurveySlider label="Food noise" value={surveyFoodNoise} onChange={setSurveyFoodNoise} />
+                <button onClick={saveSurvey}
+                        style={{ fontSize: 13, fontWeight: 600, padding: '7px', borderRadius: 8,
+                                 background: g.color, color: '#fff', border: 'none', cursor: 'pointer' }}>
+                  Save
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
@@ -4784,6 +5051,19 @@
       const [meta,        setMeta]        = useState(saved?.meta    ?? null);
       const [injections,  setInjections]  = useState(lsLoadInjections);
       const [injSchedule, setInjSchedule] = useState(lsLoadSchedule);
+      const [pendingSurvey, setPendingSurvey] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_PENDING_SURVEY_KEY) || 'null'); }
+        catch (_) { return null; }
+      });
+      const savePendingSurvey = useCallback((date, vals) => {
+        const next = { date, ...vals };
+        setPendingSurvey(next);
+        try { localStorage.setItem(LS_PENDING_SURVEY_KEY, JSON.stringify(next)); } catch (_) {}
+      }, []);
+      const clearPendingSurvey = () => {
+        setPendingSurvey(null);
+        try { localStorage.removeItem(LS_PENDING_SURVEY_KEY); } catch (_) {}
+      };
       const [calories,    setCalories]    = useState(() =>
         Object.values(lsLoadCaloriesRaw()).sort((a, b) => a.date.localeCompare(b.date))
       );
@@ -4801,6 +5081,9 @@
       const [injDate,    setInjDate]    = useState(today);
       const [injDose,    setInjDose]    = useState('');
       const [injSite,    setInjSite]    = useState('');
+      const [injNausea,    setInjNausea]    = useState('');
+      const [injHunger,    setInjHunger]    = useState('');
+      const [injFoodNoise, setInjFoodNoise] = useState('');
       // Export folder auto-import
       const [exportDir,  setExportDir]  = useState(null);   // FileSystemDirectoryHandle
       const [autoMsg,    setAutoMsg]    = useState('');      // transient status line
@@ -5293,7 +5576,7 @@
       const addInjection = useCallback(async () => {
         const dose = parseFloat(injDose);
         if (!injDate || isNaN(dose) || dose <= 0) return;
-        const entry = injSite ? { date: injDate, doseMg: dose, site: injSite } : { date: injDate, doseMg: dose };
+        const entry = buildInjEntry(injDate, dose, injSite, injNausea, injHunger, injFoodNoise);
         const next = [...injections.filter(i => i.date !== injDate), entry]
           .sort((a, b) => b.date.localeCompare(a.date));
         setSyncPending(true);
@@ -5302,14 +5585,18 @@
           if (!ok) return;
           setInjections(next);
           lsSaveInjections(next);
+          if (pendingSurvey && pendingSurvey.date === injDate) clearPendingSurvey();
           setInjDose('');
           setInjSite('');
+          setInjNausea('');
+          setInjHunger('');
+          setInjFoodNoise('');
           setInjDate(today());
           setShowInj(false);
         } finally {
           setSyncPending(false);
         }
-      }, [injections, injDate, injDose, injSite, rows, meta]);
+      }, [injections, injDate, injDose, injSite, injNausea, injHunger, injFoodNoise, rows, meta, pendingSurvey]);
 
       const deleteInjection = useCallback(async (date) => {
         const next = injections.filter(i => i.date !== date);
@@ -5334,19 +5621,25 @@
       const [editDate,    setEditDate]    = useState('');
       const [editDose,    setEditDose]    = useState('');
       const [editSite,    setEditSite]    = useState('');
+      const [editNausea,    setEditNausea]    = useState('');
+      const [editHunger,    setEditHunger]    = useState('');
+      const [editFoodNoise, setEditFoodNoise] = useState('');
 
       const startEditInjection = (inj) => {
         setEditingDate(inj.date);
         setEditDate(inj.date);
         setEditDose(String(inj.doseMg));
         setEditSite(inj.site || '');
+        setEditNausea(inj.nausea != null ? String(inj.nausea) : '');
+        setEditHunger(inj.hunger != null ? String(inj.hunger) : '');
+        setEditFoodNoise(inj.foodNoise != null ? String(inj.foodNoise) : '');
       };
       const cancelEditInjection = () => setEditingDate(null);
 
       const saveEditInjection = useCallback(async () => {
         const dose = parseFloat(editDose);
         if (!editDate || isNaN(dose) || dose <= 0) return;
-        const entry = editSite ? { date: editDate, doseMg: dose, site: editSite } : { date: editDate, doseMg: dose };
+        const entry = buildInjEntry(editDate, dose, editSite, editNausea, editHunger, editFoodNoise);
         const next = [...injections.filter(i => i.date !== editingDate && i.date !== editDate), entry]
           .sort((a, b) => b.date.localeCompare(a.date));
         setSyncPending(true);
@@ -5359,7 +5652,7 @@
         } finally {
           setSyncPending(false);
         }
-      }, [injections, editingDate, editDate, editDose, editSite, rows, meta]);
+      }, [injections, editingDate, editDate, editDose, editSite, editNausea, editHunger, editFoodNoise, rows, meta]);
 
       // Load body scan videos from the body-scans/ folder in the repo.
       // Filename drives everything — no form, no Gist storage needed.
@@ -5387,7 +5680,7 @@
           version: 1, savedAt: new Date().toISOString(), meta,
           injSchedule,
           vialConc: vialConc ? parseFloat(vialConc) : 12.5,
-          injections: injections.map(({ date, doseMg, site }) => site ? { date, doseMg, site } : { date, doseMg }),
+          injections: injections.map(serializeInjEntry),
           entries: rows.map(r => ({ date: r.date, wKg: r.wKg })),
         }, null, 2);
         const a = document.createElement('a');
@@ -5571,7 +5864,8 @@
               <div style={{ padding:'12px 12px 32px' }}>
 
               <InjectionDayBanner rows={rows} injections={injections} injSchedule={injSchedule}
-                                  calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories} />
+                                  calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
+                                  pendingSurvey={pendingSurvey} onSavePendingSurvey={savePendingSurvey} />
 
               {/* ── TIRZEPATIDE TAB ── */}
               <div style={{ display: activeTab==='tirz' ? undefined : 'none' }}>
@@ -5793,7 +6087,8 @@
               <div style={{ display: activeTab==='dosing' ? undefined : 'none' }}>
                 <DosePanel rows={rows} injections={injections} injSchedule={injSchedule}
                            isAdmin={isAdmin} onSaveSchedule={saveInjSchedule}
-                           calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories} />
+                           calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
+                           pendingSurvey={pendingSurvey} />
 
               {/* Injection log */}
               <div style={{ marginTop: 10, borderRadius: 18, background: '#fff',
@@ -5803,7 +6098,16 @@
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#4a90d9',
                                 textTransform: 'uppercase', letterSpacing: .6 }}>Injections</div>
                   {isAdmin && (
-                    <button onClick={() => setShowInj(v => !v)}
+                    <button onClick={() => {
+                              // Pre-fill from a banner-completed survey for the
+                              // date this form is about to open on, if any.
+                              if (!showInj && pendingSurvey && pendingSurvey.date === injDate) {
+                                if (pendingSurvey.nausea    != null) setInjNausea(String(pendingSurvey.nausea));
+                                if (pendingSurvey.hunger    != null) setInjHunger(String(pendingSurvey.hunger));
+                                if (pendingSurvey.foodNoise != null) setInjFoodNoise(String(pendingSurvey.foodNoise));
+                              }
+                              setShowInj(v => !v);
+                            }}
                             style={{ fontSize: 14, fontWeight: 600, padding: '4px 12px', borderRadius: 8,
                                      background: showInj ? '#e5e5ea' : '#007aff',
                                      color: showInj ? '#1c1c1e' : '#fff', border: 'none', cursor: 'pointer' }}>
@@ -5852,6 +6156,14 @@
                         {INJECTION_SITES.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
                     </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      <div style={{ fontSize: 11, color: '#8e8e93', marginTop: -2 }}>
+                        Symptoms since last injection
+                      </div>
+                      <SurveySlider label="Nausea"     value={injNausea}    onChange={setInjNausea} />
+                      <SurveySlider label="Hunger"     value={injHunger}    onChange={setInjHunger} />
+                      <SurveySlider label="Food noise" value={injFoodNoise} onChange={setInjFoodNoise} />
+                    </div>
                   </div>
                 )}
 
@@ -5888,6 +6200,14 @@
                         <option value="">— Not specified —</option>
                         {INJECTION_SITES.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div style={{ fontSize: 11, color: '#8e8e93', marginTop: -2 }}>
+                          Symptoms since last injection
+                        </div>
+                        <SurveySlider label="Nausea"     value={editNausea}    onChange={setEditNausea} />
+                        <SurveySlider label="Hunger"     value={editHunger}    onChange={setEditHunger} />
+                        <SurveySlider label="Food noise" value={editFoodNoise} onChange={setEditFoodNoise} />
+                      </div>
                       <div style={{ display: 'flex', gap: 8 }}>
                         <button onClick={saveEditInjection} disabled={!editDate || !editDose || syncPending}
                                 style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '8px', borderRadius: 9,
@@ -5915,6 +6235,13 @@
                         </span>
                         {inj.site && (
                           <span style={{ fontSize: 13, color: '#8e8e93', marginLeft: 6 }}>· {inj.site}</span>
+                        )}
+                        {(inj.nausea != null || inj.hunger != null || inj.foodNoise != null) && (
+                          <div style={{ fontSize: 11.5, color: '#aeaeb2', marginTop: 2 }}>
+                            {inj.nausea    != null && `N${inj.nausea} `}
+                            {inj.hunger    != null && `H${inj.hunger} `}
+                            {inj.foodNoise != null && `F${inj.foodNoise}`}
+                          </div>
                         )}
                       </div>
                       <div style={{ fontSize: 16, fontWeight: 600, color: '#4a90d9',

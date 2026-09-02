@@ -40,11 +40,11 @@
     // Gist (transient same-device convenience, consumed once the matching
     // injection is logged; see addInjection).
     const LS_PENDING_SURVEY_KEY = 'weight-tracker-pending-injection-survey';
-    const LS_INTERVALS_KEY       = 'weight-tracker-intervals-config';
     const LS_CALORIE_KEY         = 'weight-tracker-calories';
     const LS_CALORIE_TARGETS_KEY = 'weight-tracker-calorie-targets';
-    const LS_INTERVALS_CAL_KEY   = 'weight-tracker-intervals-calories';
-    const LS_INTERVALS_RIDES_KEY = 'weight-tracker-intervals-rides';
+    // Watcher-computed { calMap, ridesMap, syncedAt } cache — no API key inside,
+    // see IntervalsPanel/parseGistPayload.
+    const LS_INTERVALS_ACTIVITIES_KEY = 'weight-tracker-intervals-activities';
     const LS_BP_KEY               = 'weight-tracker-blood-pressure';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     function lastImportIsToday() {
@@ -427,7 +427,7 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsCfg = null, calorieTargets = [], proteinTargets = [], bloodPressure = [] }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [] }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -439,7 +439,9 @@
         injections:   injections.filter(i => i.date && i.doseMg),
         injSchedule:  (Array.isArray(injSchedule) || isIntervalSchedule(injSchedule)) ? injSchedule : [],
         calories:     Array.isArray(calories) ? calories.filter(c => c.date) : [],
-        intervalsCfg: intervalsCfg && intervalsCfg.apiKey && intervalsCfg.athleteId ? intervalsCfg : null,
+        // Written only by the watcher (watcher/weight_export_watcher.py), from a
+        // Keychain-held key that never touches the Gist — see patchGist above.
+        intervalsActivities: intervalsActivities && (intervalsActivities.calMap || intervalsActivities.ridesMap) ? intervalsActivities : null,
         calorieTargets: Array.isArray(calorieTargets) && calorieTargets.length
           ? [...calorieTargets].sort((a, b) => a.date.localeCompare(b.date))
           : DEFAULT_CALORIE_TARGETS,
@@ -495,7 +497,14 @@
       }
     }
 
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], intervalsCfg = null, calorieTargets = [], proteinTargets = [], bloodPressure = []) {
+    // No apiKey/athleteId param: the raw intervals.icu key must never be written
+    // to the Gist (it's fetched unauthenticated by anyone with the page URL) — only
+    // the watcher (local Keychain-held key) computes and writes intervalsActivities.
+    // The client still has to pass that field's *current* value through on every
+    // write, same as calorieTargets/proteinTargets — this is a full-content PATCH
+    // of weight-data.json, so any field the caller omits here is deleted from the
+    // Gist, not merely left unmodified.
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null) {
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule,
@@ -508,7 +517,7 @@
         bloodPressure: bloodPressure.map(({ date, ms, systolic, diastolic }) =>
           ({ date, ms, systolic, diastolic })),
       };
-      if (intervalsCfg?.apiKey && intervalsCfg?.athleteId) payload.intervalsCfg = { apiKey: intervalsCfg.apiKey, athleteId: intervalsCfg.athleteId };
+      if (intervalsActivities) payload.intervalsActivities = intervalsActivities;
       const content = JSON.stringify(payload, null, 2);
       const res = await fetch(`https://api.github.com/gists/${gistId}`, {
         method: 'PATCH',
@@ -522,48 +531,13 @@
     }
 
     /* ─── intervals.icu ──────────────────────────────────────────────────────── */
-    // Returns a map of date ("YYYY-MM-DD") -> summed ride calories for that day.
-    async function fetchIntervalsCalories(apiKey, athleteId, oldestISODate, newestISODate) {
-      const auth = btoa(`API_KEY:${apiKey}`);
-      const url = `https://intervals.icu/api/v1/athlete/${athleteId}/activities?oldest=${oldestISODate}&newest=${newestISODate}`;
-      const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
-      if (!res.ok) throw new Error(`intervals.icu ${res.status}`);
-      const activities = await res.json();
-      const calMap   = {};
-      const ridesMap = {};
-      for (const a of activities) {
-        const date = (a.start_date_local || '').slice(0, 10);
-        if (!date) continue;
-        const cal  = a.calories;
-        if (cal != null) calMap[date] = (calMap[date] ?? 0) + cal;
-        const dur  = a.moving_time || a.elapsed_time || 0;
-        const dist = a.distance || 0;
-        const pwr  = a.icu_average_watts ?? a.average_watts ?? null;
-        const hr   = a.average_heartrate ?? null;
-        if (!ridesMap[date]) ridesMap[date] = { date, totalDurSecs: 0, totalDistM: 0, totalCal: 0, rides: [] };
-        ridesMap[date].totalDurSecs += dur;
-        ridesMap[date].totalDistM   += dist;
-        ridesMap[date].totalCal     += (cal || 0);
-        ridesMap[date].rides.push({
-          id: a.id, name: a.name || 'Activity', sport: a.sport || '',
-          durSecs: dur, distM: dist, cal: cal || 0, pwr, hr,
-        });
-      }
-      return { calMap, ridesMap };
-    }
-
-    // Pushes a single day's weight to intervals.icu's wellness log (kg), so
-    // ride power-to-weight figures there reflect current weight without a
-    // separate manual entry. PUT is idempotent — safe to call every refresh.
-    async function pushWeightToIntervals(apiKey, athleteId, dateKey, wKg) {
-      const auth = btoa(`API_KEY:${apiKey}`);
-      const res = await fetch(`https://intervals.icu/api/v1/athlete/${athleteId}/wellness/${dateKey}`, {
-        method: 'PUT',
-        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ weight: wKg }),
-      });
-      if (!res.ok) throw new Error(`intervals.icu wellness ${res.status}`);
-    }
+    // No client-side fetch/push to intervals.icu — that used to run from every
+    // visitor's browser using a key shared via the Gist, which meant anyone
+    // with the page URL received (and could trigger requests with) the owner's
+    // real intervals.icu API key. The watcher (weight_export_watcher.py) now
+    // does the actual sync from a local Keychain-held key and publishes only
+    // the resulting ride/calorie data (intervalsActivities, no key inside it)
+    // into the Gist for every viewer — see parseGistPayload/patchGist above.
 
     /* ─── CSV parser ─────────────────────────────────────────────────────────── */
     function splitLine(line) {
@@ -4336,78 +4310,34 @@
       );
     }
 
-    function IntervalsPanel({ connected, msg, onSave, onRefresh, onResync, onDisconnect, style }) {
-      const [open,      setOpen]      = React.useState(false);
-      const [apiKey,    setApiKey]    = React.useState(() => {
-        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null')?.apiKey ?? ''; } catch (_) { return ''; }
-      });
-      const [athleteId, setAthleteId] = React.useState(() => {
-        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null')?.athleteId ?? ''; } catch (_) { return ''; }
-      });
+    // Status-only — no key ever enters the browser. The sync itself runs from
+    // the local watcher (weight_export_watcher.py), which reads the intervals.icu
+    // API key from macOS Keychain and publishes only key-free ride/calorie data
+    // into the Gist, so it never leaks to viewers via the shared page URL.
+    function fmtSyncedAgo(iso) {
+      if (!iso) return null;
+      const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins} min ago`;
+      const hrs = Math.round(mins / 60);
+      if (hrs < 24) return `${hrs} hr${hrs === 1 ? '' : 's'} ago`;
+      return `${Math.round(hrs / 24)} day${Math.round(hrs / 24) === 1 ? '' : 's'} ago`;
+    }
+
+    function IntervalsPanel({ syncedAt, style }) {
+      const connected = !!syncedAt;
       return (
-        <div style={{ borderRadius: 14, overflow: 'hidden', border: `.5px solid ${connected ? '#34c759' : '#d1d1d6'}`,
+        <div style={{ borderRadius: 14, padding: '12px 16px',
+                      border: `.5px solid ${connected ? '#34c759' : '#d1d1d6'}`,
                       background: '#fff', ...style }}>
-          <button onClick={() => setOpen(v => !v)}
-                  style={{ width: '100%', padding: '12px 16px', background: 'none', border: 'none',
-                           cursor: 'pointer', display: 'flex', alignItems: 'center',
-                           justifyContent: 'space-between', textAlign: 'left' }}>
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
-                {connected ? 'intervals.icu connected' : 'intervals.icu — tap to connect'}
-              </div>
-              <div style={{ fontSize: 12, color: msg ? '#ff3b30' : '#8e8e93', marginTop: 1 }}>
-                {msg || (connected ? 'Ride data powers the Rides chart below' : 'Enter API key + athlete ID')}
-              </div>
-            </div>
-            <div style={{ fontSize: 16, color: connected ? '#34c759' : '#8e8e93', marginLeft: 8 }}>
-              {connected ? '✓' : open ? '▾' : '›'}
-            </div>
-          </button>
-          {open && (
-            <div style={{ padding: '0 16px 14px', borderTop: '.5px solid #f2f2f7' }}>
-              <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>API Key</div>
-              <input value={apiKey} onChange={e => setApiKey(e.target.value)} type="text" placeholder="API key"
-                     autoCorrect="off" autoCapitalize="none" spellCheck={false} autoComplete="off"
-                     style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
-                              border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
-              <div style={{ fontSize: 12, color: '#8e8e93', margin: '10px 0 6px' }}>Athlete ID</div>
-              <input value={athleteId} onChange={e => setAthleteId(e.target.value)} type="text" placeholder="e.g. 2857823"
-                     autoCorrect="off" autoCapitalize="none" spellCheck={false} autoComplete="off"
-                     style={{ width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
-                              border: '.5px solid #d1d1d6', fontFamily: 'monospace', boxSizing: 'border-box' }} />
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                <button onClick={() => { onSave(apiKey.trim(), athleteId.trim()); setOpen(false); }}
-                        disabled={!apiKey || !athleteId}
-                        style={{ flex: 1, padding: '10px', borderRadius: 10, fontSize: 14, fontWeight: 600,
-                                 border: 'none', cursor: (apiKey && athleteId) ? 'pointer' : 'default',
-                                 background: (!apiKey || !athleteId) ? '#e5e5ea' : '#4a90d9', color: '#fff' }}>
-                  Save &amp; Connect
-                </button>
-                {connected && (
-                  <button onClick={onRefresh}
-                          style={{ padding: '10px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
-                                   border: 'none', cursor: 'pointer', background: '#f2f2f7', color: '#1c1c1e' }}>
-                    Refresh
-                  </button>
-                )}
-                {connected && (
-                  <button onClick={onResync}
-                          title="Clears the cached ride data and re-fetches everything from intervals.icu — use when an activity was updated or re-uploaded"
-                          style={{ padding: '10px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
-                                   border: 'none', cursor: 'pointer', background: '#fff8ee', color: '#ff9500' }}>
-                    Re-sync rides
-                  </button>
-                )}
-                {connected && (
-                  <button onClick={onDisconnect}
-                          style={{ padding: '10px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
-                                   border: 'none', cursor: 'pointer', background: '#fff1f0', color: '#ff3b30' }}>
-                    Disconnect
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
+          <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>
+            {connected ? 'intervals.icu synced' : 'intervals.icu not yet synced'}
+          </div>
+          <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 1 }}>
+            {connected
+              ? `Ride data powers the Rides chart below · synced ${fmtSyncedAgo(syncedAt)}`
+              : 'Ride sync runs from the local watcher — see watcher/weight_export_watcher.py for setup'}
+          </div>
         </div>
       );
     }
@@ -5094,18 +5024,15 @@
       const [dismissedGistMsg, setDismissedGistMsg] = useState(''); // last gistMsg the user dismissed
       const [isAdmin, setIsAdmin] = useState(() => !!localStorage.getItem(LS_GIST_PAT_KEY));
       const [loading, setLoading] = useState(true);
-      const [intervalsCfg, setIntervalsCfg] = useState(() => {
-        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) { return null; }
+      // Seeded from the last gist read so the chart never paints with a blank
+      // "0 burned" flash while the mount-effect fetch below is in flight.
+      // Populated only from the Gist's intervalsActivities field (written by
+      // the watcher) — never fetched live client-side, see IntervalsPanel.
+      const [intervalsActivities, setIntervalsActivities] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_ACTIVITIES_KEY) || 'null'); } catch (_) { return null; }
       });
-      // Seeded from the last successful sync so the chart never paints with a
-      // blank "0 burned" flash while the fresh fetch below is in flight.
-      const [intervalsCalories, setIntervalsCalories] = useState(() => {
-        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_CAL_KEY) || '{}'); } catch (_) { return {}; }
-      });
-      const [intervalRides, setIntervalRides] = useState(() => {
-        try { return JSON.parse(localStorage.getItem(LS_INTERVALS_RIDES_KEY) || '{}'); } catch (_) { return {}; }
-      });
-      const [intervalsMsg,      setIntervalsMsg]      = useState('');
+      const intervalsCalories = intervalsActivities?.calMap ?? {};
+      const intervalRides     = intervalsActivities?.ridesMap ?? {};
       const inputRef  = useRef();
       const msgTimer  = useRef();
 
@@ -5127,10 +5054,8 @@
           setGistOk(false); setGistMsg('Not logged in');
           return false;
         }
-        let icuCfg = null;
-        try { icuCfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) {}
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, icuCfg, targets, protTargets, newBp);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities);
           setGistOk(true); setGistMsg('');
           return true;
         } catch (e) {
@@ -5149,7 +5074,7 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
               if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
@@ -5165,18 +5090,17 @@
                 lsSave(newLogbook, m); lsSaveInjections(inj);
                 if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
                 if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
-                // Restore intervals config on new/reset device
-                if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
-                  localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
-                  setIntervalsCfg(gistIcuCfg);
-                }
               } else {
                 // View-only: show gist data directly
                 setRows(logbook); setMeta(m); setInjections(inj);
                 if (gistCals) setCalories(gistCals);
                 if (gistBp) setBloodPressure(gistBp);
-                // Use intervals config from gist so anyone can see ride data
-                if (gistIcuCfg) setIntervalsCfg(prev => prev ?? gistIcuCfg);
+              }
+              // Ride/calorie data from intervals.icu — key-free, watcher-published,
+              // same for admin and viewers alike (see IntervalsPanel).
+              if (gistIcuActivities) {
+                setIntervalsActivities(gistIcuActivities);
+                try { localStorage.setItem(LS_INTERVALS_ACTIVITIES_KEY, JSON.stringify(gistIcuActivities)); } catch (_) {}
               }
               setGistOk(!!pat);
             }
@@ -5196,11 +5120,11 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, null, calorieTargets, proteinTargets, bloodPressure);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
@@ -5208,9 +5132,9 @@
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
-            if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
-              localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
-              setIntervalsCfg(gistIcuCfg);
+            if (gistIcuActivities) {
+              setIntervalsActivities(gistIcuActivities);
+              try { localStorage.setItem(LS_INTERVALS_ACTIVITIES_KEY, JSON.stringify(gistIcuActivities)); } catch (_) {}
             }
             setGistOk(true); setGistMsg('');
             showMsg('Gist connected ✓');
@@ -5229,7 +5153,7 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsCfg: gistIcuCfg, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             if (gistTargets) setCalorieTargets(gistTargets);
@@ -5237,9 +5161,9 @@
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
-            if (gistIcuCfg && !localStorage.getItem(LS_INTERVALS_KEY)) {
-              localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(gistIcuCfg));
-              setIntervalsCfg(gistIcuCfg);
+            if (gistIcuActivities) {
+              setIntervalsActivities(gistIcuActivities);
+              try { localStorage.setItem(LS_INTERVALS_ACTIVITIES_KEY, JSON.stringify(gistIcuActivities)); } catch (_) {}
             }
           }
           setMsg('');
@@ -5326,86 +5250,6 @@
         }
       }, [injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure]);
 
-      // Fetch ride calories from intervals.icu and merge into intervalsCalories map.
-      // Reads config fresh from localStorage (mirrors writeToGist) so callers don't
-      // need intervalsCfg in their dependency array. Once a cache exists, only the
-      // last REFRESH_WINDOW_DAYS are re-fetched (older rides don't change) instead
-      // of re-pulling the entire history every sync.
-      const REFRESH_WINDOW_DAYS = 14;
-      const refreshIntervals = useCallback(async (calRows) => {
-        let cfg;
-        try { cfg = JSON.parse(localStorage.getItem(LS_INTERVALS_KEY) || 'null'); } catch (_) { cfg = null; }
-        if (!cfg?.apiKey || !cfg?.athleteId) return;
-        const calList = (calRows && calRows.length > 0) ? calRows : calories;
-        if (!calList.length) return;
-        // Rides cache is checked separately — it was added later than calorie cache,
-        // so existing calorie history doesn't imply rides history exists.
-        const hasCalCache   = Object.keys(intervalsCalories).length > 0;
-        const hasRidesCache = Object.keys(intervalRides).length > 0;
-        const hasCache = hasCalCache && hasRidesCache;
-        const earliest = [...calList].map(d => d.date).sort()[0];
-        const recentCutoff = msToLocalDate(Date.now() - REFRESH_WINDOW_DAYS * 86400000);
-        const oldest = hasCache ? recentCutoff : earliest;
-        const newest = msToLocalDate(Date.now());
-        setIntervalsMsg('Syncing…');
-        try {
-          const { calMap, ridesMap } = await fetchIntervalsCalories(cfg.apiKey, cfg.athleteId, oldest, newest);
-          const mergedCal   = { ...intervalsCalories, ...calMap };
-          const mergedRides = { ...intervalRides,     ...ridesMap };
-          setIntervalsCalories(mergedCal);
-          setIntervalRides(mergedRides);
-          try { localStorage.setItem(LS_INTERVALS_CAL_KEY,   JSON.stringify(mergedCal));   } catch (_) {}
-          try { localStorage.setItem(LS_INTERVALS_RIDES_KEY, JSON.stringify(mergedRides)); } catch (_) {}
-
-          // Piggyback today's weight onto the same sync, if it's been logged.
-          const todayKey    = msToLocalDate(new Date().setHours(0, 0, 0, 0));
-          const todayEntry  = rows.find(r => r.date === todayKey && r.wKg != null);
-          if (todayEntry) {
-            try {
-              await pushWeightToIntervals(cfg.apiKey, cfg.athleteId, todayKey, todayEntry.wKg);
-            } catch (e) {
-              console.warn('intervals.icu weight push failed:', e.message);
-            }
-          }
-
-          setIntervalsMsg('');
-        } catch (e) {
-          setIntervalsMsg(e.message);
-        }
-      }, [calories, intervalsCalories, intervalRides, rows]);
-
-      // Clears only the rides cache then forces a full re-fetch from the beginning
-      // of the weight data — useful when an activity was updated on intervals.icu
-      // (e.g. a recovered/re-uploaded file) and the stale cached values need refreshing.
-      const resyncRides = useCallback(() => {
-        localStorage.removeItem(LS_INTERVALS_RIDES_KEY);
-        setIntervalRides({});
-        setIntervalsMsg('Re-syncing rides…');
-        setTimeout(() => refreshIntervals(), 50); // let state flush first
-      }, [refreshIntervals]);
-
-      const saveIntervalsConfig = useCallback((apiKey, athleteId) => {
-        const cfg = { apiKey, athleteId };
-        localStorage.setItem(LS_INTERVALS_KEY, JSON.stringify(cfg));
-        setIntervalsCfg(cfg);
-        // Persist to gist so any viewer (phone, other device) gets ride data.
-        // Kept optimistic (local config applies regardless of sync outcome,
-        // since it's only used to fetch ride data for this device) — but a
-        // failure to sync is no longer swallowed silently.
-        writeToGist(rows, meta, injections, calories);
-        refreshIntervals();
-      }, [refreshIntervals, rows, meta, injections, calories]);
-
-      const disconnectIntervals = useCallback(() => {
-        localStorage.removeItem(LS_INTERVALS_KEY);
-        localStorage.removeItem(LS_INTERVALS_CAL_KEY);
-        localStorage.removeItem(LS_INTERVALS_RIDES_KEY);
-        setIntervalsCfg(null);
-        setIntervalsCalories({});
-        setIntervalRides({});
-        setIntervalsMsg('');
-      }, []);
-
       // Auto-import: scan export folder for newest matching CSV
       const runAutoImport = useCallback(async (dirHandle, { silent = false } = {}) => {
         try {
@@ -5422,7 +5266,6 @@
           const isNewFile = latest.name !== lastLoaded;
           if (latest.name === lastLoaded && calories.length > 0) {
             console.log('[Weight Tracker] Already up to date — skipping import.');
-            refreshIntervals();
             if (!silent) showMsg('Already up to date — no new export found.');
             return;
           }
@@ -5433,14 +5276,13 @@
           const result = processCSVText(text);
           const ok = await applyResult(result);
           if (!ok) return; // applyResult already surfaced the sync error
-          refreshIntervals(result.calorieData);
           localStorage.setItem(LS_LAST_CSV_KEY, latest.name);
           console.log(`[Weight Tracker] Import complete.`);
           if (!silent) showMsg(`${isNewFile ? 'Updated' : 'Calorie data refreshed'} from ${latest.name.replace('Automation_Daily_export_', '').replace('HealthExport_', '').replace('.csv', '')}`);
         } catch (ex) {
           if (!silent) setError('Auto-import error: ' + ex.message);
         }
-      }, [applyResult, calories.length, refreshIntervals]);
+      }, [applyResult, calories.length]);
 
       // On mount: restore dir handle and silently try auto-import
       useEffect(() => {
@@ -5462,18 +5304,17 @@
 
       // Background polling while the tab is open: fast burst (20s) for 3 min
       // after load/refocus while today's export hasn't landed yet, then 5 min
-      // all day; intervals.icu checked independently every 15 min. Refs avoid
+      // all day. intervals.icu data is no longer polled from the client at all
+      // — it arrives passively via the normal Gist read (intervalsActivities,
+      // written by the watcher) alongside weight/calories/BP. Refs avoid
       // retriggering this effect (and resetting the burst) when calories.length
       // changes runAutoImport's identity on every successful import.
       const exportDirRef       = useRef(exportDir);       exportDirRef.current       = exportDir;
-      const intervalsCfgRef    = useRef(intervalsCfg);    intervalsCfgRef.current    = intervalsCfg;
       const runAutoImportRef   = useRef(runAutoImport);   runAutoImportRef.current   = runAutoImport;
-      const refreshIntervalsRef = useRef(refreshIntervals); refreshIntervalsRef.current = refreshIntervals;
 
       useEffect(() => {
         const FAST_MS = 20_000, FAST_WINDOW_MS = 3 * 60_000, SLOW_MS = 5 * 60_000;
-        const INTERVALS_MS = 15 * 60_000;
-        let csvTimer = null, intervalsTimer = null, cancelled = false;
+        let csvTimer = null, cancelled = false;
         let burstStartedAt = Date.now();
 
         const scheduleCsv = () => {
@@ -5490,37 +5331,22 @@
           scheduleCsv();
         };
 
-        const scheduleIntervals = () => {
-          if (cancelled) return;
-          intervalsTimer = setTimeout(intervalsTick, INTERVALS_MS);
-        };
-        const intervalsTick = async () => {
-          if (cancelled) return;
-          if (!document.hidden && intervalsCfgRef.current) {
-            try { await refreshIntervalsRef.current(); } catch (_) {}
-          }
-          scheduleIntervals();
-        };
-
         const onVisible = () => {
           if (document.hidden) return;
           burstStartedAt = Date.now(); // resume fast burst on refocus
           clearTimeout(csvTimer); csvTick();
-          clearTimeout(intervalsTimer); intervalsTick();
         };
         document.addEventListener('visibilitychange', onVisible);
 
-        // CSV: don't fire blind here — exportDir restores async from IndexedDB in the
+        // Don't fire blind here — exportDir restores async from IndexedDB in the
         // other mount effect, so exportDirRef.current would still be null right now.
         // The restore effect itself already runs an immediate check once the handle
         // loads; we just need to arm the next one.
         scheduleCsv();
-        intervalsTick();  // intervalsCfg loads sync from localStorage, safe immediately
 
         return () => {
           cancelled = true;
           clearTimeout(csvTimer);
-          clearTimeout(intervalsTimer);
           document.removeEventListener('visibilitychange', onVisible);
         };
       }, []);
@@ -5830,7 +5656,7 @@
               </div>
 
               <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
-              <IntervalsPanel connected={!!intervalsCfg} msg={intervalsMsg} onSave={saveIntervalsConfig} onRefresh={refreshIntervals} onResync={resyncRides} onDisconnect={disconnectIntervals} style={{ marginTop: 10 }} />
+              <IntervalsPanel syncedAt={intervalsActivities?.syncedAt} style={{ marginTop: 10 }} />
 
               {/* Set export folder */}
               {hasFSA && (
@@ -6275,7 +6101,7 @@
               {isAdmin ? (
                 <>
                   <GistPanel gistOk={gistOk} gistMsg={gistMsg} onSave={saveGistConfig} onLogout={adminLogout} style={{ marginTop: 10 }} />
-                  <IntervalsPanel connected={!!intervalsCfg} msg={intervalsMsg} onSave={saveIntervalsConfig} onRefresh={refreshIntervals} onResync={resyncRides} onDisconnect={disconnectIntervals} style={{ marginTop: 10 }} />
+                  <IntervalsPanel syncedAt={intervalsActivities?.syncedAt} style={{ marginTop: 10 }} />
 
                   {/* Export folder control */}
                   {hasFSA && (

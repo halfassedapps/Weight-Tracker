@@ -11,12 +11,21 @@ buildCalorieMap, buildBpMap (raw readings only — the sitting/outlier/daily-
 average reduction is display-time-only, in BpChart, not mirrored here),
 fetchGist/patchGist, mergeWithStored/mergeCaloriesWithStored/mergeBpWithStored.
 
+Also owns the intervals.icu sync (mirrors the browser's former
+fetchIntervalsCalories/pushWeightToIntervals, index.html): this runs here
+instead of in the browser specifically so the API key never has to live in
+the shared Gist, where any visitor with the page URL could read it. Only the
+computed result (intervalsActivities — calorie/ride data, no key) is written.
+
 One-time setup:
     security add-generic-password -s weight-tracker-watcher -a github-pat -w <your-github-pat>
+    security add-generic-password -s weight-tracker-watcher -a intervals-icu -w '<API_KEY>:<athleteId>'
+    (the second one is optional — skip it and the watcher just won't sync rides)
 
 Run manually to test:
     python3 weight_export_watcher.py
 """
+import base64
 import csv
 import io
 import json
@@ -26,7 +35,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 EXPORT_FOLDER = Path.home() / 'Library' / 'Mobile Documents' / 'com~apple~CloudDocs' / 'DrClaude'
@@ -35,6 +44,8 @@ GIST_FILE = 'weight-data.json'
 API_BASE = 'https://api.github.com'
 KEYCHAIN_SERVICE = 'weight-tracker-watcher'
 KEYCHAIN_ACCOUNT = 'github-pat'
+INTERVALS_KEYCHAIN_ACCOUNT = 'intervals-icu'
+INTERVALS_WINDOW_DAYS = 14
 STATE_DIR = Path.home() / 'Library' / 'Application Support' / 'weight-tracker-watcher'
 STATE_FILE = STATE_DIR / 'state.json'
 
@@ -56,6 +67,28 @@ def get_pat():
         print(f"No PAT found in Keychain. Run once:\n"
               f"  security add-generic-password -s {KEYCHAIN_SERVICE} -a {KEYCHAIN_ACCOUNT} -w <your-github-pat>")
         sys.exit(1)
+
+
+# Optional — unlike the GitHub PAT, missing intervals.icu credentials just
+# mean the ride sync is skipped for this run, not a fatal error. Stored as a
+# single 'APIKEY:athleteId' value (athlete ID isn't secret, but one Keychain
+# lookup is simpler than keeping two entries in sync).
+def get_intervals_credentials():
+    try:
+        out = subprocess.run(
+            ['security', 'find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', INTERVALS_KEYCHAIN_ACCOUNT, '-w'],
+            capture_output=True, text=True, check=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    raw = out.stdout.strip()
+    if ':' not in raw:
+        print(f"[watcher] intervals.icu Keychain entry malformed (expected 'APIKEY:athleteId') — skipping ride sync.")
+        return None
+    api_key, athlete_id = raw.split(':', 1)
+    if not api_key or not athlete_id:
+        return None
+    return api_key, athlete_id
 
 
 # ─── Dedupe state ────────────────────────────────────────────────────────────
@@ -425,6 +458,87 @@ def fetch_build_and_patch(pat, build_payload, max_attempts=4,
     return payload
 
 
+# ─── intervals.icu (mirrors the browser's former fetchIntervalsCalories/
+# pushWeightToIntervals, index.html — moved here so the API key stays local
+# instead of living in the shared Gist) ──────────────────────────────────────
+def fetch_intervals_activities(api_key, athlete_id, oldest, newest):
+    auth = base64.b64encode(f'API_KEY:{api_key}'.encode()).decode()
+    url = (f'https://intervals.icu/api/v1/athlete/{athlete_id}/activities'
+           f'?oldest={oldest}&newest={newest}')
+    req = urllib.request.Request(url, headers={
+        'Authorization': f'Basic {auth}', 'User-Agent': 'weight-tracker-watcher',
+    })
+    with urllib.request.urlopen(req, timeout=20) as res:
+        activities = json.load(res)
+    cal_map, rides_map = {}, {}
+    for a in activities:
+        date = (a.get('start_date_local') or '')[:10]
+        if not date:
+            continue
+        cal = a.get('calories')
+        if cal is not None:
+            cal_map[date] = cal_map.get(date, 0) + cal
+        dur = a.get('moving_time') or a.get('elapsed_time') or 0
+        dist = a.get('distance') or 0
+        pwr = a.get('icu_average_watts', a.get('average_watts'))
+        hr = a.get('average_heartrate')
+        entry = rides_map.setdefault(date, {'date': date, 'totalDurSecs': 0, 'totalDistM': 0, 'totalCal': 0, 'rides': []})
+        entry['totalDurSecs'] += dur
+        entry['totalDistM'] += dist
+        entry['totalCal'] += (cal or 0)
+        entry['rides'].append({
+            'id': a.get('id'), 'name': a.get('name') or 'Activity', 'sport': a.get('sport') or '',
+            'durSecs': dur, 'distM': dist, 'cal': cal or 0, 'pwr': pwr, 'hr': hr,
+        })
+    return cal_map, rides_map
+
+
+# PUT is idempotent — safe to call every run.
+def push_weight_to_intervals(api_key, athlete_id, date_key, w_kg):
+    auth = base64.b64encode(f'API_KEY:{api_key}'.encode()).decode()
+    url = f'https://intervals.icu/api/v1/athlete/{athlete_id}/wellness/{date_key}'
+    req = urllib.request.Request(url, data=json.dumps({'weight': w_kg}).encode(), method='PUT', headers={
+        'Authorization': f'Basic {auth}', 'Content-Type': 'application/json',
+        'User-Agent': 'weight-tracker-watcher',
+    })
+    urllib.request.urlopen(req, timeout=20)
+
+
+# Pushes today's weight (if logged) and pulls a rolling window of recent
+# activities, merging onto whatever's already in the Gist (older days outside
+# the window are left untouched — mirrors the browser's old merge-on-top
+# behavior). Best-effort: a failure here shouldn't abort the weight/CSV sync
+# that's the watcher's primary job, so errors are logged, not raised.
+def sync_intervals(creds, entries, existing_activities):
+    api_key, athlete_id = creds
+    today_key = datetime.now().astimezone().date().isoformat()
+    today_entry = next((e for e in entries if e.get('date') == today_key and e.get('wKg') is not None), None)
+    if today_entry:
+        try:
+            push_weight_to_intervals(api_key, athlete_id, today_key, today_entry['wKg'])
+        except urllib.error.HTTPError as e:
+            print(f'[watcher] intervals.icu weight push failed: {e.code}')
+        except urllib.error.URLError as e:
+            print(f'[watcher] intervals.icu weight push failed: {e.reason}')
+
+    oldest = (datetime.now().astimezone().date() - timedelta(days=INTERVALS_WINDOW_DAYS)).isoformat()
+    existing = existing_activities or {}
+    try:
+        cal_map, rides_map = fetch_intervals_activities(api_key, athlete_id, oldest, today_key)
+    except urllib.error.HTTPError as e:
+        print(f'[watcher] intervals.icu activities fetch failed: {e.code}')
+        return existing or None
+    except urllib.error.URLError as e:
+        print(f'[watcher] intervals.icu activities fetch failed: {e.reason}')
+        return existing or None
+
+    return {
+        'calMap': {**(existing.get('calMap') or {}), **cal_map},
+        'ridesMap': {**(existing.get('ridesMap') or {}), **rides_map},
+        'syncedAt': datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 def main():
     folder = EXPORT_FOLDER
@@ -433,18 +547,25 @@ def main():
         sys.exit(1)
 
     latest = find_latest_export(folder)
-    if latest is None:
-        print('[watcher] No matching export files found.')
-        return
-
     state = load_state()
-    if state.get('lastFile') == latest.name:
-        print(f'[watcher] Already up to date ({latest.name}).')
+    has_new_export = latest is not None and state.get('lastFile') != latest.name
+
+    intervals_creds = get_intervals_credentials()
+
+    # Nothing to do: no new CSV to import, and no intervals.icu key to sync
+    # rides/weight with independently of a new export.
+    if not has_new_export and not intervals_creds:
+        if latest is None:
+            print('[watcher] No matching export files found.')
+        else:
+            print(f'[watcher] Already up to date ({latest.name}).')
         return
 
-    print(f'[watcher] New export found: {latest.name}')
-    text = read_export_text(latest)
-    new_daily, meta, calorie_data, bp_data = process_csv_text(text)
+    new_daily = meta = calorie_data = bp_data = None
+    if has_new_export:
+        print(f'[watcher] New export found: {latest.name}')
+        text = read_export_text(latest)
+        new_daily, meta, calorie_data, bp_data = process_csv_text(text)
 
     pat = get_pat()
 
@@ -452,29 +573,32 @@ def main():
         payload = {
             'version': 1,
             'savedAt': datetime.now(timezone.utc).isoformat(),
-            'meta': meta,
+            'meta': meta if meta is not None else gist.get('meta'),
             'injSchedule': gist.get('injSchedule', []),
             'injections': gist.get('injections', []),
-            'entries': merge_entries(gist.get('entries', []), new_daily),
-            'calories': merge_calories(gist.get('calories', []), calorie_data),
-            'bloodPressure': merge_bp(gist.get('bloodPressure', []), bp_data),
+            'entries': merge_entries(gist.get('entries', []), new_daily) if new_daily is not None else gist.get('entries', []),
+            'calories': merge_calories(gist.get('calories', []), calorie_data) if calorie_data is not None else gist.get('calories', []),
+            'bloodPressure': merge_bp(gist.get('bloodPressure', []), bp_data) if bp_data is not None else gist.get('bloodPressure', []),
             # This is a full-file PATCH, not a merge — any field fetched-and-not-
-            # re-sent here gets silently deleted from the Gist. calorieTargets,
-            # proteinTargets (and intervalsCfg) have no watcher-side concept of
-            # their own, so just pass through whatever's already there untouched.
+            # re-sent here gets silently deleted from the Gist. calorieTargets/
+            # proteinTargets have no watcher-side concept of their own, so just
+            # pass through whatever's already there untouched.
             'calorieTargets': gist.get('calorieTargets', []),
             'proteinTargets': gist.get('proteinTargets', []),
         }
-        if gist.get('intervalsCfg'):
-            payload['intervalsCfg'] = gist['intervalsCfg']
+        if intervals_creds:
+            payload['intervalsActivities'] = sync_intervals(intervals_creds, payload['entries'], gist.get('intervalsActivities'))
+        elif gist.get('intervalsActivities'):
+            payload['intervalsActivities'] = gist['intervalsActivities']
         return payload
 
     payload = fetch_build_and_patch(pat, build_payload)
 
-    state['lastFile'] = latest.name
-    save_state(state)
+    if has_new_export:
+        state['lastFile'] = latest.name
+        save_state(state)
     print(f"[watcher] Pushed {len(payload['entries'])} weight rows, {len(payload['calories'])} calorie rows, "
-          f"{len(payload['bloodPressure'])} BP readings to Gist. ({latest.name})")
+          f"{len(payload['bloodPressure'])} BP readings to Gist. ({latest.name if has_new_export else 'no new export'})")
 
 
 if __name__ == '__main__':

@@ -1773,7 +1773,7 @@
       const [customDays, setCustomDays] = useState(30);
       const [windowOffset, setWindowOffset] = useState(0);
       const [tip, setTip] = useState(null);
-      const [viewMode, setViewMode] = useState('graph'); // 'graph' | 'table'
+      const [viewMode, setViewMode] = useState('table'); // 'graph' | 'table'
       const [sharing, setSharing] = useState(false);
       const svgRef = useRef(null);
       const selectRange = mode => { setRangeMode(mode); setWindowOffset(0); };

@@ -3971,9 +3971,13 @@
               const startLbs = pts.length ? pts[0].lbs : null;
               const lost = startLbs != null ? weightTip.lbs - startLbs : null;
               const { wd, mo, day } = fmtDate(weightTip.dateStr);
+              // Same "weeks elapsed since start" reference as the x-axis Week
+              // ticks above (startMs, floor to whole weeks).
+              const daysSinceStart  = Math.round((weightTip.ms - startMs) / 86400000);
+              const weeksSinceStart = Math.floor(daysSinceStart / 7);
               const wx = xOf(weightTip.ms);
               const wy = yOf(weightTip.lbs);
-              const TW = 68, TH = 28, TR = 4;
+              const TW = 68, TH = 36, TR = 4;
               const tx = Math.max(PAD.l, Math.min(wx - TW / 2, PAD.l + cW - TW));
               const ty = Math.max(PAD.t + 2, wy - TH - 6);
               return (
@@ -3988,6 +3992,10 @@
                   <text x={tx + TW/2} y={ty + 20} textAnchor="middle"
                         fontSize="6.5" fontWeight="600" fill="#34c759" fontVariantNumeric="tabular-nums">
                     {weightTip.lbs.toFixed(1)}{lost != null ? ` / ${lost.toFixed(1)}` : ''}
+                  </text>
+                  <text x={tx + TW/2} y={ty + 30} textAnchor="middle"
+                        fontSize="4" fill="rgba(255,255,255,.55)" fontVariantNumeric="tabular-nums">
+                    Week {weeksSinceStart} · Day {daysSinceStart}
                   </text>
                 </g>
               );

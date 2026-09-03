@@ -800,7 +800,7 @@
     // never touch 'stay'/'monitor'/'contact', which exist to catch weight loss
     // that's too *fast* (a safety concern orthogonal to appetite mechanism and
     // never softened by how much someone is or isn't eating).
-    function doseGuidance(twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck) {
+    function doseGuidance(twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck, justIncreased) {
       if (twoWeekLbs == null) return null;
       // giSignal never changes the action for these three safety bands — it
       // can only append context to the message (checked once, appended below).
@@ -852,6 +852,22 @@
           color: '#34c759', bg: '#f0fdf4',
         };
       }
+      // twoWeekLoss is a lagging signal — comparing this week's average
+      // weight against ~14-21 days ago — so it can't possibly reflect a dose
+      // change made today or a couple days ago yet. Without this check, the
+      // exact same stale reading that justified bumping the dose would
+      // immediately recommend bumping it again the moment that injection got
+      // logged, since "current dose" and "twoWeekLbs" would both look
+      // unchanged from the calculation that fired last time. Hold instead,
+      // until at least one more injection's worth of new trend data comes in.
+      if (justIncreased) {
+        return {
+          action: 'stay', recentlyIncreased: true,
+          label: 'Stay — dose recently increased',
+          note: 'Reassessing after your next injection, once the trend reflects the new dose',
+          color: '#34c759', bg: '#f0fdf4',
+        };
+      }
       return {
         action: 'increase', label: 'Consider ↑ dose', note: `<3 lbs/2wk${giNote}`,
         color: '#ff9500', bg: '#fff8ee',
@@ -859,8 +875,8 @@
       };
     }
 
-    function recommendedDose(currentDoseMg, twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck) {
-      const g = doseGuidance(twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck);
+    function recommendedDose(currentDoseMg, twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck, justIncreased) {
+      const g = doseGuidance(twoWeekLbs, appetiteSignal, giSignal, appetiteCrossCheck, justIncreased);
       if (!g) return null;
       if (g.action === 'increase') {
         const next = Math.round((currentDoseMg + DOSE_STEP_MG) * 10) / 10;
@@ -1013,7 +1029,14 @@
       // signal *before* deciding whether to apply the override at all, not
       // just to annotate it afterward.
       const crossCheck = subjectiveAppetiteCrossCheck(sortedInjForSignals, todayMs, gi);
-      const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss, appetite, gi, crossCheck);
+      // Was the most recently logged injection itself already a dose increase
+      // over the one before it? Based on real logged injections only (not the
+      // synthetic pendingSurvey entry above, which always carries ds.lastDose
+      // unchanged) — see the justIncreased note in doseGuidance.
+      const realSorted = ds.sortedInj;
+      const justIncreased = realSorted.length >= 2
+        && realSorted[realSorted.length - 1].doseMg > realSorted[realSorted.length - 2].doseMg;
+      const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss, appetite, gi, crossCheck, justIncreased);
       // recWeekly (the step-based weekly target, e.g. current + DOSE_STEP_MG) is
       // the authoritative number — it's already clean to 1 decimal from
       // recommendedDose. perInjMg is just that number split across the week, so
@@ -3125,7 +3148,9 @@
       const lossSign   = recent.twoWeekLoss >= 0 ? '↓' : '↑';
       const nextInjDate  = new Date(nextInjMs);
       const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
-      const subtext = g.giOverride
+      const subtext = g.recentlyIncreased
+        ? `Your last injection was already a step up to ${round2(ds.lastDose)} mg — the 2-week trend hasn't had time to reflect it yet, so this holds until your next injection.`
+        : g.giOverride
         ? (gi.avgNausea >= GI_NAUSEA_BAD
             ? `You're averaging ${gi.avgNausea.toFixed(1)}/10 nausea over the last ${GI_TOLERANCE_WINDOW_DAYS} days — GI tolerability appears to be the limiting factor, so this holds rather than increasing. Confirm with your prescriber.`
             : `Today's nausea (${gi.latestNausea}/10) is severe enough on its own to hold this week, even though your recent average is milder. Confirm with your prescriber.`)
@@ -3198,7 +3223,9 @@
                     (≥{GI_NAUSEA_BAD}/10 over {GI_TOLERANCE_WINDOW_DAYS} days) or one severe day alone
                     (≥{GI_SEVERE_TODAY_BAD}/10) — or for a deep calorie deficit, unless you're still
                     reporting real hunger/food noise despite that deficit, in which case it increases
-                    anyway (all logged via the injection-day survey). Never for the three bands above.
+                    anyway (all logged via the injection-day survey) — or if your last injection was
+                    already an increase, since the 2-week trend can't reflect it yet. Never for the
+                    three bands above.
                   </div>
                 </div>
               )}

@@ -951,6 +951,7 @@
     }
 
     const round1 = n => Math.round(n * 10) / 10;
+    const round2 = n => Math.round(n * 100) / 100;
 
     // Unifies the schedule/cadence math that PkChart and DosePanel both need:
     // current per-injection dose, doses/week (continuous, not just 1 or 2),
@@ -1013,8 +1014,16 @@
       // just to annotate it afterward.
       const crossCheck = subjectiveAppetiteCrossCheck(sortedInjForSignals, todayMs, gi);
       const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss, appetite, gi, crossCheck);
+      // recWeekly (the step-based weekly target, e.g. current + DOSE_STEP_MG) is
+      // the authoritative number — it's already clean to 1 decimal from
+      // recommendedDose. perInjMg is just that number split across the week, so
+      // it's shown at 2-decimal precision (round2, not round1) rather than
+      // rounded independently — 3.5 mg/wk ÷ 2 = 1.75 mg/injection exactly, and
+      // rounding 1.75 to 1 decimal would bump it to 1.8, which no longer
+      // multiplies back to 3.5.
       const recWeekly = rec.dose != null ? rec.dose : ds.weeklyDose;
-      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg: recWeekly / ds.injPerWeek, appetite, gi, crossCheck };
+      const perInjMg = recWeekly / ds.injPerWeek;
+      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg, appetite, gi, crossCheck };
     }
 
     // Computes a "weekly dose" timeline for the chart pills — two different
@@ -3205,8 +3214,8 @@
                   <div style={{ fontSize: 22, fontWeight: 800, color: g.color, lineHeight: 1,
                                 fontVariantNumeric: 'tabular-nums' }}>{round1(recWeekly)} mg</div>
                   <div style={{ fontSize: 11, color: g.color, opacity: .75, marginTop: 2 }}>
-                    {intervalActive ? `${round1(perInjMg)} mg every ${injSchedule.everyNDays}d`
-                      : injPerWeek > 1 ? `${round1(perInjMg)} mg × ${injPerWeek}/wk` : 'per week'}
+                    {intervalActive ? `${round2(perInjMg)} mg every ${injSchedule.everyNDays}d`
+                      : injPerWeek > 1 ? `${round2(perInjMg)} mg × ${injPerWeek}/wk` : 'per week'}
                   </div>
                   {g.action === 'increase' && dose == null && (
                     <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>
@@ -5043,7 +5052,7 @@
       if (!rec) return null;
       const { g, perInjMg } = rec;
       const currentPerInjMg = ds.lastDose;
-      const changing = round1(perInjMg) !== round1(currentPerInjMg);
+      const changing = round2(perInjMg) !== round2(currentPerInjMg);
 
       const vialConc = Math.max(parseFloat(localStorage.getItem(LS_VIAL_CONC_KEY) || '12.5'), 0.01);
       const syringeUnits = parseInt(localStorage.getItem(LS_SYRINGE_UNITS_KEY) || '100', 10);
@@ -5078,9 +5087,9 @@
                 Today is injection day
               </div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 3 }}>
-                <span style={{ fontSize: 20, fontWeight: 800, color: '#1c1c1e' }}>{round1(perInjMg)} mg</span>
+                <span style={{ fontSize: 20, fontWeight: 800, color: '#1c1c1e' }}>{round2(perInjMg)} mg</span>
                 {changing && (
-                  <span style={{ fontSize: 12, color: '#8e8e93' }}>(was {round1(currentPerInjMg)} mg)</span>
+                  <span style={{ fontSize: 12, color: '#8e8e93' }}>(was {round2(currentPerInjMg)} mg)</span>
                 )}
               </div>
               <div style={{ fontSize: 12.5, fontWeight: 600, color: g.color }}>{g.label}</div>

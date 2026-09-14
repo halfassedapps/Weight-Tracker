@@ -504,6 +504,37 @@ def push_weight_to_intervals(api_key, athlete_id, date_key, w_kg):
     urllib.request.urlopen(req, timeout=20)
 
 
+# intervals.icu withholds almost everything for Strava-sourced activities
+# (id/date only — see fetch_intervals_activities) — the fetch falls back to a
+# generic 'Activity' placeholder with zero duration for those. If a ride with
+# the same id was previously enriched (e.g. a one-off manual correction pulled
+# from the Apple Health export), a fresh placeholder must not clobber it on
+# the next sync — every run re-fetches the same rolling window, so without
+# this any such fix would silently revert within minutes. Real, non-placeholder
+# data from the API still wins over an old manual patch.
+def _is_placeholder_ride(ride):
+    return ride['name'] == 'Activity' and not ride['sport'] and not ride['durSecs']
+
+
+def merge_rides_map(existing_map, new_map):
+    merged = dict(existing_map)
+    for day, new_entry in new_map.items():
+        old_by_id = {r['id']: r for r in (existing_map.get(day, {}).get('rides') or [])}
+        rides = [
+            old_by_id[r['id']] if _is_placeholder_ride(r) and r['id'] in old_by_id and not _is_placeholder_ride(old_by_id[r['id']])
+            else r
+            for r in new_entry['rides']
+        ]
+        merged[day] = {
+            'date': day,
+            'totalDurSecs': sum(r['durSecs'] for r in rides),
+            'totalDistM': sum(r['distM'] for r in rides),
+            'totalCal': sum(r['cal'] for r in rides),
+            'rides': rides,
+        }
+    return merged
+
+
 # Pushes today's weight (if logged) and pulls a rolling window of recent
 # activities, merging onto whatever's already in the Gist (older days outside
 # the window are left untouched — mirrors the browser's old merge-on-top
@@ -534,7 +565,7 @@ def sync_intervals(creds, entries, existing_activities):
 
     return {
         'calMap': {**(existing.get('calMap') or {}), **cal_map},
-        'ridesMap': {**(existing.get('ridesMap') or {}), **rides_map},
+        'ridesMap': merge_rides_map(existing.get('ridesMap') or {}, rides_map),
         'syncedAt': datetime.now(timezone.utc).isoformat(),
     }
 

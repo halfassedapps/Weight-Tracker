@@ -46,6 +46,7 @@
     // see IntervalsPanel/parseGistPayload.
     const LS_INTERVALS_ACTIVITIES_KEY = 'weight-tracker-intervals-activities';
     const LS_BP_KEY               = 'weight-tracker-blood-pressure';
+    const LS_ANNOTATIONS_KEY      = 'weight-tracker-annotations';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     function lastImportIsToday() {
       const name = localStorage.getItem(LS_LAST_CSV_KEY) ?? '';
@@ -333,6 +334,17 @@
       try { localStorage.setItem(LS_PROTEIN_TARGETS_KEY, JSON.stringify(targets)); } catch (_) {}
     }
 
+    function lsLoadWeightAnnotations() {
+      try {
+        const raw = localStorage.getItem(LS_ANNOTATIONS_KEY);
+        if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) return p; }
+      } catch (_) {}
+      return [];
+    }
+    function lsSaveWeightAnnotations(annotations) {
+      try { localStorage.setItem(LS_ANNOTATIONS_KEY, JSON.stringify(annotations)); } catch (_) {}
+    }
+
     // Protein is a floor, not a target with headroom — hitting or clearing it
     // is simply "good," full stop, with no separate reward for going further
     // over. Undershooting is asymmetric on purpose: a single day 85-99% of the
@@ -427,7 +439,7 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [] }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [] }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -450,6 +462,9 @@
           : DEFAULT_PROTEIN_TARGETS,
         bloodPressure: Array.isArray(bloodPressure)
           ? bloodPressure.filter(s => s.date && s.systolic != null && s.diastolic != null)
+          : [],
+        weightAnnotations: Array.isArray(weightAnnotations)
+          ? weightAnnotations.filter(a => a.id && a.startDate && a.endDate && a.label)
           : [],
       };
     }
@@ -504,7 +519,7 @@
     // write, same as calorieTargets/proteinTargets — this is a full-content PATCH
     // of weight-data.json, so any field the caller omits here is deleted from the
     // Gist, not merely left unmodified.
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = []) {
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule,
@@ -516,6 +531,8 @@
         proteinTargets: proteinTargets.map(({ date, target }) => ({ date, target })),
         bloodPressure: bloodPressure.map(({ date, ms, systolic, diastolic }) =>
           ({ date, ms, systolic, diastolic })),
+        weightAnnotations: weightAnnotations.map(({ id, startDate, endDate, label, description, bgColor, textColor }) =>
+          ({ id, startDate, endDate, label, description: description || '', bgColor, textColor })),
       };
       if (intervalsActivities) payload.intervalsActivities = intervalsActivities;
       const content = JSON.stringify(payload, null, 2);
@@ -1152,6 +1169,20 @@
     const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const fmtDate  = s => { const d = new Date(s + 'T12:00:00'); return { mo: MO[d.getMonth()], day: d.getDate(), wd: WD[d.getDay()] }; };
     const fmtShort = s => { const { mo, day } = fmtDate(s); return `${mo} ${day}`; };
+    // Greedy word-wrap for SVG text, which has no native wrapping — splits on
+    // whitespace, fitting as many words per line as fit under maxChars.
+    function wrapText(text, maxChars) {
+      const words = text.split(/\s+/).filter(Boolean);
+      const lines = [];
+      let cur = '';
+      for (const w of words) {
+        const next = cur ? `${cur} ${w}` : w;
+        if (next.length > maxChars && cur) { lines.push(cur); cur = w; }
+        else cur = next;
+      }
+      if (cur) lines.push(cur);
+      return lines;
+    }
     // Convert a ms timestamp to a local YYYY-MM-DD string (avoids UTC-date shift for e.g. 8pm injections)
     const msToLocalDate = ms => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
     const fw = v => v != null ? v.toFixed(1) : '—';
@@ -1789,8 +1820,24 @@
       { max: 120,      color: '#34c759', label: 'Normal' },
       { max: 130,      color: '#ffd60a', label: 'Elevated' },
       { max: 140,      color: '#ff9500', label: 'Stage 1' },
-      { max: Infinity, color: '#ff3b30', label: 'Stage 2' },
+      { max: 180,      color: '#ff3b30', label: 'Stage 2' },
+      { max: Infinity, color: '#7f1d1d', label: 'Crisis' },
     ];
+
+    // Per-reading category — unlike BP_BANDS above (systolic-only, for the
+    // graph's single shared y-axis), this uses the real AHA both-values rule:
+    // whichever of systolic/diastolic falls into the more severe category
+    // wins ("or" logic), and Elevated specifically requires diastolic still
+    // under 80 (a reading with normal systolic but diastolic 80-89 is Stage 1,
+    // not Elevated). Used for table-row shading, where each row is one
+    // concrete reading rather than a continuous axis.
+    function bpCategory(sys, dia) {
+      if (sys >= 180 || dia >= 120) return { key: 'crisis',   label: 'Hypertensive Crisis', color: '#7f1d1d' };
+      if (sys >= 140 || dia >= 90)  return { key: 'stage2',   label: 'Stage 2',             color: '#ff3b30' };
+      if (sys >= 130 || dia >= 80)  return { key: 'stage1',   label: 'Stage 1',             color: '#ff9500' };
+      if (sys >= 120 && dia < 80)   return { key: 'elevated', label: 'Elevated',            color: '#ffd60a' };
+      return                               { key: 'normal',   label: 'Normal',              color: '#34c759' };
+    }
 
     const fmtTime = ms => {
       const d = new Date(ms);
@@ -1859,10 +1906,6 @@
 
       const sysPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.ms)},${yOf(p.systolic)}`).join(' ');
       const diaPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.ms)},${yOf(p.diastolic)}`).join(' ');
-      const bandPath = pts.length > 1
-        ? pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.ms)},${yOf(p.systolic)}`).join(' ')
-          + ' ' + [...pts].reverse().map(p => `L ${xOf(p.ms)},${yOf(p.diastolic)}`).join(' ') + ' Z'
-        : '';
 
       // Every raw reading in the visible range, newest first — the table view
       // trades the chart's daily-average smoothing for full transparency into
@@ -2017,12 +2060,17 @@
                 </div>
                 {flatRows.map((r, i) => {
                   const { wd, mo, day } = fmtDate(r.date);
+                  const cat = bpCategory(r.systolic, r.diastolic);
                   return (
-                    <div key={r.ms} style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr .8fr .8fr',
-                                              padding: '6px 10px', fontSize: 11,
-                                              background: i % 2 === 1 ? '#fafafb' : '#fff',
-                                              borderBottom: i < flatRows.length - 1 ? '.5px solid rgba(0,0,0,.04)' : 'none' }}>
-                      <div style={{ color: '#1c1c1e', fontWeight: 600 }}>{wd} {mo} {day}</div>
+                    <div key={r.ms} title={cat.label}
+                         style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr .8fr .8fr',
+                                  padding: '6px 10px', fontSize: 11,
+                                  background: `${cat.color}1f`,
+                                  borderBottom: i < flatRows.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: cat.color, flexShrink: 0 }} />
+                        <span style={{ color: '#1c1c1e', fontWeight: 600 }}>{wd} {mo} {day}</span>
+                      </div>
                       <div style={{ color: '#8e8e93' }}>{fmtTime(r.ms)}</div>
                       <div style={{ color: BP_SYS_COLOR, fontWeight: 600 }}>{Math.round(r.systolic)}</div>
                       <div style={{ color: BP_DIA_COLOR, fontWeight: 600 }}>{Math.round(r.diastolic)}</div>
@@ -2065,9 +2113,6 @@
               {/* Axes */}
               <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
               <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
-
-              {/* Shaded pulse-pressure band */}
-              {pts.length > 1 && <path d={bandPath} fill="rgba(74,144,217,0.08)" />}
 
               {/* Systolic / diastolic trend lines */}
               <path d={sysPath} fill="none" stroke={BP_SYS_COLOR} strokeWidth="1" />
@@ -3351,12 +3396,26 @@
     const GOAL_LBS        = 155;
     const HEIGHT_IN       = 67; // 5'7"
 
-    function WeightChart({ rows, injections, injSchedule }) {
+    function WeightChart({ rows, injections, injSchedule, annotations = [], isAdmin, onSaveAnnotation, onDeleteAnnotation }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
       const [trendLineTip, setTrendLineTip] = useState(null);
       const [weightTip, setWeightTip] = useState(null);
+      const [annoTip, setAnnoTip] = useState(null); // id of the hovered/tapped annotation, or null
+      const [annoModal, setAnnoModal] = useState(null); // 'new' | an existing annotation object | null
+      // The pill and its popover aren't touching (popover floats above the
+      // row), so a plain onMouseLeave on the pill would close it the instant
+      // the cursor crosses that gap while moving toward the popover (e.g. to
+      // reach the edit/delete icons). A short grace-period timer, cancelled
+      // if either the pill or the popover itself is re-entered, fixes that —
+      // same pattern tooltip libraries use for hoverable tooltip content.
+      const annoHideTimer = useRef(null);
+      const showAnno = id => { clearTimeout(annoHideTimer.current); setAnnoTip(id); };
+      const scheduleHideAnno = () => {
+        clearTimeout(annoHideTimer.current);
+        annoHideTimer.current = setTimeout(() => setAnnoTip(null), 250);
+      };
       // Regression window for the Current Trend line. 0 = all data.
       const [trendDays, setTrendDays] = useState(21);
       const svgRef = useRef(null);
@@ -3376,9 +3435,17 @@
       const VW = 360, VH = 200;
       // Extra top padding reserves a dedicated band for dose-change pills,
       // kept clear of the plotted line entirely (linked via leader lines).
-      const PAD = { t: 32, r: 14, b: 38, l: 38 };
+      // Extra bottom padding (beyond the Week/month/goal-date label stack)
+      // reserves a dedicated row for annotation pills, directly under the
+      // x-axis — the existing label rows all read their own y-offsets
+      // relative to PAD.t+cH, so growing PAD.b and inserting the annotation
+      // row just above them (at ANNO_ROW_Y) pushes everything else down
+      // automatically without needing to touch their individual offsets.
+      const ANNO_ROW_H = 12;
+      const PAD = { t: 32, r: 14, b: 38 + ANNO_ROW_H, l: 38 };
       const cW  = VW - PAD.l - PAD.r;
       const cH  = VH - PAD.t - PAD.b;
+      const ANNO_ROW_Y = PAD.t + cH + 4;
 
       // oldest-first for regression + charting
       const pts = [...rows].reverse().map(r => ({
@@ -3403,7 +3470,7 @@
       // Trend-line options for the checkbox dropdown — "current" is the existing
       // regression line; the rest are hypothetical fixed weekly loss rates.
       const TREND_OPTIONS = [
-        { id: 'current', label: 'Current', ratePerWeek: null, color: '#ff9500' },
+        { id: 'current', label: 'Current', ratePerWeek: null, color: '#1c1c1e' },
         { id: 'r1', label: '1 lb/wk', ratePerWeek: 1, color: '#5ac8fa' },
         { id: 'r2', label: '2 lb/wk', ratePerWeek: 2, color: '#a2845e' },
         { id: 'r3', label: '3 lb/wk', ratePerWeek: 3, color: '#bf5af2' },
@@ -3535,7 +3602,7 @@
 
       const TREND_LINES = trendModes.map(id => {
         if (id === 'current') {
-          return { id, color: '#ff9500',
+          return { id, color: TREND_OPTIONS.find(o => o.id === 'current').color,
             x1: PAD.l, y1: yOf(intcp),
             x2: PAD.l + cW, y2: yOf(intcp + slope * (endMs - startMs) / 86400000),
             goalMs, lbsPerWeek: slope * -7 };
@@ -3923,7 +3990,7 @@
                           stroke="#fff" strokeWidth="1.3" strokeLinecap="round" />
                   )}
                 </g>
-                <text x={xOf(goalMs)} y={PAD.t + cH + 28} textAnchor="middle"
+                <text x={xOf(goalMs)} y={PAD.t + cH + 28 + ANNO_ROW_H} textAnchor="middle"
                       fontSize="5" fill="#34c759" fontWeight="600">{goalDateStr}</text>
               </g>
             )}
@@ -3931,6 +3998,68 @@
             {/* Axes */}
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
             <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />
+
+            {/* Annotations — thin date-range guide lines through the plot, plus a
+                small pill in the dedicated row just below the x-axis. A single
+                row: overlapping date ranges may visually overlap (rare in
+                practice — vacations/sick days don't usually overlap). */}
+            {annotations.map(a => {
+              const aStartMs = new Date(a.startDate + 'T12:00:00').getTime();
+              const aEndMs   = new Date(a.endDate   + 'T12:00:00').getTime();
+              const sameDay  = a.startDate === a.endDate;
+              const gx1 = Math.max(PAD.l, Math.min(xOf(aStartMs), PAD.l + cW));
+              const gx2 = Math.max(PAD.l, Math.min(xOf(aEndMs),   PAD.l + cW));
+              const pillCx = sameDay ? gx1 : (gx1 + gx2) / 2;
+              // Cap the pill to the actual date-range width (never wider than
+              // the gap between its own guide lines) so a short range can't
+              // visually read as spanning far more time than it actually does
+              // — the label just gets truncated to whatever fits.
+              const maxPillW = sameDay ? 56 : Math.max(10, Math.min(56, gx2 - gx1));
+              const maxChars = Math.max(1, Math.floor((maxPillW - 8) / 3.4));
+              const shortLabel = a.label.length > maxChars
+                ? a.label.slice(0, Math.max(1, maxChars - 1)) + '…' : a.label;
+              const pillW = sameDay ? Math.max(20, Math.min(56, 8 + shortLabel.length * 3.4)) : maxPillW;
+              const pillY = ANNO_ROW_Y, pillH = 9;
+              return (
+                <g key={a.id}>
+                  {!sameDay && (
+                    <rect x={gx1} y={PAD.t} width={gx2 - gx1} height={cH} fill={a.bgColor} opacity="0.1" />
+                  )}
+                  <line x1={gx1} y1={PAD.t} x2={gx1} y2={PAD.t + cH}
+                        stroke={a.bgColor} strokeOpacity="0.35" strokeWidth="0.75" strokeDasharray="2,2" />
+                  {!sameDay && (
+                    <line x1={gx2} y1={PAD.t} x2={gx2} y2={PAD.t + cH}
+                          stroke={a.bgColor} strokeOpacity="0.35" strokeWidth="0.75" strokeDasharray="2,2" />
+                  )}
+                  <g style={{ cursor: 'pointer' }}
+                     onMouseEnter={() => showAnno(a.id)}
+                     onMouseLeave={scheduleHideAnno}
+                     onClick={() => setAnnoTip(t => t === a.id ? null : a.id)}>
+                    {/* Larger invisible hit target — easier to hover/tap than the pill itself */}
+                    <rect x={pillCx - pillW / 2 - 3} y={pillY - 3} width={pillW + 6} height={pillH + 6} fill="transparent" />
+                    <rect x={pillCx - pillW / 2} y={pillY} width={pillW} height={pillH} rx={2} fill={a.bgColor} />
+                    <text x={pillCx} y={pillY + pillH / 2 + 2.3} textAnchor="middle"
+                          fontSize="4.8" fontWeight="700" fill={a.textColor}>{shortLabel}</text>
+                  </g>
+                </g>
+              );
+            })}
+
+            {/* + Note button — left margin, same row as the annotation pills, so
+                it never competes with the y-axis weight labels above it. */}
+            {isAdmin && (
+              <g style={{ cursor: 'pointer' }} onClick={() => setAnnoModal('new')}>
+                {/* Invisible larger hit target — the visible button is small, but stays easy to tap/click */}
+                <circle cx={PAD.l / 2} cy={ANNO_ROW_Y + 4.5} r="6" fill="transparent" />
+                <circle cx={PAD.l / 2} cy={ANNO_ROW_Y + 4.5} r="3.5" fill="#f0f6ff" stroke="#4a90d9" strokeWidth="0.5" />
+                {/* Drawn as strokes rather than a "+" glyph — font metrics don't
+                    center a text glyph reliably inside the circle at this size. */}
+                <line x1={PAD.l / 2 - 2} y1={ANNO_ROW_Y + 4.5} x2={PAD.l / 2 + 2} y2={ANNO_ROW_Y + 4.5}
+                      stroke="#4a90d9" strokeWidth="1.1" strokeLinecap="round" />
+                <line x1={PAD.l / 2} y1={ANNO_ROW_Y + 2.5} x2={PAD.l / 2} y2={ANNO_ROW_Y + 6.5}
+                      stroke="#4a90d9" strokeWidth="1.1" strokeLinecap="round" />
+              </g>
+            )}
 
             {/* Y axis labels */}
             {yTicks.map(v => (
@@ -3941,14 +4070,14 @@
                   fontSize="4.5" fill="#34c759" fontWeight="600">{GOAL_LBS}</text>
 
             {/* Week count ticks — weeks elapsed since start */}
-            <text x={PAD.l - 3} y={PAD.t + cH + 6} textAnchor="end"
+            <text x={PAD.l - 3} y={PAD.t + cH + 6 + ANNO_ROW_H} textAnchor="end"
                   fontSize="3.5" fill="#aeaeb2">Week</text>
             {weekTicks.map(({ ms, n }) => (
               <g key={n}>
                 <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 2}
                       stroke="#e5e5ea" strokeWidth="0.75" />
                 {n % weekLabelStep === 0 && (
-                  <text x={xOf(ms)} y={PAD.t + cH + 6} textAnchor="middle"
+                  <text x={xOf(ms)} y={PAD.t + cH + 6 + ANNO_ROW_H} textAnchor="middle"
                         fontSize="3" fill="#c7c7cc">{n}</text>
                 )}
               </g>
@@ -3959,7 +4088,7 @@
               <g key={ms}>
                 <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 3}
                       stroke="#d1d1d6" strokeWidth="1" />
-                <text x={xOf(ms)} y={PAD.t + cH + 14} textAnchor="middle"
+                <text x={xOf(ms)} y={PAD.t + cH + 14 + ANNO_ROW_H} textAnchor="middle"
                       fontSize="5" fill="#aeaeb2">
                   {new Date(ms).toLocaleDateString('en-US', { month: 'short' })}
                 </text>
@@ -3967,7 +4096,7 @@
             ))}
 
             {/* Weight line hover tooltip */}
-            {weightTip && !trendLineTip && (() => {
+            {weightTip && !trendLineTip && !annoTip && (() => {
               const startLbs = pts.length ? pts[0].lbs : null;
               const lost = startLbs != null ? weightTip.lbs - startLbs : null;
               const { wd, mo, day } = fmtDate(weightTip.dateStr);
@@ -4057,7 +4186,71 @@
                       fill="rgba(255,255,255,.3)">21-day rolling trend</text>
               </g>
             )}
+
+            {/* Annotation popover — rendered last so it always wins z-order,
+                styled in the annotation's own colors (the one tooltip in this
+                chart that isn't the fixed dark style, per the mockup). */}
+            {annoTip && (() => {
+              const a = annotations.find(x => x.id === annoTip);
+              if (!a) return null;
+              const aStartMs = new Date(a.startDate + 'T12:00:00').getTime();
+              const aEndMs   = new Date(a.endDate   + 'T12:00:00').getTime();
+              const sameDay  = a.startDate === a.endDate;
+              const gx1 = Math.max(PAD.l, Math.min(xOf(aStartMs), PAD.l + cW));
+              const gx2 = Math.max(PAD.l, Math.min(xOf(aEndMs),   PAD.l + cW));
+              const anchorX = sameDay ? gx1 : (gx1 + gx2) / 2;
+              const dateStr = sameDay ? fmtShort(a.startDate) : `${fmtShort(a.startDate)} – ${fmtShort(a.endDate)}`;
+              const TW = 110;
+              const descLines = a.description ? wrapText(a.description, 44) : [];
+              const descLineH = 6.5;
+              const TH = 20 + (descLines.length ? descLines.length * descLineH + 3 : 0) + (isAdmin ? 9 : 0);
+              const tx = Math.max(2, Math.min(anchorX - TW / 2, VW - TW - 2));
+              const ty = Math.max(PAD.t, ANNO_ROW_Y - TH - 4);
+              return (
+                <g style={{ pointerEvents: 'auto' }}
+                   onMouseEnter={() => showAnno(a.id)} onMouseLeave={scheduleHideAnno}>
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={5} fill={a.bgColor} />
+                  <text x={tx + 8} y={ty + 10} fontSize="6.5" fontWeight="700" fill={a.textColor}>{a.label}</text>
+                  {descLines.map((line, i) => (
+                    <text key={i} x={tx + 8} y={ty + 19 + i * descLineH} fontSize="4.8" fill={a.textColor} opacity="0.9">{line}</text>
+                  ))}
+                  <text x={tx + 8} y={ty + TH - 5} fontSize="4.3" fill={a.textColor} opacity="0.65">{dateStr}</text>
+                  {isAdmin && (
+                    <>
+                      <text x={tx + TW - 18} y={ty + TH - 5} fontSize="5" fontWeight="700" fill={a.textColor}
+                            style={{ cursor: 'pointer', pointerEvents: 'auto' }} opacity="0.85"
+                            onClick={() => { setAnnoModal(a); setAnnoTip(null); }}>✎</text>
+                      {/* The 🗑 emoji glyph's ink doesn't align with its SVG text
+                          anchor/baseline box (confirmed by measurement — text-anchor
+                          "middle" + dominantBaseline "central" still render it well
+                          off-center), so it's centered with real CSS flexbox in a
+                          foreignObject instead of relying on font/text metrics. */}
+                      {(() => { const bx = tx + TW - 8, by = ty + TH - 6.5, br = 4.2; return (
+                        <>
+                          <circle cx={bx} cy={by} r={br} fill="rgba(255,255,255,.55)" />
+                          <foreignObject x={bx - br} y={by - br} width={br * 2} height={br * 2}
+                                         style={{ pointerEvents: 'auto', cursor: 'pointer' }}
+                                         onClick={() => { onDeleteAnnotation(a.id); setAnnoTip(null); }}>
+                            <div xmlns="http://www.w3.org/1999/xhtml"
+                                 style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '5px', lineHeight: 1 }}>🗑</div>
+                          </foreignObject>
+                        </>
+                      ); })()}
+                    </>
+                  )}
+                </g>
+              );
+            })()}
           </svg>
+
+          {annoModal && (
+            <AnnotationModal
+              initial={annoModal === 'new' ? null : annoModal}
+              onSave={onSaveAnnotation}
+              onDelete={annoModal !== 'new' ? () => onDeleteAnnotation(annoModal.id) : null}
+              onClose={() => setAnnoModal(null)}
+            />
+          )}
 
           {/* Projection notes (one pill per checked trend line with a goal date) */}
           {TREND_LINES.some(t => t.goalMs) && (
@@ -5060,6 +5253,166 @@
       );
     }
 
+    /* ─── Weight-chart date-range annotation add/edit modal ─────────────────── */
+    const ANNO_FIELD_STYLE = { width: '100%', fontSize: 14, padding: '9px 10px', borderRadius: 8,
+                                border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e',
+                                outline: 'none', boxSizing: 'border-box' };
+    const ANNO_LABEL_STYLE = { fontSize: 12, fontWeight: 600, color: '#8e8e93',
+                                textTransform: 'uppercase', letterSpacing: .5, marginBottom: 6 };
+
+    function AnnotationModal({ initial, onSave, onDelete, onClose }) {
+      const [startDate, setStartDate] = useState(initial?.startDate ?? today());
+      const [endDate, setEndDate]     = useState(initial?.endDate ?? today());
+      const [label, setLabel]         = useState(initial?.label ?? '');
+      const [description, setDescription] = useState(initial?.description ?? '');
+      const [bgColor, setBgColor]     = useState(initial?.bgColor ?? '#4a90d9');
+      const [textColor, setTextColor] = useState(initial?.textColor ?? '#ffffff');
+      const [saving, setSaving]       = useState(false);
+      const [deleting, setDeleting]   = useState(false);
+      const [saveError, setSaveError] = useState('');
+
+      const valid = label.trim().length > 0 && startDate && endDate && endDate >= startDate;
+
+      const handleSave = async () => {
+        setSaving(true);
+        setSaveError('');
+        try {
+          const annotation = {
+            id: initial?.id ?? crypto.randomUUID(),
+            startDate, endDate, label: label.trim(), description: description.trim(),
+            bgColor, textColor,
+          };
+          const ok = await onSave(annotation);
+          if (ok) { onClose(); return; }
+          setSaveError("Couldn't save — check your connection and try again.");
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      const handleDelete = async () => {
+        setDeleting(true);
+        setSaveError('');
+        try {
+          const ok = await onDelete();
+          if (ok) { onClose(); return; }
+          setSaveError("Couldn't delete — check your connection and try again.");
+        } finally {
+          setDeleting(false);
+        }
+      };
+
+      const busy = saving || deleting;
+
+      return (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+                      zIndex: 1000, display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', padding: 16 }}
+             onClick={onClose}>
+          <div style={{ background: '#fff', borderRadius: 22, padding: '22px 20px 24px',
+                        width: '100%', maxWidth: 380, boxShadow: '0 24px 64px rgba(0,0,0,.28)' }}
+               onClick={e => e.stopPropagation()}>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between',
+                          alignItems: 'center', marginBottom: 20 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#1c1c1e' }}>
+                {initial ? 'Edit Note' : 'Add Note'}
+              </div>
+              <button onClick={onClose}
+                      style={{ fontSize: 18, color: '#8e8e93', background: '#f2f2f7',
+                               border: 'none', cursor: 'pointer', borderRadius: 50,
+                               width: 32, height: 32, display: 'flex', alignItems: 'center',
+                               justifyContent: 'center' }}>✕</button>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+              <div style={{ flex: 1 }}>
+                <div style={ANNO_LABEL_STYLE}>Start date</div>
+                <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+                       style={ANNO_FIELD_STYLE} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={ANNO_LABEL_STYLE}>End date</div>
+                <input type="date" value={endDate} min={startDate}
+                       onChange={e => setEndDate(e.target.value)} style={ANNO_FIELD_STYLE} />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <div style={ANNO_LABEL_STYLE}>Label</div>
+              <input type="text" value={label} onChange={e => setLabel(e.target.value)}
+                     placeholder="e.g. Vacation" maxLength={24} style={ANNO_FIELD_STYLE} />
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <div style={ANNO_LABEL_STYLE}>Description (optional)</div>
+              <textarea value={description} onChange={e => setDescription(e.target.value)}
+                        placeholder="Any extra context…" rows={2} maxLength={140}
+                        style={{ ...ANNO_FIELD_STYLE, resize: 'vertical', fontFamily: 'inherit' }} />
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, marginBottom: 18 }}>
+              <div style={{ flex: 1 }}>
+                <div style={ANNO_LABEL_STYLE}>Background</div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
+                         style={{ width: 34, height: 34, padding: 0, border: '1px solid #d1d1d6',
+                                  borderRadius: 8, cursor: 'pointer', flexShrink: 0 }} />
+                  <input type="text" value={bgColor} onChange={e => setBgColor(e.target.value)}
+                         style={{ ...ANNO_FIELD_STYLE, fontSize: 12, padding: '9px 8px' }} />
+                </div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={ANNO_LABEL_STYLE}>Text</div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)}
+                         style={{ width: 34, height: 34, padding: 0, border: '1px solid #d1d1d6',
+                                  borderRadius: 8, cursor: 'pointer', flexShrink: 0 }} />
+                  <input type="text" value={textColor} onChange={e => setTextColor(e.target.value)}
+                         style={{ ...ANNO_FIELD_STYLE, fontSize: 12, padding: '9px 8px' }} />
+                </div>
+              </div>
+            </div>
+
+            {/* Live preview, matching how the pill will actually render */}
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 18 }}>
+              <div style={{ padding: '5px 14px', borderRadius: 14, background: bgColor, color: textColor,
+                            fontSize: 12, fontWeight: 700 }}>
+                {label.trim() || 'Label'}
+              </div>
+            </div>
+
+            {saveError && (
+              <div style={{ fontSize: 12.5, color: '#ff3b30', marginBottom: 12 }}>{saveError}</div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={handleSave} disabled={!valid || busy}
+                      style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '12px',
+                               borderRadius: 12, background: (!valid || busy) ? '#a9c8ea' : '#4a90d9', color: '#fff',
+                               border: 'none', cursor: (!valid || busy) ? 'default' : 'pointer' }}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              {initial && (
+                <button onClick={handleDelete} disabled={busy}
+                        style={{ fontSize: 15, fontWeight: 600, padding: '12px 16px',
+                                 borderRadius: 12, background: '#fff1f0', color: '#ff3b30',
+                                 border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? .6 : 1 }}>
+                  {deleting ? '…' : 'Delete'}
+                </button>
+              )}
+              <button onClick={onClose} disabled={busy}
+                      style={{ fontSize: 15, fontWeight: 600, padding: '12px 16px',
+                               borderRadius: 12, background: '#f2f2f7', color: '#3c3c43',
+                               border: 'none', cursor: busy ? 'default' : 'pointer', opacity: busy ? .6 : 1 }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     /* ─── Injection-day banner ───────────────────────────────────────────────── */
     function InjectionDayBanner({ rows, injections, injSchedule, calories, calorieTargets, intervalsCalories,
                                    pendingSurvey, onSavePendingSurvey }) {
@@ -5186,6 +5539,7 @@
       );
       const [calorieTargets, setCalorieTargets] = useState(lsLoadCalorieTargets);
       const [proteinTargets, setProteinTargets] = useState(lsLoadProteinTargets);
+      const [weightAnnotations, setWeightAnnotations] = useState(lsLoadWeightAnnotations);
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
       const [activeTab,  setActiveTab]   = useState('weight');
@@ -5232,14 +5586,14 @@
       // Returns true/false so callers can commit local state only on a confirmed
       // write — a mutation must never appear to "succeed" locally while silently
       // failing to reach the shared Gist.
-      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure) => {
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) {
           setGistOk(false); setGistMsg('Not logged in');
           return false;
         }
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations);
           setGistOk(true); setGistMsg('');
           return true;
         } catch (e) {
@@ -5258,10 +5612,11 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
               if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
+              if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
                 const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
@@ -5304,15 +5659,16 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
             if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
+            if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -5326,7 +5682,7 @@
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure]);
+      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations]);
 
       // Admin login (view-only user entering PAT)
       const adminLogin = useCallback(async (rawPat, setMsg) => {
@@ -5337,11 +5693,12 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             if (gistTargets) setCalorieTargets(gistTargets);
             if (gistProtTargets) setProteinTargets(gistProtTargets);
+            if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -5400,6 +5757,33 @@
           setSyncPending(false);
         }
       }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets]);
+
+      // Upserts by id — used for both add (a fresh crypto.randomUUID() from the
+      // modal) and edit (the existing annotation's id).
+      const saveWeightAnnotation = useCallback(async (annotation) => {
+        const next = [...weightAnnotations.filter(a => a.id !== annotation.id), annotation]
+          .sort((a, b) => a.startDate.localeCompare(b.startDate));
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, next);
+          if (ok) { setWeightAnnotations(next); lsSaveWeightAnnotations(next); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations]);
+
+      const deleteWeightAnnotation = useCallback(async (id) => {
+        const next = weightAnnotations.filter(a => a.id !== id);
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, next);
+          if (ok) { setWeightAnnotations(next); lsSaveWeightAnnotations(next); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations]);
 
       // Admin logout
       const adminLogout = useCallback(() => {
@@ -5902,7 +6286,9 @@
                 <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Weight Trend</div>
                 </div>
-                <WeightChart rows={rows} injections={injections} injSchedule={injSchedule} />
+                <WeightChart rows={rows} injections={injections} injSchedule={injSchedule}
+                             annotations={weightAnnotations} isAdmin={isAdmin}
+                             onSaveAnnotation={saveWeightAnnotation} onDeleteAnnotation={deleteWeightAnnotation} />
               </div>
 
               {/* Weight Loss Per Dose */}

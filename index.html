@@ -4201,7 +4201,11 @@
               const anchorX = sameDay ? gx1 : (gx1 + gx2) / 2;
               const dateStr = sameDay ? fmtShort(a.startDate) : `${fmtShort(a.startDate)} – ${fmtShort(a.endDate)}`;
               const TW = 110;
-              const descLines = a.description ? wrapText(a.description, 44) : [];
+              // 32 chars is tuned to the popover's actual rendered width at this
+              // font size (measured: real prose averages ~2.4 SVG units/char at
+              // fontSize 4.8, and TW-16=94 units are available) — 44 let lines
+              // run past the box's right edge.
+              const descLines = a.description ? wrapText(a.description, 32) : [];
               const descLineH = 6.5;
               const TH = 20 + (descLines.length ? descLines.length * descLineH + 3 : 0) + (isAdmin ? 9 : 0);
               const tx = Math.max(2, Math.min(anchorX - TW / 2, VW - TW - 2));

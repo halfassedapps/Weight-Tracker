@@ -812,6 +812,10 @@
 
     const MAX_DOSE_MG = 15;
     const DOSE_STEP_MG = 0.5;
+    // How long a dose increase holds off the next one being recommended —
+    // titration guidance generally calls for at least this long before
+    // reassessing (see the justIncreased note in doseGuidance).
+    const DOSE_INCREASE_HOLD_DAYS = 21;
 
     // appetiteSignal may only ever soften an 'increase' into a 'stay' — it must
     // never touch 'stay'/'monitor'/'contact', which exist to catch weight loss
@@ -876,12 +880,15 @@
       // immediately recommend bumping it again the moment that injection got
       // logged, since "current dose" and "twoWeekLbs" would both look
       // unchanged from the calculation that fired last time. Hold instead,
-      // until at least one more injection's worth of new trend data comes in.
+      // for DOSE_INCREASE_HOLD_DAYS from the last actual increase — not just
+      // the single injection right after it — since the trend can still be
+      // lagging that increase several injections in if the schedule is
+      // frequent (e.g. twice-weekly) relative to the hold window.
       if (justIncreased) {
         return {
           action: 'stay', recentlyIncreased: true,
           label: 'Stay — dose recently increased',
-          note: 'Reassessing after your next injection, once the trend reflects the new dose',
+          note: `Reassessing ${DOSE_INCREASE_HOLD_DAYS} days after your last increase, once the trend reflects the new dose`,
           color: '#34c759', bg: '#f0fdf4',
         };
       }
@@ -1046,13 +1053,23 @@
       // signal *before* deciding whether to apply the override at all, not
       // just to annotate it afterward.
       const crossCheck = subjectiveAppetiteCrossCheck(sortedInjForSignals, todayMs, gi);
-      // Was the most recently logged injection itself already a dose increase
-      // over the one before it? Based on real logged injections only (not the
-      // synthetic pendingSurvey entry above, which always carries ds.lastDose
-      // unchanged) — see the justIncreased note in doseGuidance.
+      // When was the dose last actually increased (not just re-logged at the
+      // same dose)? Based on real logged injections only (not the synthetic
+      // pendingSurvey entry above, which always carries ds.lastDose
+      // unchanged) — see the justIncreased note in doseGuidance. Scans
+      // backward from the most recent injection so a later re-logged same-
+      // dose shot (or even a decrease) doesn't make an increase look further
+      // in the past than it is.
       const realSorted = ds.sortedInj;
-      const justIncreased = realSorted.length >= 2
-        && realSorted[realSorted.length - 1].doseMg > realSorted[realSorted.length - 2].doseMg;
+      let lastIncreaseMs = null;
+      for (let i = realSorted.length - 1; i > 0; i--) {
+        if (realSorted[i].doseMg > realSorted[i - 1].doseMg) {
+          lastIncreaseMs = new Date(realSorted[i].date + 'T12:00:00').getTime();
+          break;
+        }
+      }
+      const justIncreased = lastIncreaseMs != null
+        && (todayMs - lastIncreaseMs) < DOSE_INCREASE_HOLD_DAYS * 86400000;
       const rec = recommendedDose(ds.weeklyDose, recent.twoWeekLoss, appetite, gi, crossCheck, justIncreased);
       // recWeekly (the step-based weekly target, e.g. current + DOSE_STEP_MG) is
       // the authoritative number — it's already clean to 1 decimal from
@@ -1063,7 +1080,7 @@
       // multiplies back to 3.5.
       const recWeekly = rec.dose != null ? rec.dose : ds.weeklyDose;
       const perInjMg = recWeekly / ds.injPerWeek;
-      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg, appetite, gi, crossCheck };
+      return { g: rec.g, dose: rec.dose, recWeekly, perInjMg, appetite, gi, crossCheck, lastIncreaseMs };
     }
 
     // Computes a "weekly dose" timeline for the chart pills — two different
@@ -3189,12 +3206,14 @@
       const rec = getRecommendation(rows ?? [], ds, calories, calorieTargets, intervalsCalories, todayMs, pendingSurvey);
       if (!rec) return null;
 
-      const { g, dose, recWeekly, perInjMg, gi, crossCheck } = rec;
+      const { g, dose, recWeekly, perInjMg, gi, crossCheck, lastIncreaseMs } = rec;
       const lossSign   = recent.twoWeekLoss >= 0 ? '↓' : '↑';
       const nextInjDate  = new Date(nextInjMs);
       const nextInjLabel = `${SCHED_DAYS_LNG[nextInjDate.getDay()]} ${nextInjDate.getHours() < 12 ? 'AM' : 'PM'}`;
+      const daysSinceIncrease = lastIncreaseMs != null ? Math.floor((todayMs - lastIncreaseMs) / 86400000) : null;
+      const daysUntilReassess = daysSinceIncrease != null ? DOSE_INCREASE_HOLD_DAYS - daysSinceIncrease : null;
       const subtext = g.recentlyIncreased
-        ? `Your last injection was already a step up to ${round2(ds.lastDose)} mg — the 2-week trend hasn't had time to reflect it yet, so this holds until your next injection.`
+        ? `Your dose was increased to ${round2(ds.lastDose)} mg ${daysSinceIncrease === 0 ? 'today' : `${daysSinceIncrease} day${daysSinceIncrease === 1 ? '' : 's'} ago`} — the 2-week trend hasn't had time to reflect it yet, so this holds for ${daysUntilReassess} more day${daysUntilReassess === 1 ? '' : 's'} (reassessing ${DOSE_INCREASE_HOLD_DAYS} days after the increase).`
         : g.giOverride
         ? (gi.avgNausea >= GI_NAUSEA_BAD
             ? `You're averaging ${gi.avgNausea.toFixed(1)}/10 nausea over the last ${GI_TOLERANCE_WINDOW_DAYS} days — GI tolerability appears to be the limiting factor, so this holds rather than increasing. Confirm with your prescriber.`
@@ -5550,6 +5569,7 @@
       const [error,      setError]      = useState('');
       const [dragging,   setDragging]   = useState(false);
       const [showInj,    setShowInj]    = useState(false);
+      const [sharingInjLog, setSharingInjLog] = useState(false);
       const [injDate,    setInjDate]    = useState(today);
       const [injDose,    setInjDose]    = useState('');
       const [injSite,    setInjSite]    = useState('');
@@ -6008,6 +6028,95 @@
           setSyncPending(false);
         }
       }, [injections, rows, meta]);
+
+      // Renders the injection log to a PNG and shares/downloads it — same
+      // canvas-drawn-header-then-content approach as the chart shareChart()
+      // functions, but the "content" here is table rows drawn with fillText
+      // instead of a cloned SVG, since this card has no <svg> to rasterize.
+      const shareInjLog = useCallback(async () => {
+        if (sharingInjLog || !injections.length) return;
+        setSharingInjLog(true);
+        try {
+          const scale = 3;
+          const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
+          const sorted = [...injections].sort((a, b) => b.date.localeCompare(a.date));
+          // Stacked layout (date+site on one line, symptoms on a second line
+          // below, like the on-screen list) rather than fixed columns — real
+          // site names ("Abdomen – Left, Upper") are too wide to share a row
+          // with a SYMPTOMS column at any reasonable card width.
+          const rowsInfo = sorted.map(inj => ({
+            inj,
+            symptoms: [
+              inj.nausea    != null ? `N${inj.nausea}` : null,
+              inj.hunger    != null ? `H${inj.hunger}` : null,
+              inj.foodNoise != null ? `F${inj.foodNoise}` : null,
+            ].filter(Boolean).join(' '),
+          }));
+          const singleRowH = 20, symptomRowH = 29;
+          const VW = 360, headerH = 48, colHeadH = 20, padB = 10;
+          const VH = colHeadH + rowsInfo.reduce((s, r) => s + (r.symptoms ? symptomRowH : singleRowH), 0) + padB;
+          const canvas = document.createElement('canvas');
+          canvas.width = VW * scale; canvas.height = (VH + headerH) * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(scale, scale);
+
+          const totalDoseMg = sorted.reduce((s, r) => s + r.doseMg, 0);
+          ctx.textAlign = 'left';
+          ctx.fillStyle = '#1c1c1e'; ctx.font = `700 13px ${FONT}`;
+          ctx.fillText('Tirzepatide Injections', 14, 18);
+          ctx.fillStyle = '#4a90d9'; ctx.font = `700 10px ${FONT}`;
+          ctx.fillText(`${sorted.length} injections · ${totalDoseMg.toFixed(2)} mg total`, 14, 34);
+          ctx.fillStyle = '#8e8e93'; ctx.font = `400 9px ${FONT}`;
+          ctx.fillText(`${fmtShort(sorted[sorted.length - 1].date)} – ${fmtShort(sorted[0].date)}`, 14, 44);
+
+          const colDate = 14, colDose = 346;
+          let y = headerH + 14;
+          ctx.font = `700 9px ${FONT}`; ctx.fillStyle = '#8e8e93';
+          ctx.fillText('DATE', colDate, y);
+          ctx.textAlign = 'right'; ctx.fillText('DOSE', colDose, y);
+          ctx.textAlign = 'left';
+          y += 6;
+          ctx.strokeStyle = 'rgba(0,0,0,.08)'; ctx.lineWidth = 0.5;
+          ctx.beginPath(); ctx.moveTo(14, y); ctx.lineTo(colDose, y); ctx.stroke();
+
+          rowsInfo.forEach(({ inj, symptoms }, i) => {
+            const rowH = symptoms ? symptomRowH : singleRowH;
+            const rowTop = y;
+            y += rowH;
+            if (i % 2 === 1) { ctx.fillStyle = '#f9f9fb'; ctx.fillRect(10, rowTop, VW - 20, rowH); }
+            const line1Baseline = rowTop + 13;
+            ctx.fillStyle = '#1c1c1e'; ctx.font = `600 11px ${FONT}`;
+            const dateWd = `${fmtShort(inj.date)} · ${WD[new Date(inj.date + 'T12:00:00').getDay()]}`;
+            ctx.fillText(inj.site ? `${dateWd} · ${inj.site}` : dateWd, colDate, line1Baseline);
+            if (symptoms) {
+              ctx.fillStyle = '#aeaeb2'; ctx.font = `400 9px ${FONT}`;
+              ctx.fillText(symptoms, colDate, rowTop + 24);
+            }
+            ctx.fillStyle = '#4a90d9'; ctx.font = `700 11px ${FONT}`;
+            ctx.textAlign = 'right';
+            ctx.fillText(`${inj.doseMg} mg`, colDose, symptoms ? rowTop + 18 : line1Baseline);
+            ctx.textAlign = 'left';
+          });
+
+          const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+          const file = new File([fileBlob], 'tirz-injections.png', { type: 'image/png' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'Tirzepatide Injections',
+              text: `${sorted.length} injections · ${totalDoseMg.toFixed(2)} mg total` });
+          } else {
+            const url = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'tirz-injections.png';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }
+        } catch (e) {
+          if (e.name !== 'AbortError') console.warn('[App] injection log share failed:', e);
+        } finally {
+          setSharingInjLog(false);
+        }
+      }, [injections, sharingInjLog]);
 
       // editingDate tracks the *original* date of the row being edited — kept
       // separate from editDate (the field's current draft value) so a date
@@ -6497,23 +6606,37 @@
                               justifyContent: 'space-between', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#4a90d9',
                                 textTransform: 'uppercase', letterSpacing: .6 }}>Injections</div>
-                  {isAdmin && (
-                    <button onClick={() => {
-                              // Pre-fill from a banner-completed survey for the
-                              // date this form is about to open on, if any.
-                              if (!showInj && pendingSurvey && pendingSurvey.date === injDate) {
-                                if (pendingSurvey.nausea    != null) setInjNausea(String(pendingSurvey.nausea));
-                                if (pendingSurvey.hunger    != null) setInjHunger(String(pendingSurvey.hunger));
-                                if (pendingSurvey.foodNoise != null) setInjFoodNoise(String(pendingSurvey.foodNoise));
-                              }
-                              setShowInj(v => !v);
-                            }}
-                            style={{ fontSize: 14, fontWeight: 600, padding: '4px 12px', borderRadius: 8,
-                                     background: showInj ? '#e5e5ea' : '#007aff',
-                                     color: showInj ? '#1c1c1e' : '#fff', border: 'none', cursor: 'pointer' }}>
-                      {showInj ? 'Cancel' : '+ Log injection'}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button onClick={shareInjLog} disabled={sharingInjLog || !injections.length}
+                            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+                                     color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,
+                                     padding: '4px 10px',
+                                     cursor: (sharingInjLog || !injections.length) ? 'default' : 'pointer',
+                                     opacity: (sharingInjLog || !injections.length) ? .6 : 1 }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
+                           strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
+                      </svg>
+                      {sharingInjLog ? 'Preparing…' : 'Share'}
                     </button>
-                  )}
+                    {isAdmin && (
+                      <button onClick={() => {
+                                // Pre-fill from a banner-completed survey for the
+                                // date this form is about to open on, if any.
+                                if (!showInj && pendingSurvey && pendingSurvey.date === injDate) {
+                                  if (pendingSurvey.nausea    != null) setInjNausea(String(pendingSurvey.nausea));
+                                  if (pendingSurvey.hunger    != null) setInjHunger(String(pendingSurvey.hunger));
+                                  if (pendingSurvey.foodNoise != null) setInjFoodNoise(String(pendingSurvey.foodNoise));
+                                }
+                                setShowInj(v => !v);
+                              }}
+                              style={{ fontSize: 14, fontWeight: 600, padding: '4px 12px', borderRadius: 8,
+                                       background: showInj ? '#e5e5ea' : '#007aff',
+                                       color: showInj ? '#1c1c1e' : '#fff', border: 'none', cursor: 'pointer' }}>
+                        {showInj ? 'Cancel' : '+ Log injection'}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {isAdmin && showInj && (

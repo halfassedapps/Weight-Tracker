@@ -3247,7 +3247,8 @@
 
       return (
         <div>
-          {showCalc && <DoseCalculatorModal initialDose={calcInitDose} initialConc={vialConc} onClose={() => setShowCalc(false)} />}
+          {showCalc && <DoseCalculatorModal initialDose={calcInitDose} initialConc={vialConc} surveyTrend={surveyTrend}
+                                             onClose={() => setShowCalc(false)} />}
           {showSchedule && <InjScheduleModal schedule={injSchedule} isAdmin={isAdmin}
                              onSave={onSaveSchedule} onClose={() => setShowSchedule(false)} />}
 
@@ -4911,7 +4912,7 @@
       );
     }
 
-    function DoseCalculatorModal({ initialDose = 2.25, initialConc = 12.5, onClose }) {
+    function DoseCalculatorModal({ initialDose = 2.25, initialConc = 12.5, surveyTrend = [], onClose }) {
       const [dose, setDose] = React.useState(String(initialDose));
       const [conc, setConc] = React.useState(() => {
         const saved = localStorage.getItem(LS_VIAL_CONC_KEY);

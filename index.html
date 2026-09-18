@@ -4202,7 +4202,9 @@
                   </text>
                 )}
                 <text x={tipX+8} y={tipY+tipH-4} fontSize="4.5"
-                      fill="rgba(255,255,255,.3)">21-day rolling trend</text>
+                      fill="rgba(255,255,255,.3)">
+                  {trendDays > 0 ? `${trendDays}-day rolling trend` : 'All-time trend'}
+                </text>
               </g>
             )}
 

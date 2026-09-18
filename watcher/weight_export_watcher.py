@@ -616,6 +616,7 @@ def main():
             # pass through whatever's already there untouched.
             'calorieTargets': gist.get('calorieTargets', []),
             'proteinTargets': gist.get('proteinTargets', []),
+            'weightAnnotations': gist.get('weightAnnotations', []),
         }
         if intervals_creds:
             payload['intervalsActivities'] = sync_intervals(intervals_creds, payload['entries'], gist.get('intervalsActivities'))

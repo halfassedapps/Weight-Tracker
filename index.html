@@ -2239,6 +2239,12 @@
       const [selectedDate, setSelectedDate] = useState(null);
       const [sharing, setSharing] = useState(false);
       const [viewMode, setViewMode] = useState('table'); // 'graph' | 'table'
+      const [expandedRideDates, setExpandedRideDates] = useState(() => new Set());
+      const toggleRideDate = date => setExpandedRideDates(prev => {
+        const next = new Set(prev);
+        next.has(date) ? next.delete(date) : next.add(date);
+        return next;
+      });
       const svgRef = useRef(null);
       const rideCardsRef = useRef(null);
       useEffect(() => {
@@ -2304,12 +2310,12 @@
       const tickStep = yMax > 180 ? 60 : yMax > 60 ? 30 : 15;
       for (let v = 0; v <= yMax; v += tickStep) yTicks.push(v);
 
-      // Every individual ride in the visible range, newest first — the table
-      // view trades the chart's daily-bar grouping for the same per-activity
-      // detail the "click a bar" ride cards below already expose.
-      const flatRides = pts
-        .flatMap(p => p.rides.map(r => ({ ...r, date: p.date })))
-        .sort((a, b) => b.date.localeCompare(a.date));
+      // One row per day, newest first, using the same totals the chart's bars
+      // already carry — multi-ride days collapse to a single summary line
+      // (expandable in the table view) instead of one row per activity.
+      const dayGroups = [...pts].sort((a, b) => b.date.localeCompare(a.date));
+      const rideLabel = r => r.sport && r.sport !== 'Ride' && r.sport !== 'VirtualRide' ? `${r.sport} · ${r.name}` : r.name;
+      const dayGroupLabel = p => p.rides.length > 1 ? `${p.rides.length} activities` : rideLabel(p.rides[0]);
 
       // Share — captures whichever view (graph/table) is currently showing.
       const shareChart = async () => {
@@ -2346,7 +2352,7 @@
             ctx.drawImage(img, 0, headerH, VW, VH);
           } else {
             const rowH = 16, tableHeaderH = 16;
-            const bodyH = tableHeaderH + flatRides.length * rowH;
+            const bodyH = tableHeaderH + dayGroups.length * rowH;
             canvas = document.createElement('canvas');
             canvas.width = VW * scale; canvas.height = (headerH + bodyH + 8) * scale;
             const ctx = canvas.getContext('2d');
@@ -2363,17 +2369,17 @@
             ctx.font = `700 8px ${FONT}`; ctx.fillStyle = '#8e8e93';
             ctx.fillText('DATE', colDate, y); ctx.fillText('ACTIVITY', colActivity, y);
             ctx.fillText('TIME', colDur, y); ctx.fillText('DIST', colDist, y); ctx.fillText('CAL', colCal, y);
-            flatRides.forEach((r, i) => {
+            dayGroups.forEach((p, i) => {
               y = headerH + tableHeaderH + (i + 1) * rowH;
               if (i % 2 === 1) { ctx.fillStyle = '#f7f7f9'; ctx.fillRect(10, y - 11, VW - 20, rowH); }
-              const { mo, day } = fmtDate(r.date);
-              const label = r.sport && r.sport !== 'Ride' && r.sport !== 'VirtualRide' ? `${r.sport} · ${r.name}` : r.name;
+              const { mo, day } = fmtDate(p.date);
+              const label = dayGroupLabel(p);
               ctx.font = `600 9px ${FONT}`; ctx.fillStyle = '#3c3c43';
               ctx.fillText(`${mo} ${day}`, colDate, y);
               ctx.fillText(label.length > 18 ? label.slice(0, 17) + '…' : label, colActivity, y);
-              ctx.fillStyle = '#4a90d9'; ctx.fillText(fmtDur(r.durSecs), colDur, y);
-              ctx.fillStyle = '#ff9500'; ctx.fillText((r.distM / 1609.34).toFixed(1) + ' mi', colDist, y);
-              ctx.fillStyle = '#8e73de'; ctx.fillText(String(Math.round(r.cal)), colCal, y);
+              ctx.fillStyle = '#4a90d9'; ctx.fillText(fmtDur(p.totalDurSecs), colDur, y);
+              ctx.fillStyle = '#ff9500'; ctx.fillText((p.totalDistM / 1609.34).toFixed(1) + ' mi', colDist, y);
+              ctx.fillStyle = '#8e73de'; ctx.fillText(String(Math.round(p.totalCal)), colCal, y);
             });
           }
           const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
@@ -2443,32 +2449,62 @@
 
           {/* Chart */}
           {viewMode === 'table' ? (
-            flatRides.length > 0 ? (
+            dayGroups.length > 0 ? (
               <div style={{ maxHeight: 320, overflowY: 'auto', margin: '0 14px', borderRadius: 10,
                             border: '.5px solid rgba(0,0,0,.08)' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '.9fr 1.4fr .7fr .6fr .6fr', padding: '6px 10px',
+                <div style={{ display: 'grid', gridTemplateColumns: '18px .9fr 1.4fr .7fr .6fr .6fr', padding: '6px 10px',
                               background: '#f2f2f7', borderBottom: '.5px solid rgba(0,0,0,.1)', position: 'sticky', top: 0 }}>
-                  {['DATE', 'ACTIVITY', 'TIME', 'DIST', 'CAL'].map(h => (
-                    <div key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, color: '#8e8e93' }}>{h}</div>
+                  {['', 'DATE', 'ACTIVITY', 'TIME', 'DIST', 'CAL'].map((h, i) => (
+                    <div key={i} style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, color: '#8e8e93' }}>{h}</div>
                   ))}
                 </div>
-                {flatRides.map((r, i) => {
-                  const { wd, mo, day } = fmtDate(r.date);
-                  const actId  = r.id ? (String(r.id).startsWith('i') ? String(r.id) : `i${r.id}`) : null;
+                {dayGroups.map((p, i) => {
+                  const { wd, mo, day } = fmtDate(p.date);
+                  const multi = p.rides.length > 1;
+                  const expanded = expandedRideDates.has(p.date);
+                  const single = !multi ? p.rides[0] : null;
+                  const actId  = single?.id ? (String(single.id).startsWith('i') ? String(single.id) : `i${single.id}`) : null;
                   const actUrl = actId ? `https://intervals.icu/activities/${actId}` : null;
-                  const label = r.sport && r.sport !== 'Ride' && r.sport !== 'VirtualRide' ? `${r.sport} · ${r.name}` : r.name;
+                  const rowClick = multi ? () => toggleRideDate(p.date) : () => actUrl && window.open(actUrl, '_blank', 'noopener');
                   return (
-                    <div key={String(r.id || `${r.date}-${i}`)}
-                         onClick={() => actUrl && window.open(actUrl, '_blank', 'noopener')}
-                         style={{ display: 'grid', gridTemplateColumns: '.9fr 1.4fr .7fr .6fr .6fr',
-                                  padding: '6px 10px', fontSize: 11, cursor: actUrl ? 'pointer' : 'default',
-                                  borderBottom: i < flatRides.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
-                      <div style={{ color: '#1c1c1e', fontWeight: 600 }}>{wd} {mo} {day}</div>
-                      <div style={{ color: '#1c1c1e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
-                      <div style={{ color: '#4a90d9', fontWeight: 600 }}>{fmtDur(r.durSecs)}</div>
-                      <div style={{ color: '#ff9500', fontWeight: 600 }}>{(r.distM / 1609.34).toFixed(1)} mi</div>
-                      <div style={{ color: '#8e73de', fontWeight: 600 }}>{Math.round(r.cal)}</div>
-                    </div>
+                    <React.Fragment key={p.date}>
+                      <div onClick={rowClick}
+                           style={{ display: 'grid', gridTemplateColumns: '18px .9fr 1.4fr .7fr .6fr .6fr',
+                                    padding: '6px 10px', fontSize: 11, cursor: 'pointer',
+                                    borderBottom: expanded || i < dayGroups.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
+                        <div style={{ color: '#c7c7cc', fontSize: 9, visibility: multi ? 'visible' : 'hidden' }}>
+                          {expanded ? '▾' : '▸'}
+                        </div>
+                        <div style={{ color: '#1c1c1e', fontWeight: 600 }}>{wd} {mo} {day}</div>
+                        <div style={{ color: '#1c1c1e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {dayGroupLabel(p)}
+                        </div>
+                        <div style={{ color: '#4a90d9', fontWeight: 600 }}>{fmtDur(p.totalDurSecs)}</div>
+                        <div style={{ color: '#ff9500', fontWeight: 600 }}>{(p.totalDistM / 1609.34).toFixed(1)} mi</div>
+                        <div style={{ color: '#8e73de', fontWeight: 600 }}>{Math.round(p.totalCal)}</div>
+                      </div>
+                      {multi && expanded && p.rides.map((r, ri) => {
+                        const rActId  = r.id ? (String(r.id).startsWith('i') ? String(r.id) : `i${r.id}`) : null;
+                        const rActUrl = rActId ? `https://intervals.icu/activities/${rActId}` : null;
+                        return (
+                          <div key={String(r.id || `${p.date}-${ri}`)}
+                               onClick={() => rActUrl && window.open(rActUrl, '_blank', 'noopener')}
+                               style={{ display: 'grid', gridTemplateColumns: '18px .9fr 1.4fr .7fr .6fr .6fr',
+                                        padding: '5px 10px', fontSize: 10.5, cursor: rActUrl ? 'pointer' : 'default',
+                                        background: '#fafafc',
+                                        borderBottom: ri < p.rides.length - 1 || i < dayGroups.length - 1 ? '.5px solid rgba(0,0,0,.05)' : 'none' }}>
+                          <div />
+                          <div />
+                          <div style={{ color: '#3c3c43', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {rideLabel(r)}
+                          </div>
+                          <div style={{ color: '#4a90d9' }}>{fmtDur(r.durSecs)}</div>
+                          <div style={{ color: '#ff9500' }}>{(r.distM / 1609.34).toFixed(1)} mi</div>
+                          <div style={{ color: '#8e73de' }}>{Math.round(r.cal)}</div>
+                        </div>
+                        );
+                      })}
+                    </React.Fragment>
                   );
                 })}
               </div>

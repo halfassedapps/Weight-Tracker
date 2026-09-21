@@ -2238,6 +2238,7 @@
       const [tip, setTip] = useState(null);
       const [selectedDate, setSelectedDate] = useState(null);
       const [sharing, setSharing] = useState(false);
+      const [viewMode, setViewMode] = useState('table'); // 'graph' | 'table'
       const svgRef = useRef(null);
       const rideCardsRef = useRef(null);
       useEffect(() => {
@@ -2303,39 +2304,82 @@
       const tickStep = yMax > 180 ? 60 : yMax > 60 ? 30 : 15;
       for (let v = 0; v <= yMax; v += tickStep) yTicks.push(v);
 
-      // Share
+      // Every individual ride in the visible range, newest first — the table
+      // view trades the chart's daily-bar grouping for the same per-activity
+      // detail the "click a bar" ride cards below already expose.
+      const flatRides = pts
+        .flatMap(p => p.rides.map(r => ({ ...r, date: p.date })))
+        .sort((a, b) => b.date.localeCompare(a.date));
+
+      // Share — captures whichever view (graph/table) is currently showing.
       const shareChart = async () => {
-        if (!svgRef.current || sharing) return;
+        if (sharing) return;
         setSharing(true);
         try {
           const scale = 3, headerH = 54;
           const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
-          const svgClone = svgRef.current.cloneNode(true);
-          svgClone.setAttribute('width', VW * scale);
-          svgClone.setAttribute('height', VH * scale);
-          const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-          styleEl.textContent = `text { font-family: ${FONT}; }`;
-          svgClone.insertBefore(styleEl, svgClone.firstChild);
-          const svgString = new XMLSerializer().serializeToString(svgClone);
-          const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
-          const img = new Image();
-          await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = svgUrl; });
-          const canvas = document.createElement('canvas');
-          canvas.width = VW * scale; canvas.height = (VH + headerH) * scale;
-          const ctx = canvas.getContext('2d');
-          ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.scale(scale, scale);
-          ctx.fillStyle = '#1c1c1e'; ctx.font = `700 13px ${FONT}`;
-          ctx.fillText('My Rides', 14, 18);
-          ctx.fillStyle = '#4a90d9'; ctx.font = `700 10px ${FONT}`;
-          ctx.fillText(`${fmtDur(totalDurSecs)} · ${totalDistMi.toFixed(1)} mi · ${Math.round(totalCal).toLocaleString()} cal`, 14, 34);
-          ctx.fillStyle = '#8e8e93'; ctx.font = `400 9px ${FONT}`;
-          ctx.fillText(periodRangeStr, 14, 46);
-          ctx.drawImage(img, 0, headerH, VW, VH);
+          const subtitleLine1 = `${fmtDur(totalDurSecs)} · ${totalDistMi.toFixed(1)} mi · ${Math.round(totalCal).toLocaleString()} cal`;
+          let canvas;
+          if (viewMode === 'graph') {
+            if (!svgRef.current) return;
+            const svgClone = svgRef.current.cloneNode(true);
+            svgClone.setAttribute('width', VW * scale);
+            svgClone.setAttribute('height', VH * scale);
+            const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+            styleEl.textContent = `text { font-family: ${FONT}; }`;
+            svgClone.insertBefore(styleEl, svgClone.firstChild);
+            const svgString = new XMLSerializer().serializeToString(svgClone);
+            const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+            const img = new Image();
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = svgUrl; });
+            canvas = document.createElement('canvas');
+            canvas.width = VW * scale; canvas.height = (VH + headerH) * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.scale(scale, scale);
+            ctx.fillStyle = '#1c1c1e'; ctx.font = `700 13px ${FONT}`;
+            ctx.fillText('My Rides', 14, 18);
+            ctx.fillStyle = '#4a90d9'; ctx.font = `700 10px ${FONT}`;
+            ctx.fillText(subtitleLine1, 14, 34);
+            ctx.fillStyle = '#8e8e93'; ctx.font = `400 9px ${FONT}`;
+            ctx.fillText(periodRangeStr, 14, 46);
+            ctx.drawImage(img, 0, headerH, VW, VH);
+          } else {
+            const rowH = 16, tableHeaderH = 16;
+            const bodyH = tableHeaderH + flatRides.length * rowH;
+            canvas = document.createElement('canvas');
+            canvas.width = VW * scale; canvas.height = (headerH + bodyH + 8) * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.scale(scale, scale);
+            ctx.fillStyle = '#1c1c1e'; ctx.font = `700 13px ${FONT}`;
+            ctx.fillText('My Rides', 14, 18);
+            ctx.fillStyle = '#4a90d9'; ctx.font = `700 10px ${FONT}`;
+            ctx.fillText(subtitleLine1, 14, 34);
+            ctx.fillStyle = '#8e8e93'; ctx.font = `400 9px ${FONT}`;
+            ctx.fillText(periodRangeStr, 14, 46);
+            const colDate = 14, colActivity = 85, colDur = 232, colDist = 275, colCal = 318;
+            let y = headerH + tableHeaderH;
+            ctx.font = `700 8px ${FONT}`; ctx.fillStyle = '#8e8e93';
+            ctx.fillText('DATE', colDate, y); ctx.fillText('ACTIVITY', colActivity, y);
+            ctx.fillText('TIME', colDur, y); ctx.fillText('DIST', colDist, y); ctx.fillText('CAL', colCal, y);
+            flatRides.forEach((r, i) => {
+              y = headerH + tableHeaderH + (i + 1) * rowH;
+              if (i % 2 === 1) { ctx.fillStyle = '#f7f7f9'; ctx.fillRect(10, y - 11, VW - 20, rowH); }
+              const { mo, day } = fmtDate(r.date);
+              const label = r.sport && r.sport !== 'Ride' && r.sport !== 'VirtualRide' ? `${r.sport} · ${r.name}` : r.name;
+              ctx.font = `600 9px ${FONT}`; ctx.fillStyle = '#3c3c43';
+              ctx.fillText(`${mo} ${day}`, colDate, y);
+              ctx.fillText(label.length > 18 ? label.slice(0, 17) + '…' : label, colActivity, y);
+              ctx.fillStyle = '#4a90d9'; ctx.fillText(fmtDur(r.durSecs), colDur, y);
+              ctx.fillStyle = '#ff9500'; ctx.fillText((r.distM / 1609.34).toFixed(1) + ' mi', colDist, y);
+              ctx.fillStyle = '#8e73de'; ctx.fillText(String(Math.round(r.cal)), colCal, y);
+            });
+          }
           const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
           const file = new File([fileBlob], 'rides.png', { type: 'image/png' });
           if (navigator.canShare && navigator.canShare({ files: [file] })) {
-            await navigator.share({ files: [file], title: 'My Rides', text: `${fmtDur(totalDurSecs)} · ${totalDistMi.toFixed(1)} mi · ${periodRangeStr}` });
+            await navigator.share({ files: [file], title: 'My Rides', text: `${subtitleLine1} · ${periodRangeStr}` });
           } else {
             const url = URL.createObjectURL(fileBlob);
             const a = document.createElement('a');
@@ -2366,6 +2410,17 @@
                      style={{ width:56, fontSize:10, fontWeight:600, padding:'5px 6px', borderRadius:8,
                               border:'1px solid #d1d1d6', background:'#f9f9f9', color:'#1c1c1e', outline:'none' }} />
             )}
+            <div style={{ marginLeft:'auto', display:'flex', background:'#f2f2f7', borderRadius:8, padding:2 }}>
+              {[['graph','Graph'],['table','Table']].map(([id,label]) => (
+                <button key={id} onClick={() => setViewMode(id)}
+                        style={{ fontSize:10, fontWeight:600, padding:'4px 10px', borderRadius:6, border:'none',
+                                 cursor:'pointer', background: viewMode===id ? '#fff' : 'transparent',
+                                 color: viewMode===id ? '#1c1c1e' : '#8e8e93',
+                                 boxShadow: viewMode===id ? '0 1px 2px rgba(0,0,0,.1)' : 'none' }}>
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Earlier/Later */}
@@ -2387,6 +2442,42 @@
           )}
 
           {/* Chart */}
+          {viewMode === 'table' ? (
+            flatRides.length > 0 ? (
+              <div style={{ maxHeight: 320, overflowY: 'auto', margin: '0 14px', borderRadius: 10,
+                            border: '.5px solid rgba(0,0,0,.08)' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '.9fr 1.4fr .7fr .6fr .6fr', padding: '6px 10px',
+                              background: '#f2f2f7', borderBottom: '.5px solid rgba(0,0,0,.1)', position: 'sticky', top: 0 }}>
+                  {['DATE', 'ACTIVITY', 'TIME', 'DIST', 'CAL'].map(h => (
+                    <div key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, color: '#8e8e93' }}>{h}</div>
+                  ))}
+                </div>
+                {flatRides.map((r, i) => {
+                  const { wd, mo, day } = fmtDate(r.date);
+                  const actId  = r.id ? (String(r.id).startsWith('i') ? String(r.id) : `i${r.id}`) : null;
+                  const actUrl = actId ? `https://intervals.icu/activities/${actId}` : null;
+                  const label = r.sport && r.sport !== 'Ride' && r.sport !== 'VirtualRide' ? `${r.sport} · ${r.name}` : r.name;
+                  return (
+                    <div key={String(r.id || `${r.date}-${i}`)}
+                         onClick={() => actUrl && window.open(actUrl, '_blank', 'noopener')}
+                         style={{ display: 'grid', gridTemplateColumns: '.9fr 1.4fr .7fr .6fr .6fr',
+                                  padding: '6px 10px', fontSize: 11, cursor: actUrl ? 'pointer' : 'default',
+                                  borderBottom: i < flatRides.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
+                      <div style={{ color: '#1c1c1e', fontWeight: 600 }}>{wd} {mo} {day}</div>
+                      <div style={{ color: '#1c1c1e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
+                      <div style={{ color: '#4a90d9', fontWeight: 600 }}>{fmtDur(r.durSecs)}</div>
+                      <div style={{ color: '#ff9500', fontWeight: 600 }}>{(r.distM / 1609.34).toFixed(1)} mi</div>
+                      <div style={{ color: '#8e73de', fontWeight: 600 }}>{Math.round(r.cal)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ padding:'24px 16px', textAlign:'center', color:'#aeaeb2', fontSize:13 }}>
+                No rides in this range.
+              </div>
+            )
+          ) : (
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`}
                style={{ width:'100%', height:'auto', display:'block', overflow:'hidden', cursor:'pointer' }}
                onMouseMove={e => {
@@ -2489,6 +2580,7 @@
               );
             })()}
           </svg>
+          )}
 
           {/* Period stats */}
           <div style={{ display:'flex', padding:'8px 14px 4px', gap:12, alignItems:'flex-start' }}>
@@ -2497,8 +2589,9 @@
             <PkStat label="Calories" value={Math.round(totalCal).toLocaleString() + ' cal'} color="#8e73de" />
           </div>
 
-          {/* Ride cards — visible after clicking a bar */}
-          {selectedDate && ridesData[selectedDate] && (
+          {/* Ride cards — visible after clicking a bar (graph view only; the
+              table view already lists every ride individually) */}
+          {viewMode === 'graph' && selectedDate && ridesData[selectedDate] && (
             <div ref={rideCardsRef} style={{ padding:'8px 14px 12px', borderTop:'.5px solid rgba(0,0,0,.06)' }}>
               <div style={{ fontSize:11, fontWeight:600, color:'#8e8e93', marginBottom:8 }}>
                 {(d => `${d.wd} ${d.mo} ${d.day}`)(fmtDate(selectedDate))}

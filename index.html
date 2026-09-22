@@ -3553,6 +3553,7 @@
       const [weightTip, setWeightTip] = useState(null);
       const [annoTip, setAnnoTip] = useState(null); // id of the hovered/tapped annotation, or null
       const [annoModal, setAnnoModal] = useState(null); // 'new' | an existing annotation object | null
+      const [addBtnTip, setAddBtnTip] = useState(false); // hover/tap state for the + Note button's tooltip
       // The pill and its popover aren't touching (popover floats above the
       // row), so a plain onMouseLeave on the pill would close it the instant
       // the cursor crosses that gap while moving toward the popover (e.g. to
@@ -4197,7 +4198,8 @@
             {/* + Note button — left margin, same row as the annotation pills, so
                 it never competes with the y-axis weight labels above it. */}
             {isAdmin && (
-              <g style={{ cursor: 'pointer' }} onClick={() => setAnnoModal('new')}>
+              <g style={{ cursor: 'pointer' }} onClick={() => setAnnoModal('new')}
+                 onMouseEnter={() => setAddBtnTip(true)} onMouseLeave={() => setAddBtnTip(false)}>
                 {/* Invisible larger hit target — the visible button is small, but stays easy to tap/click */}
                 <circle cx={PAD.l / 2} cy={ANNO_ROW_Y + 4.5} r="6" fill="transparent" />
                 <circle cx={PAD.l / 2} cy={ANNO_ROW_Y + 4.5} r="3.5" fill="#f0f6ff" stroke="#4a90d9" strokeWidth="0.5" />
@@ -4209,6 +4211,24 @@
                       stroke="#4a90d9" strokeWidth="1.1" strokeLinecap="round" />
               </g>
             )}
+
+            {/* + Note button tooltip — explains what the button does on hover,
+                since the "+" glyph alone (and its similarity to the trend-line
+                goal marker just above it) isn't self-explanatory. */}
+            {isAdmin && addBtnTip && (() => {
+              const TW = 118, TH = 26, TR = 4;
+              const tx = Math.max(2, Math.min(PAD.l / 2 - 10, VW - TW - 2));
+              const ty = Math.max(PAD.t + 2, ANNO_ROW_Y - TH - 6);
+              return (
+                <g style={{ pointerEvents: 'none' }}>
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
+                  <text x={tx + 8} y={ty + 11} fontSize="5.5" fontWeight="700" fill="#fff">Add Note</text>
+                  <text x={tx + 8} y={ty + 20} fontSize="4.3" fill="rgba(255,255,255,.6)">
+                    Mark a date range, e.g. vacation
+                  </text>
+                </g>
+              );
+            })()}
 
             {/* Y axis labels */}
             {yTicks.map(v => (

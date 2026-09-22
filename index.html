@@ -4212,24 +4212,6 @@
               </g>
             )}
 
-            {/* + Note button tooltip — explains what the button does on hover,
-                since the "+" glyph alone (and its similarity to the trend-line
-                goal marker just above it) isn't self-explanatory. */}
-            {isAdmin && addBtnTip && (() => {
-              const TW = 118, TH = 26, TR = 4;
-              const tx = Math.max(2, Math.min(PAD.l / 2 - 10, VW - TW - 2));
-              const ty = Math.max(PAD.t + 2, ANNO_ROW_Y - TH - 6);
-              return (
-                <g style={{ pointerEvents: 'none' }}>
-                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
-                  <text x={tx + 8} y={ty + 11} fontSize="5.5" fontWeight="700" fill="#fff">Add Note</text>
-                  <text x={tx + 8} y={ty + 20} fontSize="4.3" fill="rgba(255,255,255,.6)">
-                    Mark a date range, e.g. vacation
-                  </text>
-                </g>
-              );
-            })()}
-
             {/* Y axis labels */}
             {yTicks.map(v => (
               <text key={v} x={PAD.l - 5} y={yOf(v) + 3} textAnchor="end"
@@ -4413,6 +4395,26 @@
                       ); })()}
                     </>
                   )}
+                </g>
+              );
+            })()}
+
+            {/* + Note button tooltip — explains what the button does on hover,
+                since the "+" glyph alone (and its similarity to the trend-line
+                goal marker just above it) isn't self-explanatory. Rendered
+                last, like the annotation popover above, so nothing else in
+                the chart paints over it. */}
+            {isAdmin && addBtnTip && (() => {
+              const TW = 118, TH = 26, TR = 4;
+              const tx = Math.max(2, Math.min(PAD.l / 2 - 10, VW - TW - 2));
+              const ty = Math.max(PAD.t + 2, ANNO_ROW_Y - TH - 6);
+              return (
+                <g style={{ pointerEvents: 'none' }}>
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
+                  <text x={tx + 8} y={ty + 11} fontSize="5.5" fontWeight="700" fill="#fff">Add Note</text>
+                  <text x={tx + 8} y={ty + 20} fontSize="4.3" fill="rgba(255,255,255,.6)">
+                    Mark a date range, e.g. vacation
+                  </text>
                 </g>
               );
             })()}

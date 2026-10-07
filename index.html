@@ -15,6 +15,8 @@
            background: #f2f2f7; margin: 0; }
     .row-in { animation: fadeSlide .12s ease-out; }
     @keyframes fadeSlide { from { opacity:0; transform:translateY(-3px); } to { opacity:1; transform:none; } }
+    @keyframes goalPop { from { opacity:0; transform:scale(.92) translateY(-6px); } to { opacity:1; transform:none; } }
+    @keyframes goalFloat { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-3px); } }
     ::-webkit-scrollbar { display: none; }
   </style>
 </head>
@@ -334,6 +336,20 @@
       try { localStorage.setItem(LS_PROTEIN_TARGETS_KEY, JSON.stringify(targets)); } catch (_) {}
     }
 
+    /* ─── Goal weight localStorage ───────────────────────────────────────────── */
+    // A single current value (not dated history like calorie/protein targets) —
+    // past weeks' "% to goal" are always judged against today's goal, not
+    // whatever it used to be.
+    const LS_GOAL_LBS_KEY = 'weight-tracker-goal-lbs';
+    function lsLoadGoalLbs() {
+      const raw = localStorage.getItem(LS_GOAL_LBS_KEY);
+      const n = raw != null ? Number(raw) : NaN;
+      return Number.isFinite(n) && n > 0 ? n : GOAL_LBS_DEFAULT;
+    }
+    function lsSaveGoalLbs(n) {
+      try { localStorage.setItem(LS_GOAL_LBS_KEY, String(n)); } catch (_) {}
+    }
+
     function lsLoadWeightAnnotations() {
       try {
         const raw = localStorage.getItem(LS_ANNOTATIONS_KEY);
@@ -439,7 +455,7 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [] }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [], goalLbs }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -466,6 +482,7 @@
         weightAnnotations: Array.isArray(weightAnnotations)
           ? weightAnnotations.filter(a => a.id && a.startDate && a.endDate && a.label)
           : [],
+        goalLbs: typeof goalLbs === 'number' && goalLbs > 0 ? goalLbs : GOAL_LBS_DEFAULT,
       };
     }
 
@@ -519,10 +536,10 @@
     // write, same as calorieTargets/proteinTargets — this is a full-content PATCH
     // of weight-data.json, so any field the caller omits here is deleted from the
     // Gist, not merely left unmodified.
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = []) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = [], goalLbs = GOAL_LBS_DEFAULT) {
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
-        injSchedule,
+        injSchedule, goalLbs,
         injections: injections.map(serializeInjEntry),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
         calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy, Protein, Carbs, Fat, HasWorkout }) =>
@@ -3542,10 +3559,76 @@
       );
     }
 
-    const GOAL_LBS        = 155;
-    const HEIGHT_IN       = 67; // 5'7"
+    const GOAL_LBS_DEFAULT = 155;
+    const HEIGHT_IN        = 67; // 5'7"
+    const LS_GOAL_BANNER_DISMISS_KEY = 'weight-tracker-goal-banner-dismiss';
 
-    function WeightChart({ rows, injections, injSchedule, annotations = [], isAdmin, onSaveAnnotation, onDeleteAnnotation }) {
+    // Highest-first so .find() below picks the best-earned tier; "at: 0" always
+    // matches once goal is reached at all, so the list is exhaustive.
+    const GOAL_MILESTONES = [
+      { at: 25, emoji: '🏆', tag: 'Legendary' },
+      { at: 20, emoji: '💎', tag: 'Phenomenal' },
+      { at: 15, emoji: '🚀', tag: 'Incredible' },
+      { at: 10, emoji: '🌟', tag: 'Amazing progress' },
+      { at: 5,  emoji: '🔥', tag: 'Still crushing it' },
+      { at: 0,  emoji: '🎉', tag: 'Goal reached' },
+    ];
+
+    // A fun banner that appears once the latest logged weight reaches
+    // goalLbs, and keeps escalating in flavor (not just a one-time toast)
+    // for continued loss beyond it — rewards the ongoing effort instead of
+    // treating the goal as a finish line. Silencing a tier remembers that
+    // tier (+ the goal value it was earned against), so the banner goes
+    // quiet instead of nagging every day, but still comes back the moment
+    // a *better* tier — or a newly-changed goal — gives it something new
+    // to say.
+    function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT }) {
+      const [dismissed, setDismissed] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_GOAL_BANNER_DISMISS_KEY) || 'null'); }
+        catch (_) { return null; }
+      });
+      if (!rows || rows.length === 0) return null;
+      const currentLbs = rows[0].lbs;
+      const beyond = goalLbs - currentLbs; // lbs under goal; negative = not there yet
+      if (beyond < 0) return null;
+      const milestone = GOAL_MILESTONES.find(m => beyond >= m.at);
+      const roundedBeyond = Math.round(beyond * 10) / 10;
+      if (dismissed && dismissed.goal === goalLbs && dismissed.at >= milestone.at) return null;
+
+      const silence = () => {
+        const next = { goal: goalLbs, at: milestone.at };
+        try { localStorage.setItem(LS_GOAL_BANNER_DISMISS_KEY, JSON.stringify(next)); } catch (_) {}
+        setDismissed(next);
+      };
+
+      return (
+        <div style={{ borderRadius: 18, overflow: 'hidden', marginBottom: 10, textAlign: 'center',
+                      position: 'relative', padding: '18px 18px 16px',
+                      background: 'linear-gradient(135deg, #ffd60a, #ff9500)',
+                      boxShadow: '0 4px 14px rgba(255,149,0,.25)',
+                      animation: 'goalPop .5s cubic-bezier(.34,1.56,.64,1)' }}>
+          <button onClick={silence} aria-label="Silence"
+                  style={{ position: 'absolute', top: 10, right: 10, width: 22, height: 22, zIndex: 1,
+                           borderRadius: '50%', border: 'none', background: 'rgba(28,28,30,.18)',
+                           color: 'rgba(28,28,30,.65)', fontSize: 12, display: 'flex', alignItems: 'center',
+                           justifyContent: 'center', cursor: 'pointer' }}>✕</button>
+          {/* The animated transform below creates its own stacking context,
+              which otherwise paints this purely-decorative emoji over the
+              absolutely-positioned ✕ button and swallows its clicks. */}
+          <div style={{ fontSize: 32, lineHeight: 1, marginBottom: 4, pointerEvents: 'none',
+                        animation: 'goalFloat 2.2s ease-in-out infinite' }}>{milestone.emoji}</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#1c1c1e' }}>
+            {milestone.at === 0 ? 'Goal Reached!' : `${roundedBeyond} lbs Past Goal!`}
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(28,28,30,.65)', marginTop: 2 }}>
+            {milestone.tag} — {currentLbs.toFixed(1)} lbs now, goal was {goalLbs}
+          </div>
+        </div>
+      );
+    }
+
+    function WeightChart({ rows, injections, injSchedule, annotations = [], isAdmin, onSaveAnnotation, onDeleteAnnotation,
+                            goalLbs = GOAL_LBS_DEFAULT, onSaveGoal }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
@@ -3554,6 +3637,8 @@
       const [annoTip, setAnnoTip] = useState(null); // id of the hovered/tapped annotation, or null
       const [annoModal, setAnnoModal] = useState(null); // 'new' | an existing annotation object | null
       const [addBtnTip, setAddBtnTip] = useState(false); // hover/tap state for the + Note button's tooltip
+      const [editingGoal, setEditingGoal] = useState(false);
+      const [goalDraft, setGoalDraft] = useState(() => String(goalLbs));
       // The pill and its popover aren't touching (popover floats above the
       // row), so a plain onMouseLeave on the pill would close it the instant
       // the cursor crosses that gap while moving toward the popover (e.g. to
@@ -3660,7 +3745,7 @@
       const intcp = mY - slope * mX;
 
       // Projected goal date
-      const goalDays = slope < 0 ? (GOAL_LBS - intcp) / slope : null;
+      const goalDays = slope < 0 ? (goalLbs - intcp) / slope : null;
       const goalMs   = goalDays != null ? startMs + goalDays * 86400000 : null;
 
       // Goal date drift: compare to projection from 7 days ago (same window)
@@ -3680,7 +3765,7 @@
         const pmY = pys.reduce((s,v) => s+v,0) / pn;
         const pSlope = pxs.reduce((s,x,i) => s+(x-pmX)*(pys[i]-pmY),0) / pxs.reduce((s,x) => s+(x-pmX)**2,0);
         const pIntcp = pmY - pSlope * pmX;
-        const pGoalDays = pSlope < 0 ? (GOAL_LBS - pIntcp) / pSlope : null;
+        const pGoalDays = pSlope < 0 ? (goalLbs - pIntcp) / pSlope : null;
         prevGoalMs = pGoalDays != null ? startMs + pGoalDays * 86400000 : null;
         if (goalMs != null && prevGoalMs != null)
           goalDriftDays = (goalMs - prevGoalMs) / 86400000;
@@ -3718,7 +3803,7 @@
         const slopePerDay = -opt.ratePerWeek / 7;
         // Only project a goal date if there's still weight to lose at this rate —
         // avoids a nonsensical "already reached" date when the anchor is at/below goal.
-        const goalDaysFixed = ratesAnchorLbs > GOAL_LBS ? (GOAL_LBS - ratesAnchorLbs) / slopePerDay : null;
+        const goalDaysFixed = ratesAnchorLbs > goalLbs ? (goalLbs - ratesAnchorLbs) / slopePerDay : null;
         rateGoalMsById[opt.id] = goalDaysFixed != null ? ratesAnchorMs + goalDaysFixed * 86400000 : null;
       });
 
@@ -3742,13 +3827,13 @@
       // Using only the regression window (rys) caused historical dose-change
       // dots to render above the SVG when the user has lost significant weight.
       const maxLbs = Math.max(...pts.map(p => p.lbs)) + 5;
-      const minLbs = GOAL_LBS - 8;
+      const minLbs = goalLbs - 8;
 
       const xOf = ms  => PAD.l + (ms - startMs) / (endMs - startMs) * cW;
       const yOf = lbs => PAD.t + (1 - (lbs - minLbs) / (maxLbs - minLbs)) * cH;
 
       const todayX  = xOf(todayMs);
-      const goalY   = yOf(GOAL_LBS);
+      const goalY   = yOf(goalLbs);
 
       const TREND_LINES = trendModes.map(id => {
         if (id === 'current') {
@@ -3854,7 +3939,7 @@
       const currentLbs    = pts[pts.length - 1].lbs;
       const totalLost     = startLbs - currentLbs;
       const pctBodyLost   = (totalLost / startLbs) * 100;
-      const pctGoal       = Math.min((totalLost / (startLbs - GOAL_LBS)) * 100, 100);
+      const pctGoal       = Math.min((totalLost / (startLbs - goalLbs)) * 100, 100);
       const goalDateStr   = goalMs ? new Date(goalMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : '—';
 
       const startDateStr   = new Date(startMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
@@ -3876,7 +3961,7 @@
         { label: 'Current',     value: currentLbs.toFixed(1) + ' lbs', sub: currentDateStr },
         { label: 'Weight Loss', value: `${periodLossSign}${Math.abs(periodLoss).toFixed(1)} lbs`,
           sub: TREND_PERIOD_PHRASE[trendDays] ?? '', color: periodLoss >= 0 ? '#34c759' : '#ff3b30' },
-        { label: 'Goal',        value: GOAL_LBS + ' lbs' },
+        { label: 'Goal',        value: goalLbs + ' lbs' },
         { label: '% to Goal',   value: pctGoal.toFixed(1) + '%',   color: '#34c759' },
         { label: 'Lost',        value: totalLost.toFixed(1) + ' lbs', color: '#34c759' },
         { label: '% Body Wt',   value: pctBodyLost.toFixed(1) + '%',  color: '#34c759' },
@@ -3960,6 +4045,16 @@
         }
       };
 
+      // Admin-only inline edit for the Goal stat — commits only on a real,
+      // valid change; a no-op edit (same value, or an invalid one) just
+      // closes the editor without a wasted Gist write.
+      const commitGoal = async () => {
+        const n = parseFloat(goalDraft);
+        setEditingGoal(false);
+        if (!Number.isFinite(n) || n <= 0 || n === goalLbs) return;
+        await onSaveGoal?.(n);
+      };
+
       return (
         <div>
           {/* Stats header */}
@@ -3970,8 +4065,32 @@
                                         borderRight: '.5px solid rgba(0,0,0,.05)' }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93',
                               textTransform: 'uppercase', letterSpacing: .4, marginBottom: 3 }}>{label}</div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: color ?? '#1c1c1e',
-                              fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                {label === 'Goal' && isAdmin ? (
+                  editingGoal ? (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}>
+                      <input type="number" step="0.5" min="1" value={goalDraft} autoFocus
+                             onChange={e => setGoalDraft(e.target.value)}
+                             onKeyDown={e => { if (e.key === 'Enter') commitGoal(); if (e.key === 'Escape') setEditingGoal(false); }}
+                             style={{ width: 44, fontSize: 13, fontWeight: 700, textAlign: 'center',
+                                      borderRadius: 6, border: '1px solid #d1d1d6', padding: '2px 1px',
+                                      fontVariantNumeric: 'tabular-nums' }} />
+                      <button onClick={commitGoal} aria-label="Save goal"
+                              style={{ fontSize: 12, color: '#34c759', background: 'none', border: 'none',
+                                       cursor: 'pointer', padding: 0, lineHeight: 1 }}>✓</button>
+                    </div>
+                  ) : (
+                    <div onClick={() => { setGoalDraft(String(goalLbs)); setEditingGoal(true); }}
+                         style={{ fontSize: 15, fontWeight: 700, color: '#1c1c1e', cursor: 'pointer',
+                                  fontVariantNumeric: 'tabular-nums', textDecoration: 'underline',
+                                  textDecorationStyle: 'dotted', textDecorationColor: '#c7c7cc',
+                                  textUnderlineOffset: 2 }}>
+                      {value}
+                    </div>
+                  )
+                ) : (
+                  <div style={{ fontSize: 15, fontWeight: 700, color: color ?? '#1c1c1e',
+                                fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                )}
                 {sub && (
                   <div style={{ fontSize: 10, color: '#aeaeb2', marginTop: 1 }}>{sub}</div>
                 )}
@@ -4218,7 +4337,7 @@
                     fontSize="4.5" fill="#aeaeb2">{v}</text>
             ))}
             <text x={PAD.l - 5} y={goalY + 3} textAnchor="end"
-                  fontSize="4.5" fill="#34c759" fontWeight="600">{GOAL_LBS}</text>
+                  fontSize="4.5" fill="#34c759" fontWeight="600">{goalLbs}</text>
 
             {/* Week count ticks — weeks elapsed since start */}
             <text x={PAD.l - 3} y={PAD.t + cH + 6 + ANNO_ROW_H} textAnchor="end"
@@ -5717,6 +5836,7 @@
       const [calorieTargets, setCalorieTargets] = useState(lsLoadCalorieTargets);
       const [proteinTargets, setProteinTargets] = useState(lsLoadProteinTargets);
       const [weightAnnotations, setWeightAnnotations] = useState(lsLoadWeightAnnotations);
+      const [goalLbs, setGoalLbs] = useState(lsLoadGoalLbs);
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
       const [activeTab,  setActiveTab]   = useState('weight');
@@ -5764,14 +5884,14 @@
       // Returns true/false so callers can commit local state only on a confirmed
       // write — a mutation must never appear to "succeed" locally while silently
       // failing to reach the shared Gist.
-      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations) => {
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations, newGoal = goalLbs) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) {
           setGistOk(false); setGistMsg('Not logged in');
           return false;
         }
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations, newGoal);
           setGistOk(true); setGistMsg('');
           return true;
         } catch (e) {
@@ -5790,11 +5910,12 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
               if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
               if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
+              if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
                 const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
@@ -5837,16 +5958,17 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations, goalLbs);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
             if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
             if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
+            if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -5860,7 +5982,7 @@
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations]);
+      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs]);
 
       // Admin login (view-only user entering PAT)
       const adminLogin = useCallback(async (rawPat, setMsg) => {
@@ -5871,12 +5993,13 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             if (gistTargets) setCalorieTargets(gistTargets);
             if (gistProtTargets) setProteinTargets(gistProtTargets);
             if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
+            if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -5935,6 +6058,18 @@
           setSyncPending(false);
         }
       }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets]);
+
+      // A single current value, not dated history — see lsLoadGoalLbs.
+      const saveGoalLbs = useCallback(async (newGoal) => {
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, newGoal);
+          if (ok) { setGoalLbs(newGoal); lsSaveGoalLbs(newGoal); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations]);
 
       // Upserts by id — used for both add (a fresh crypto.randomUUID() from the
       // modal) and edit (the existing annotation's id).
@@ -6547,6 +6682,7 @@
 
               {/* ── WEIGHT TAB ── */}
               <div style={{ display: activeTab==='weight' ? undefined : 'none' }}>
+              <GoalBanner rows={rows} goalLbs={goalLbs} />
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
@@ -6555,7 +6691,8 @@
                 </div>
                 <WeightChart rows={rows} injections={injections} injSchedule={injSchedule}
                              annotations={weightAnnotations} isAdmin={isAdmin}
-                             onSaveAnnotation={saveWeightAnnotation} onDeleteAnnotation={deleteWeightAnnotation} />
+                             onSaveAnnotation={saveWeightAnnotation} onDeleteAnnotation={deleteWeightAnnotation}
+                             goalLbs={goalLbs} onSaveGoal={saveGoalLbs} />
               </div>
 
               {/* Weight Loss Per Dose */}

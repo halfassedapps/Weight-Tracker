@@ -612,11 +612,12 @@ def main():
             'bloodPressure': merge_bp(gist.get('bloodPressure', []), bp_data) if bp_data is not None else gist.get('bloodPressure', []),
             # This is a full-file PATCH, not a merge — any field fetched-and-not-
             # re-sent here gets silently deleted from the Gist. calorieTargets/
-            # proteinTargets have no watcher-side concept of their own, so just
-            # pass through whatever's already there untouched.
+            # proteinTargets/goalLbs have no watcher-side concept of their own,
+            # so just pass through whatever's already there untouched.
             'calorieTargets': gist.get('calorieTargets', []),
             'proteinTargets': gist.get('proteinTargets', []),
             'weightAnnotations': gist.get('weightAnnotations', []),
+            'goalLbs': gist.get('goalLbs', 155),
         }
         if intervals_creds:
             payload['intervalsActivities'] = sync_intervals(intervals_creds, payload['entries'], gist.get('intervalsActivities'))

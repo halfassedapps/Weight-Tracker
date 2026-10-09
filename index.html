@@ -350,6 +350,17 @@
       try { localStorage.setItem(LS_GOAL_LBS_KEY, String(n)); } catch (_) {}
     }
 
+    // Purely a view preference (not synced) — whether the weight chart/table
+    // shows per-dose line coloring, pills, and a Dose column.
+    const LS_SHOW_INJ_DATA_KEY = 'weight-tracker-show-inj-data';
+    function lsLoadShowInjData() {
+      const v = localStorage.getItem(LS_SHOW_INJ_DATA_KEY);
+      return v == null ? true : v === 'true';
+    }
+    function lsSaveShowInjData(v) {
+      try { localStorage.setItem(LS_SHOW_INJ_DATA_KEY, String(v)); } catch (_) {}
+    }
+
     function lsLoadWeightAnnotations() {
       try {
         const raw = localStorage.getItem(LS_ANNOTATIONS_KEY);
@@ -3562,6 +3573,10 @@
     const GOAL_LBS_DEFAULT = 155;
     const HEIGHT_IN        = 67; // 5'7"
     const LS_GOAL_BANNER_DISMISS_KEY = 'weight-tracker-goal-banner-dismiss';
+    // Daily weight fluctuates — a single weigh-in at/under goal doesn't mean
+    // you're actually *at* your goal weight yet, just that today happened to
+    // land there. Require it to hold for a full week before celebrating.
+    const GOAL_STREAK_DAYS = 7;
 
     // Highest-first so .find() below picks the best-earned tier; "at: 0" always
     // matches once goal is reached at all, so the list is exhaustive.
@@ -3591,6 +3606,29 @@
       const currentLbs = rows[0].lbs;
       const beyond = goalLbs - currentLbs; // lbs under goal; negative = not there yet
       if (beyond < 0) return null;
+
+      // Consecutive most-recent days (rows is newest-first) at/under goal —
+      // breaks the moment a single day comes in above it, so a fluctuation
+      // genuinely restarts the count rather than being smoothed over.
+      let streak = 0;
+      for (const r of rows) {
+        if (r.lbs <= goalLbs) streak++;
+        else break;
+      }
+      if (streak < GOAL_STREAK_DAYS) {
+        const daysLeft = GOAL_STREAK_DAYS - streak;
+        return (
+          <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 10, padding: '12px 16px',
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        background: '#eef6ff', border: '1px solid rgba(74,144,217,.25)' }}>
+            <div style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>🎯</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1c1e' }}>
+              Maintain this weight for {daysLeft} more day{daysLeft === 1 ? '' : 's'} to reach your goal!
+            </div>
+          </div>
+        );
+      }
+
       const milestone = GOAL_MILESTONES.find(m => beyond >= m.at);
       const roundedBeyond = Math.round(beyond * 10) / 10;
       if (dismissed && dismissed.goal === goalLbs && dismissed.at >= milestone.at) return null;
@@ -3639,6 +3677,8 @@
       const [addBtnTip, setAddBtnTip] = useState(false); // hover/tap state for the + Note button's tooltip
       const [editingGoal, setEditingGoal] = useState(false);
       const [goalDraft, setGoalDraft] = useState(() => String(goalLbs));
+      const [viewMode, setViewMode] = useState('graph'); // 'graph' | 'table'
+      const [showInjections, setShowInjections] = useState(lsLoadShowInjData);
       // The pill and its popover aren't touching (popover floats above the
       // row), so a plain onMouseLeave on the pill would close it the instant
       // the cursor crosses that gap while moving toward the popover (e.g. to
@@ -3653,6 +3693,9 @@
       };
       // Regression window for the Current Trend line. 0 = all data.
       const [trendDays, setTrendDays] = useState(21);
+      // How the plotted weight data itself is grouped — not a projection,
+      // the actual logged points averaged into coarser buckets.
+      const [aggregate, setAggregate] = useState('daily');
       const svgRef = useRef(null);
       const [trendModes, setTrendModes] = useState(['current']); // ids of checked trend lines
       const [trendMenuOpen, setTrendMenuOpen] = useState(false);
@@ -3687,6 +3730,48 @@
         ms:  new Date(r.date + 'T12:00:00').getTime(),
         lbs: r.lbs,
       }));
+
+      // Aggregate selector — groups the *actual* logged weight into coarser
+      // buckets (unlike the Trend Lines menu, which only adds hypothetical
+      // projections on top of the daily data). Weekly/Monthly only appear
+      // once the selected Trend period is long enough to make them
+      // meaningful — e.g. Monthly on a 3-week window would average almost
+      // everything into a single point.
+      const AGGREGATE_OPTIONS = [
+        { id: 'daily',   label: 'Daily',   minDays: 0 },
+        { id: 'weekly',  label: 'Weekly',  minDays: 7 },
+        { id: 'monthly', label: 'Monthly', minDays: 30 },
+      ];
+      const availableAggregates = AGGREGATE_OPTIONS.filter(o => trendDays === 0 || trendDays >= o.minDays);
+      useEffect(() => {
+        const opt = AGGREGATE_OPTIONS.find(o => o.id === aggregate);
+        if (opt && trendDays !== 0 && trendDays < opt.minDays) setAggregate('daily');
+      }, [trendDays]);
+
+      const binPtsByUnit = (points, unit) => {
+        const bins = new Map();
+        for (const p of points) {
+          const d = new Date(p.ms);
+          let keyMs;
+          if (unit === 'week') {
+            const wd = new Date(p.ms); wd.setHours(0, 0, 0, 0);
+            wd.setDate(wd.getDate() - wd.getDay());
+            keyMs = wd.getTime();
+          } else {
+            keyMs = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+          }
+          if (!bins.has(keyMs)) bins.set(keyMs, []);
+          bins.get(keyMs).push(p.lbs);
+        }
+        return [...bins.entries()].sort((a, b) => a[0] - b[0])
+          .map(([ms, arr]) => ({ ms, lbs: avg(arr), n: arr.length }));
+      };
+      // The data actually plotted/listed — raw daily points, or binned
+      // averages. Only replaces what's *drawn as the weight line* and the
+      // table rows; the regression, goal projection, and chart's y-range
+      // still reason over the real daily pts so aggregating the view never
+      // skews the underlying analysis.
+      const displayPts = aggregate === 'daily' ? pts : binPtsByUnit(pts, aggregate === 'weekly' ? 'week' : 'month');
 
       // Dose timeline: which *weekly* tirz dose was active at any point in
       // time, and where the weekly total actually changed (used to color-grade
@@ -3878,21 +3963,23 @@
       const tipX   = tipGx != null ? (tipGx + tipW + 10 > PAD.l + cW ? tipGx - tipW - 8 : tipGx + 8) : 0;
       const tipY   = tipGx != null ? Math.max(PAD.t, goalY - tipH / 2) : 0;
 
-      // Color-graded weight line: split pts into runs sharing the same active
-      // dose, each run overlapping its neighbor by one point so segments
-      // connect with no visual gap.
+      // Color-graded weight line: split displayPts into runs sharing the
+      // same active dose, each run overlapping its neighbor by one point so
+      // segments connect with no visual gap. Uses displayPts (daily or
+      // aggregated) rather than raw pts, so the line reflects whatever the
+      // Aggregate selector currently shows.
       const doseSegments = [];
-      { let curDose = doseAt(pts[0].ms);
-        let curRun  = [pts[0]];
-        for (let i = 1; i < pts.length; i++) {
-          const d = doseAt(pts[i].ms);
+      { let curDose = doseAt(displayPts[0].ms);
+        let curRun  = [displayPts[0]];
+        for (let i = 1; i < displayPts.length; i++) {
+          const d = doseAt(displayPts[i].ms);
           if (d !== curDose) {
-            curRun.push(pts[i]);
+            curRun.push(displayPts[i]);
             doseSegments.push({ dose: curDose, pts: curRun });
-            curRun = [pts[i]];
+            curRun = [displayPts[i]];
             curDose = d;
           } else {
-            curRun.push(pts[i]);
+            curRun.push(displayPts[i]);
           }
         }
         doseSegments.push({ dose: curDose, pts: curRun });
@@ -3970,57 +4057,125 @@
       // Renders the chart (header text + SVG) onto a canvas and shares it via
       // the Web Share API (native share sheet) when available, falling back
       // to a plain PNG download otherwise.
+      // Share — captures whichever view (graph/table) is currently showing,
+      // and the table branch respects showInjections the same way the live
+      // table does (the graph branch gets this for free: it's just cloning
+      // whatever the live SVG already rendered).
       const shareChart = async () => {
-        if (!svgRef.current || sharing) return;
+        if (sharing) return;
+        if (viewMode === 'graph' && !svgRef.current) return;
         setSharing(true);
         try {
           const scale = 3, headerH = 66;
           const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
+          let canvas;
 
-          // Explicit pixel width/height (not just viewBox) so the browser
-          // rasterizes the SVG at full target resolution up front, instead
-          // of rendering it small and stretching a blurry bitmap. The SVG's
-          // own <text> elements have no font-family set directly on them
-          // (they inherit it from the page's CSS while live in the DOM) —
-          // a standalone serialized copy has no access to that stylesheet,
-          // so it falls back to the browser's SVG default (serif). Embed an
-          // explicit <style> so the exported text matches the live page.
-          const svgClone = svgRef.current.cloneNode(true);
-          svgClone.setAttribute('width', VW * scale);
-          svgClone.setAttribute('height', VH * scale);
-          const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-          styleEl.textContent = `text { font-family: ${FONT}; }`;
-          svgClone.insertBefore(styleEl, svgClone.firstChild);
-          const svgString = new XMLSerializer().serializeToString(svgClone);
-          const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+          if (viewMode === 'graph') {
+            // Explicit pixel width/height (not just viewBox) so the browser
+            // rasterizes the SVG at full target resolution up front, instead
+            // of rendering it small and stretching a blurry bitmap. The SVG's
+            // own <text> elements have no font-family set directly on them
+            // (they inherit it from the page's CSS while live in the DOM) —
+            // a standalone serialized copy has no access to that stylesheet,
+            // so it falls back to the browser's SVG default (serif). Embed an
+            // explicit <style> so the exported text matches the live page.
+            const svgClone = svgRef.current.cloneNode(true);
+            svgClone.setAttribute('width', VW * scale);
+            svgClone.setAttribute('height', VH * scale);
+            const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+            styleEl.textContent = `text { font-family: ${FONT}; }`;
+            svgClone.insertBefore(styleEl, svgClone.firstChild);
+            const svgString = new XMLSerializer().serializeToString(svgClone);
+            const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
 
-          const img = new Image();
-          await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = reject;
-            img.src = svgUrl;
-          });
+            const img = new Image();
+            await new Promise((resolve, reject) => {
+              img.onload = resolve;
+              img.onerror = reject;
+              img.src = svgUrl;
+            });
 
-          const canvas = document.createElement('canvas');
-          canvas.width = VW * scale;
-          canvas.height = (VH + headerH) * scale;
-          const ctx = canvas.getContext('2d');
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.scale(scale, scale);
-          ctx.fillStyle = '#1c1c1e';
-          ctx.font = `700 13px ${FONT}`;
-          ctx.textAlign = 'left';
-          ctx.fillText('My Weight Trend', 14, 16);
-          ctx.font = `600 10px ${FONT}`;
-          ctx.fillText(`Starting: ${startLbs.toFixed(1)} lbs · Current: ${currentLbs.toFixed(1)} lbs`, 14, 30);
-          ctx.fillStyle = '#34c759';
-          ctx.font = `700 10px ${FONT}`;
-          ctx.fillText(`↓ ${totalLost.toFixed(1)} lbs lost (${pctBodyLost.toFixed(1)}%) · ${pctGoal.toFixed(1)}% to goal`, 14, 44);
-          ctx.fillStyle = '#8e8e93';
-          ctx.font = `400 9px ${FONT}`;
-          ctx.fillText(`Since ${startDateStr}`, 14, 56);
-          ctx.drawImage(img, 0, headerH, VW, VH);
+            canvas = document.createElement('canvas');
+            canvas.width = VW * scale;
+            canvas.height = (VH + headerH) * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.scale(scale, scale);
+            ctx.fillStyle = '#1c1c1e';
+            ctx.font = `700 13px ${FONT}`;
+            ctx.textAlign = 'left';
+            ctx.fillText('My Weight Trend', 14, 16);
+            ctx.font = `600 10px ${FONT}`;
+            ctx.fillText(`Starting: ${startLbs.toFixed(1)} lbs · Current: ${currentLbs.toFixed(1)} lbs`, 14, 30);
+            ctx.fillStyle = '#34c759';
+            ctx.font = `700 10px ${FONT}`;
+            ctx.fillText(`↓ ${totalLost.toFixed(1)} lbs lost (${pctBodyLost.toFixed(1)}%) · ${pctGoal.toFixed(1)}% to goal`, 14, 44);
+            ctx.fillStyle = '#8e8e93';
+            ctx.font = `400 9px ${FONT}`;
+            ctx.fillText(`Since ${startDateStr}`, 14, 56);
+            ctx.drawImage(img, 0, headerH, VW, VH);
+          } else {
+            const rowH = 16, tableHeaderH = 16;
+            // Mirrors the live table's row-building exactly, so the shared
+            // image always matches what's on screen for the current
+            // Aggregate selection.
+            const shareRows = aggregate === 'daily'
+              ? rows.map(r => ({
+                  key: r.date,
+                  dateLabel: (({ mo, day }) => `${mo} ${day}`)(fmtDate(r.date)),
+                  lbs: r.lbs, sub: r.movAvg != null ? `${r.movAvg.toFixed(1)} lbs` : '—',
+                  ms: new Date(r.date + 'T12:00:00').getTime(),
+                }))
+              : [...displayPts].reverse().map(p => ({
+                  key: p.ms,
+                  dateLabel: aggregate === 'weekly'
+                    ? `Wk of ${new Date(p.ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+                    : new Date(p.ms).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+                  lbs: p.lbs, sub: `${p.n} reading${p.n === 1 ? '' : 's'}`, ms: p.ms,
+                }));
+            const subColLabel = aggregate === 'daily' ? '7-DAY AVG' : 'READINGS';
+            const bodyH = tableHeaderH + shareRows.length * rowH;
+            canvas = document.createElement('canvas');
+            canvas.width = VW * scale;
+            canvas.height = (headerH + bodyH + 8) * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.scale(scale, scale);
+            ctx.fillStyle = '#1c1c1e';
+            ctx.font = `700 13px ${FONT}`;
+            ctx.textAlign = 'left';
+            ctx.fillText('My Weight Trend', 14, 16);
+            ctx.font = `600 10px ${FONT}`;
+            ctx.fillText(`Starting: ${startLbs.toFixed(1)} lbs · Current: ${currentLbs.toFixed(1)} lbs`, 14, 30);
+            ctx.fillStyle = '#34c759';
+            ctx.font = `700 10px ${FONT}`;
+            ctx.fillText(`↓ ${totalLost.toFixed(1)} lbs lost (${pctBodyLost.toFixed(1)}%) · ${pctGoal.toFixed(1)}% to goal`, 14, 44);
+            ctx.fillStyle = '#8e8e93';
+            ctx.font = `400 9px ${FONT}`;
+            ctx.fillText(`Since ${startDateStr}`, 14, 56);
+
+            const colDate = 14, colWeight = 110, colAvg = 190, colDose = 280;
+            let y = headerH + tableHeaderH;
+            ctx.font = `700 8px ${FONT}`; ctx.fillStyle = '#8e8e93';
+            ctx.fillText('DATE', colDate, y); ctx.fillText('WEIGHT', colWeight, y); ctx.fillText(subColLabel, colAvg, y);
+            if (showInjections) ctx.fillText('DOSE', colDose, y);
+            shareRows.forEach((r, i) => {
+              y = headerH + tableHeaderH + (i + 1) * rowH;
+              if (i % 2 === 1) { ctx.fillStyle = '#f7f7f9'; ctx.fillRect(10, y - 11, VW - 20, rowH); }
+              ctx.font = `600 9px ${FONT}`; ctx.fillStyle = '#3c3c43';
+              ctx.fillText(r.dateLabel, colDate, y);
+              ctx.fillText(`${r.lbs.toFixed(1)} lbs`, colWeight, y);
+              ctx.fillStyle = '#8e8e93';
+              ctx.fillText(r.sub, colAvg, y);
+              if (showInjections) {
+                const dose = doseAt(r.ms);
+                ctx.fillStyle = dose != null ? colorForDose(dose) : '#c7c7cc';
+                ctx.fillText(dose != null ? `${dose} mg/wk` : '—', colDose, y);
+              }
+            });
+          }
 
           const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
           const file = new File([fileBlob], 'weight-trend.png', { type: 'image/png' });
@@ -4113,6 +4268,14 @@
                 <option value={0}>All time</option>
               </select>
             </div>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ fontSize:10, fontWeight:600, color:'#8e8e93' }}>Show as</span>
+              <select value={aggregate} onChange={e => setAggregate(e.target.value)}
+                      style={{ fontSize:10, fontWeight:600, padding:'4px 6px', borderRadius:8,
+                               background:'#f2f2f7', color:'#3c3c43', border:'none', outline:'none', cursor:'pointer' }}>
+                {availableAggregates.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </div>
           <div style={{ position: 'relative' }} ref={trendMenuRef}>
             <button onClick={() => setTrendMenuOpen(v => !v)}
                     style={{ fontSize: 10, fontWeight: 600, padding: '5px 8px', borderRadius: 8,
@@ -4122,7 +4285,7 @@
             {trendMenuOpen && (
               <div style={{ position: 'absolute', top: '100%', left: 14, marginTop: 4, zIndex: 10,
                             background: '#fff', borderRadius: 10, boxShadow: '0 4px 16px rgba(0,0,0,.15)',
-                            padding: 8, minWidth: 130 }}>
+                            padding: 8, minWidth: 150 }}>
                 {TREND_OPTIONS.map(opt => (
                   <label key={opt.id}
                          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 4px',
@@ -4144,21 +4307,105 @@
               </div>
             )}
           </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', background: '#f2f2f7', borderRadius: 8, padding: 2 }}>
+            {[['graph','Graph'],['table','Table']].map(([id,label]) => (
+              <button key={id} onClick={() => setViewMode(id)}
+                      style={{ fontSize:10, fontWeight:600, padding:'4px 10px', borderRadius:6, border:'none',
+                               cursor:'pointer', background: viewMode===id ? '#fff' : 'transparent',
+                               color: viewMode===id ? '#1c1c1e' : '#8e8e93',
+                               boxShadow: viewMode===id ? '0 1px 2px rgba(0,0,0,.1)' : 'none' }}>
+                {label}
+              </button>
+            ))}
+          </div>
           </div>{/* end trend controls row */}
 
+          {/* Show/hide injection data — affects the line coloring + dose
+              pills (graph), the Dose column (table), and whatever gets
+              shared, since Share just captures whichever is on screen. */}
+          <div style={{ padding: '0 14px 4px' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+                             fontSize: 11, color: '#8e8e93', cursor: 'pointer' }}>
+              <input type="checkbox" checked={showInjections}
+                     onChange={() => setShowInjections(v => { const next = !v; lsSaveShowInjData(next); return next; })} />
+              Show injection data
+            </label>
+          </div>
+
           {/* Chart */}
+          {viewMode === 'table' ? (() => {
+            // Daily keeps the real per-day rows (with their real 7-day
+            // rolling average); Weekly/Monthly list displayPts instead — the
+            // same bins the graph is drawing — with a reading count in
+            // place of a rolling average, which wouldn't mean anything once
+            // each row is already itself a multi-day average.
+            const tableRows = aggregate === 'daily'
+              ? rows.map(r => ({
+                  key: r.date,
+                  dateLabel: (({ wd, mo, day }) => `${wd} ${mo} ${day}`)(fmtDate(r.date)),
+                  lbs: r.lbs,
+                  sub: r.movAvg != null ? `${r.movAvg.toFixed(1)} lbs` : '—',
+                  ms: new Date(r.date + 'T12:00:00').getTime(),
+                }))
+              : [...displayPts].reverse().map(p => ({
+                  key: p.ms,
+                  dateLabel: aggregate === 'weekly'
+                    ? `Week of ${new Date(p.ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+                    : new Date(p.ms).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+                  lbs: p.lbs,
+                  sub: `${p.n} reading${p.n === 1 ? '' : 's'}`,
+                  ms: p.ms,
+                }));
+            const subColLabel = aggregate === 'daily' ? '7-DAY AVG' : 'READINGS';
+            return tableRows.length > 0 ? (
+              <div style={{ maxHeight: 320, overflowY: 'auto', margin: '0 14px', borderRadius: 10,
+                            border: '.5px solid rgba(0,0,0,.08)' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: showInjections ? '1.1fr 1fr 1fr .9fr' : '1.1fr 1fr 1fr',
+                              padding: '6px 10px', background: '#f2f2f7', borderBottom: '.5px solid rgba(0,0,0,.1)',
+                              position: 'sticky', top: 0 }}>
+                  {['DATE', 'WEIGHT', subColLabel, ...(showInjections ? ['DOSE'] : [])].map(h => (
+                    <div key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, color: '#8e8e93' }}>{h}</div>
+                  ))}
+                </div>
+                {tableRows.map((r, i) => {
+                  const dose = showInjections ? doseAt(r.ms) : null;
+                  return (
+                    <div key={r.key}
+                         style={{ display: 'grid', gridTemplateColumns: showInjections ? '1.1fr 1fr 1fr .9fr' : '1.1fr 1fr 1fr',
+                                  padding: '6px 10px', fontSize: 11,
+                                  borderBottom: i < tableRows.length - 1 ? '.5px solid rgba(0,0,0,.06)' : 'none' }}>
+                      <div style={{ color: '#1c1c1e', fontWeight: 600 }}>{r.dateLabel}</div>
+                      <div style={{ color: '#1c1c1e', fontWeight: 600 }}>{r.lbs.toFixed(1)} lbs</div>
+                      <div style={{ color: '#8e8e93' }}>{r.sub}</div>
+                      {showInjections && (
+                        <div style={{ color: dose != null ? colorForDose(dose) : '#c7c7cc', fontWeight: 600 }}>
+                          {dose != null ? `${dose} mg/wk` : '—'}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ padding:'24px 16px', textAlign:'center', color:'#aeaeb2', fontSize:13 }}>
+                No weight data yet.
+              </div>
+            );
+          })() : (
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}
                onMouseMove={e => {
                  const rect = e.currentTarget.getBoundingClientRect();
                  const svgX = (e.clientX - rect.left) / rect.width * VW;
                  if (svgX < PAD.l || svgX > PAD.l + cW) { setWeightTip(null); return; }
                  const ms = startMs + (svgX - PAD.l) / cW * (endMs - startMs);
-                 let best = pts[0], minD = Infinity;
-                 pts.forEach(p => { const d = Math.abs(p.ms - ms); if (d < minD) { minD = d; best = p; } });
-                 // Only show tip when cursor is within 2 days of the nearest logged point
-                 // — prevents phantom tooltip when hovering empty future space.
-                 if (minD > 2 * 86400000) { setWeightTip(null); return; }
-                 setWeightTip({ ms: best.ms, lbs: best.lbs, dateStr: msToLocalDate(best.ms) });
+                 let best = displayPts[0], minD = Infinity;
+                 displayPts.forEach(p => { const d = Math.abs(p.ms - ms); if (d < minD) { minD = d; best = p; } });
+                 // Only show tip when the cursor is near the nearest plotted point —
+                 // prevents phantom tooltip when hovering empty future space. The
+                 // threshold scales with how far apart aggregated points are.
+                 const nearThresholdMs = (aggregate === 'daily' ? 2 : aggregate === 'weekly' ? 4 : 16) * 86400000;
+                 if (minD > nearThresholdMs) { setWeightTip(null); return; }
+                 setWeightTip({ ms: best.ms, lbs: best.lbs, dateStr: msToLocalDate(best.ms), n: best.n });
                }}
                onMouseLeave={() => setWeightTip(null)}>
             <defs>
@@ -4203,17 +4450,25 @@
               ))}
             </g>
 
-            {/* Weight line — distinct color per weekly tirz dose */}
-            {doseSegments.map((seg, i) => (
-              <polyline key={i}
-                points={seg.pts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
-                fill="none" stroke={seg.dose == null ? '#4a90d9' : colorForDose(seg.dose)}
-                strokeWidth="1.5" strokeLinejoin="round" />
-            ))}
+            {/* Weight line — distinct color per weekly tirz dose, unless
+                injection data is hidden, in which case one flat-colored
+                line stands in for the whole thing (no dose to color by). */}
+            {showInjections ? (
+              doseSegments.map((seg, i) => (
+                <polyline key={i}
+                  points={seg.pts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
+                  fill="none" stroke={seg.dose == null ? '#4a90d9' : colorForDose(seg.dose)}
+                  strokeWidth="1.5" strokeLinejoin="round" />
+              ))
+            ) : (
+              <polyline
+                points={displayPts.map(p => `${xOf(p.ms).toFixed(1)},${yOf(p.lbs).toFixed(1)}`).join(' ')}
+                fill="none" stroke="#4a90d9" strokeWidth="1.5" strokeLinejoin="round" />
+            )}
 
             {/* Dose-change markers — dot on the line, pill in the top
                 band (clear of the data), linked by a thin leader line */}
-            {pillPlacements.map((p, i) => (
+            {showInjections && pillPlacements.map((p, i) => (
               <g key={i}>
                 <line x1={p.cx} y1={p.rowY + pillH} x2={p.dotX} y2={p.dotY}
                       stroke={p.color} strokeWidth="0.6" opacity="0.5" />
@@ -4369,14 +4624,21 @@
             {weightTip && !trendLineTip && !annoTip && (() => {
               const startLbs = pts.length ? pts[0].lbs : null;
               const lost = startLbs != null ? weightTip.lbs - startLbs : null;
-              const { wd, mo, day } = fmtDate(weightTip.dateStr);
+              // Aggregated points land on a bin start (Sunday / the 1st of
+              // the month), not a specific logged day, so the label reads
+              // as a range/period instead of a weekday + date.
+              const dateLabel = aggregate === 'daily'
+                ? (({ wd, mo, day }) => `${wd} ${mo} ${day}`)(fmtDate(weightTip.dateStr))
+                : aggregate === 'weekly'
+                ? `Week of ${new Date(weightTip.ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+                : new Date(weightTip.ms).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
               // Same "weeks elapsed since start" reference as the x-axis Week
               // ticks above (startMs, floor to whole weeks).
               const daysSinceStart  = Math.round((weightTip.ms - startMs) / 86400000);
               const weeksSinceStart = Math.floor(daysSinceStart / 7);
               const wx = xOf(weightTip.ms);
               const wy = yOf(weightTip.lbs);
-              const TW = 68, TH = 36, TR = 4;
+              const TW = aggregate === 'daily' ? 68 : 80, TH = 36, TR = 4;
               const tx = Math.max(PAD.l, Math.min(wx - TW / 2, PAD.l + cW - TW));
               const ty = Math.max(PAD.t + 2, wy - TH - 6);
               return (
@@ -4387,14 +4649,16 @@
                   <circle cx={wx} cy={wy} r="1.5" fill="#1c1c1e" />
                   <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.92)" />
                   <text x={tx + TW/2} y={ty + 8} textAnchor="middle"
-                        fontSize="4.5" fill="rgba(255,255,255,.55)">{wd} {mo} {day}</text>
+                        fontSize="4.5" fill="rgba(255,255,255,.55)">{dateLabel}</text>
                   <text x={tx + TW/2} y={ty + 20} textAnchor="middle"
                         fontSize="6.5" fontWeight="600" fill="#34c759" fontVariantNumeric="tabular-nums">
                     {weightTip.lbs.toFixed(1)}{lost != null ? ` / ${lost.toFixed(1)}` : ''}
                   </text>
                   <text x={tx + TW/2} y={ty + 30} textAnchor="middle"
                         fontSize="4" fill="rgba(255,255,255,.55)" fontVariantNumeric="tabular-nums">
-                    Week {weeksSinceStart} · Day {daysSinceStart}
+                    {aggregate === 'daily'
+                      ? `Week ${weeksSinceStart} · Day ${daysSinceStart}`
+                      : `${weightTip.n} reading${weightTip.n === 1 ? '' : 's'} avg`}
                   </text>
                 </g>
               );
@@ -4538,6 +4802,7 @@
               );
             })()}
           </svg>
+          )}
 
           {annoModal && (
             <AnnotationModal

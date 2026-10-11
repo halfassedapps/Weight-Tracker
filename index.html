@@ -4450,6 +4450,39 @@
               ))}
             </g>
 
+            {/* Projected goal marker — rendered before the weight line (and
+                dose pills) so it paints underneath them instead of sitting
+                on top and obscuring the data where the two overlap. */}
+            {trendModes.includes('current') && goalMs && goalMs > todayMs && (
+              <g>
+                <line x1={xOf(goalMs)} y1={PAD.t} x2={xOf(goalMs)} y2={PAD.t + cH}
+                      stroke="#34c759" strokeWidth="1" strokeDasharray="3,2" opacity="0.5" />
+                {/* Interactive goal dot */}
+                <g style={{ cursor: 'pointer' }}
+                   onMouseEnter={() => setGoalTip(true)}
+                   onMouseLeave={() => setGoalTip(false)}
+                   onClick={() => setGoalTip(v => !v)}>
+                  <circle cx={tipGx} cy={goalY} r="10" fill="transparent" />
+                  <circle cx={tipGx} cy={goalY} r="6"
+                          fill={driftColor ?? '#34c759'} stroke="#fff" strokeWidth="1.5" />
+                  {driftSymbol === '←' && (
+                    <path d={`M ${tipGx+2.5},${goalY-2} L ${tipGx-2.5},${goalY} L ${tipGx+2.5},${goalY+2}`}
+                          fill="none" stroke="#fff" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
+                  )}
+                  {driftSymbol === '→' && (
+                    <path d={`M ${tipGx-2.5},${goalY-2} L ${tipGx+2.5},${goalY} L ${tipGx-2.5},${goalY+2}`}
+                          fill="none" stroke="#fff" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
+                  )}
+                  {driftSymbol === '–' && (
+                    <line x1={tipGx-2.5} y1={goalY} x2={tipGx+2.5} y2={goalY}
+                          stroke="#fff" strokeWidth="1.3" strokeLinecap="round" />
+                  )}
+                </g>
+                <text x={xOf(goalMs)} y={PAD.t + cH + 28 + ANNO_ROW_H} textAnchor="middle"
+                      fontSize="5" fill="#34c759" fontWeight="600">{goalDateStr}</text>
+              </g>
+            )}
+
             {/* Weight line — distinct color per weekly tirz dose, unless
                 injection data is hidden, in which case one flat-colored
                 line stands in for the whole thing (no dose to color by). */}
@@ -4487,37 +4520,6 @@
             <line x1={todayX} y1={PAD.t} x2={todayX} y2={PAD.t + cH}
                   stroke="#ff6b35" strokeWidth="1.5" opacity="0.5" />
             <text x={todayX + 3} y={PAD.t + 9} fontSize="5" fill="#ff6b35" fontWeight="600">today</text>
-
-            {/* Projected goal marker */}
-            {trendModes.includes('current') && goalMs && goalMs > todayMs && (
-              <g>
-                <line x1={xOf(goalMs)} y1={PAD.t} x2={xOf(goalMs)} y2={PAD.t + cH}
-                      stroke="#34c759" strokeWidth="1" strokeDasharray="3,2" opacity="0.5" />
-                {/* Interactive goal dot */}
-                <g style={{ cursor: 'pointer' }}
-                   onMouseEnter={() => setGoalTip(true)}
-                   onMouseLeave={() => setGoalTip(false)}
-                   onClick={() => setGoalTip(v => !v)}>
-                  <circle cx={tipGx} cy={goalY} r="10" fill="transparent" />
-                  <circle cx={tipGx} cy={goalY} r="6"
-                          fill={driftColor ?? '#34c759'} stroke="#fff" strokeWidth="1.5" />
-                  {driftSymbol === '←' && (
-                    <path d={`M ${tipGx+2.5},${goalY-2} L ${tipGx-2.5},${goalY} L ${tipGx+2.5},${goalY+2}`}
-                          fill="none" stroke="#fff" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
-                  )}
-                  {driftSymbol === '→' && (
-                    <path d={`M ${tipGx-2.5},${goalY-2} L ${tipGx+2.5},${goalY} L ${tipGx-2.5},${goalY+2}`}
-                          fill="none" stroke="#fff" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
-                  )}
-                  {driftSymbol === '–' && (
-                    <line x1={tipGx-2.5} y1={goalY} x2={tipGx+2.5} y2={goalY}
-                          stroke="#fff" strokeWidth="1.3" strokeLinecap="round" />
-                  )}
-                </g>
-                <text x={xOf(goalMs)} y={PAD.t + cH + 28 + ANNO_ROW_H} textAnchor="middle"
-                      fontSize="5" fill="#34c759" fontWeight="600">{goalDateStr}</text>
-              </g>
-            )}
 
             {/* Axes */}
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="1" />

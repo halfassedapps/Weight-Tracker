@@ -17,6 +17,10 @@
     @keyframes fadeSlide { from { opacity:0; transform:translateY(-3px); } to { opacity:1; transform:none; } }
     @keyframes goalPop { from { opacity:0; transform:scale(.92) translateY(-6px); } to { opacity:1; transform:none; } }
     @keyframes goalFloat { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-3px); } }
+    @keyframes confettiFall {
+      0%   { transform: translate(0, 0) rotate(0deg); opacity: 1; }
+      100% { transform: translate(var(--drift), 100vh) rotate(var(--rot)); opacity: 0; }
+    }
     ::-webkit-scrollbar { display: none; }
   </style>
 </head>
@@ -3573,10 +3577,12 @@
     const GOAL_LBS_DEFAULT = 155;
     const HEIGHT_IN        = 67; // 5'7"
     const LS_GOAL_BANNER_DISMISS_KEY = 'weight-tracker-goal-banner-dismiss';
+    const LS_GOAL_CELEBRATED_KEY = 'weight-tracker-goal-celebrated';
     // Daily weight fluctuates — a single weigh-in at/under goal doesn't mean
     // you're actually *at* your goal weight yet, just that today happened to
-    // land there. Require it to hold for a full week before celebrating.
-    const GOAL_STREAK_DAYS = 7;
+    // land there. Require the trailing 2-week average to hold there too
+    // before celebrating.
+    const GOAL_AVG_WINDOW_DAYS = 14;
 
     // Highest-first so .find() below picks the best-earned tier; "at: 0" always
     // matches once goal is reached at all, so the list is exhaustive.
@@ -3588,6 +3594,39 @@
       { at: 5,  emoji: '🔥', tag: 'Still crushing it' },
       { at: 0,  emoji: '🎉', tag: 'Goal reached' },
     ];
+
+    // One-shot full-viewport confetti shower — the "surprise" for newly
+    // reaching a goal milestone (see the celebrated-tracking effect in
+    // GoalBanner below). Pure CSS animation, no library: each piece is a
+    // small rotated rect falling from just above the viewport with a
+    // randomized horizontal drift, staggered start, and fall duration so
+    // the whole shower reads as organic rather than a uniform grid.
+    const CONFETTI_COLORS = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#5ac8fa', '#5856d6', '#ff2d55', '#bf5af2'];
+    function ConfettiBurst() {
+      const pieces = useMemo(() => Array.from({ length: 40 }, (_, i) => ({
+        id: i,
+        left: Math.random() * 100,
+        color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+        delay: Math.random() * 0.4,
+        duration: 2.2 + Math.random() * 1.4,
+        rotate: 180 + Math.random() * 540,
+        drift: Math.round((Math.random() - 0.5) * 120),
+        w: 5 + Math.random() * 5,
+        h: 8 + Math.random() * 6,
+      })), []);
+      return (
+        <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 9999 }}>
+          {pieces.map(p => (
+            <div key={p.id} style={{
+              position: 'absolute', top: -24, left: `${p.left}%`, width: p.w, height: p.h,
+              background: p.color, borderRadius: 1,
+              animation: `confettiFall ${p.duration}s cubic-bezier(.35,0,.65,1) ${p.delay}s forwards`,
+              '--drift': `${p.drift}px`, '--rot': `${p.rotate}deg`,
+            }} />
+          ))}
+        </div>
+      );
+    }
 
     // A fun banner that appears once the latest logged weight reaches
     // goalLbs, and keeps escalating in flavor (not just a one-time toast)
@@ -3602,36 +3641,70 @@
         try { return JSON.parse(localStorage.getItem(LS_GOAL_BANNER_DISMISS_KEY) || 'null'); }
         catch (_) { return null; }
       });
-      if (!rows || rows.length === 0) return null;
-      const currentLbs = rows[0].lbs;
-      const beyond = goalLbs - currentLbs; // lbs under goal; negative = not there yet
-      if (beyond < 0) return null;
+      // Tracks the best milestone tier already celebrated with confetti (per
+      // goal value) — independent of `dismissed` above, so silencing the
+      // banner doesn't replay the surprise, but a genuinely new tier (or a
+      // changed goal) still gets its own one-time burst. All hooks must run
+      // before any early return below, so this is computed defensively even
+      // when there's no data yet / goal isn't reached.
+      const [celebrated, setCelebrated] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_GOAL_CELEBRATED_KEY) || 'null'); }
+        catch (_) { return null; }
+      });
+      const [showConfetti, setShowConfetti] = useState(false);
 
-      // Consecutive most-recent days (rows is newest-first) at/under goal —
-      // breaks the moment a single day comes in above it, so a fluctuation
-      // genuinely restarts the count rather than being smoothed over.
-      let streak = 0;
-      for (const r of rows) {
-        if (r.lbs <= goalLbs) streak++;
-        else break;
-      }
-      if (streak < GOAL_STREAK_DAYS) {
-        const daysLeft = GOAL_STREAK_DAYS - streak;
+      const hasData   = !!(rows && rows.length > 0);
+      const currentLbs = hasData ? rows[0].lbs : null;
+      const beyond    = hasData ? goalLbs - currentLbs : null; // lbs under goal; negative = not there yet
+      // Trailing window (rows is newest-first, so this is the most recent
+      // GOAL_AVG_WINDOW_DAYS logged entries — same "slice from the front"
+      // convention computeLogbook's own movAvg uses) — a brief daily dip
+      // doesn't count until the broader average actually holds at goal too.
+      const windowRows = hasData ? rows.slice(0, GOAL_AVG_WINDOW_DAYS) : [];
+      const windowAvg  = windowRows.length ? avg(windowRows.map(r => r.lbs)) : null;
+      const atGoal     = hasData && beyond >= 0 && windowAvg != null && windowAvg <= goalLbs;
+      const milestone  = atGoal ? GOAL_MILESTONES.find(m => beyond >= m.at) : null;
+      const milestoneAt = milestone ? milestone.at : null;
+
+      useEffect(() => {
+        if (milestoneAt == null) return;
+        const isNew = !celebrated || celebrated.goal !== goalLbs || celebrated.at < milestoneAt;
+        if (!isNew) return;
+        const next = { goal: goalLbs, at: milestoneAt };
+        try { localStorage.setItem(LS_GOAL_CELEBRATED_KEY, JSON.stringify(next)); } catch (_) {}
+        setCelebrated(next);
+        setShowConfetti(true);
+      }, [milestoneAt, goalLbs, celebrated]);
+
+      useEffect(() => {
+        if (!showConfetti) return;
+        const t = setTimeout(() => setShowConfetti(false), 3200);
+        return () => clearTimeout(t);
+      }, [showConfetti]);
+
+      if (!hasData) return null;
+      const confetti = showConfetti ? <ConfettiBurst /> : null;
+      if (beyond < 0) return confetti;
+
+      if (!atGoal) {
+        const avgBeyond = Math.round((windowAvg - goalLbs) * 10) / 10;
         return (
-          <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 10, padding: '12px 16px',
-                        display: 'flex', alignItems: 'center', gap: 10,
-                        background: '#eef6ff', border: '1px solid rgba(74,144,217,.25)' }}>
-            <div style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>🎯</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1c1e' }}>
-              Maintain this weight for {daysLeft} more day{daysLeft === 1 ? '' : 's'} to reach your goal!
+          <>
+            {confetti}
+            <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 10, padding: '12px 16px',
+                          display: 'flex', alignItems: 'center', gap: 10,
+                          background: '#eef6ff', border: '1px solid rgba(74,144,217,.25)' }}>
+              <div style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>🎯</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1c1e' }}>
+                {windowRows.length}-day avg is {windowAvg.toFixed(1)} lbs — {avgBeyond} lbs to go to lock in your goal!
+              </div>
             </div>
-          </div>
+          </>
         );
       }
 
-      const milestone = GOAL_MILESTONES.find(m => beyond >= m.at);
       const roundedBeyond = Math.round(beyond * 10) / 10;
-      if (dismissed && dismissed.goal === goalLbs && dismissed.at >= milestone.at) return null;
+      if (dismissed && dismissed.goal === goalLbs && dismissed.at >= milestone.at) return confetti;
 
       const silence = () => {
         const next = { goal: goalLbs, at: milestone.at };
@@ -3640,28 +3713,31 @@
       };
 
       return (
-        <div style={{ borderRadius: 18, overflow: 'hidden', marginBottom: 10, textAlign: 'center',
-                      position: 'relative', padding: '18px 18px 16px',
-                      background: 'linear-gradient(135deg, #ffd60a, #ff9500)',
-                      boxShadow: '0 4px 14px rgba(255,149,0,.25)',
-                      animation: 'goalPop .5s cubic-bezier(.34,1.56,.64,1)' }}>
-          <button onClick={silence} aria-label="Silence"
-                  style={{ position: 'absolute', top: 10, right: 10, width: 22, height: 22, zIndex: 1,
-                           borderRadius: '50%', border: 'none', background: 'rgba(28,28,30,.18)',
-                           color: 'rgba(28,28,30,.65)', fontSize: 12, display: 'flex', alignItems: 'center',
-                           justifyContent: 'center', cursor: 'pointer' }}>✕</button>
-          {/* The animated transform below creates its own stacking context,
-              which otherwise paints this purely-decorative emoji over the
-              absolutely-positioned ✕ button and swallows its clicks. */}
-          <div style={{ fontSize: 32, lineHeight: 1, marginBottom: 4, pointerEvents: 'none',
-                        animation: 'goalFloat 2.2s ease-in-out infinite' }}>{milestone.emoji}</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: '#1c1c1e' }}>
-            {milestone.at === 0 ? 'Goal Reached!' : `${roundedBeyond} lbs Past Goal!`}
+        <>
+          {confetti}
+          <div style={{ borderRadius: 18, overflow: 'hidden', marginBottom: 10, textAlign: 'center',
+                        position: 'relative', padding: '18px 18px 16px',
+                        background: 'linear-gradient(135deg, #ffd60a, #ff9500)',
+                        boxShadow: '0 4px 14px rgba(255,149,0,.25)',
+                        animation: 'goalPop .5s cubic-bezier(.34,1.56,.64,1)' }}>
+            <button onClick={silence} aria-label="Silence"
+                    style={{ position: 'absolute', top: 10, right: 10, width: 22, height: 22, zIndex: 1,
+                             borderRadius: '50%', border: 'none', background: 'rgba(28,28,30,.18)',
+                             color: 'rgba(28,28,30,.65)', fontSize: 12, display: 'flex', alignItems: 'center',
+                             justifyContent: 'center', cursor: 'pointer' }}>✕</button>
+            {/* The animated transform below creates its own stacking context,
+                which otherwise paints this purely-decorative emoji over the
+                absolutely-positioned ✕ button and swallows its clicks. */}
+            <div style={{ fontSize: 32, lineHeight: 1, marginBottom: 4, pointerEvents: 'none',
+                          animation: 'goalFloat 2.2s ease-in-out infinite' }}>{milestone.emoji}</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: '#1c1c1e' }}>
+              {milestone.at === 0 ? 'Goal Reached!' : `${roundedBeyond} lbs Past Goal!`}
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(28,28,30,.65)', marginTop: 2 }}>
+              {milestone.tag} — {currentLbs.toFixed(1)} lbs now, goal was {goalLbs}
+            </div>
           </div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(28,28,30,.65)', marginTop: 2 }}>
-            {milestone.tag} — {currentLbs.toFixed(1)} lbs now, goal was {goalLbs}
-          </div>
-        </div>
+        </>
       );
     }
 

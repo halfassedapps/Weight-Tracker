@@ -3583,6 +3583,19 @@
     // land there. Require the trailing 2-week average to hold there too
     // before celebrating.
     const GOAL_AVG_WINDOW_DAYS = 14;
+    // Once at goal, how much 2-week drift (lbs, either direction) counts as
+    // "still trending" rather than noise. Deliberately tighter than the
+    // loss-phase doseGuidance bands (3/5/8 lbs/2wk) — maintenance has no
+    // loss cushion to spare, so drift that's "fine" while actively losing
+    // is already worth flagging here. twoWeekLoss is already a diff of two
+    // 7-day moving averages, so ordinary daily water-weight swings are
+    // damped out before this threshold ever sees them.
+    const MAINTENANCE_DRIFT_LBS = 2;
+    // Own constant, not DOSE_INCREASE_HOLD_DAYS — that one's comments are
+    // specifically about post-*increase* titration in the loss phase.
+    // Maintenance dose changes go either direction, and twoWeekLoss lags
+    // any of them the same way.
+    const DOSE_MAINTENANCE_HOLD_DAYS = 21;
 
     // Highest-first so .find() below picks the best-earned tier; "at: 0" always
     // matches once goal is reached at all, so the list is exhaustive.
@@ -3636,7 +3649,7 @@
     // quiet instead of nagging every day, but still comes back the moment
     // a *better* tier — or a newly-changed goal — gives it something new
     // to say.
-    function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT }) {
+    function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT, injections, isAdmin }) {
       const [dismissed, setDismissed] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_GOAL_BANNER_DISMISS_KEY) || 'null'); }
         catch (_) { return null; }
@@ -3684,7 +3697,10 @@
 
       if (!hasData) return null;
       const confetti = showConfetti ? <ConfettiBurst /> : null;
-      if (beyond < 0) return confetti;
+      // Not at goal at all right now — nothing to show. (Not `confetti` —
+      // if a milestone just fired and goalLbs/rows changed again within its
+      // 3.2s window, there'd be nothing left to justify celebrating.)
+      if (beyond < 0) return null;
 
       if (!atGoal) {
         const avgBeyond = Math.round((windowAvg - goalLbs) * 10) / 10;
@@ -3704,7 +3720,7 @@
       }
 
       const roundedBeyond = Math.round(beyond * 10) / 10;
-      if (dismissed && dismissed.goal === goalLbs && dismissed.at >= milestone.at) return confetti;
+      const tierSilenced = dismissed && dismissed.goal === goalLbs && dismissed.at >= milestone.at;
 
       const silence = () => {
         const next = { goal: goalLbs, at: milestone.at };
@@ -3712,31 +3728,113 @@
         setDismissed(next);
       };
 
+      // Lagging-signal guard, generalized from the loss-phase justIncreased/
+      // lastIncreaseMs pattern (doseGuidance, DOSE_INCREASE_HOLD_DAYS) to any
+      // dose *change* — in maintenance a step-down is just as disruptive to
+      // the trend signal as a step-up.
+      const sortedInj = [...(injections || [])].sort((a, b) => a.date.localeCompare(b.date));
+      let lastDoseChangeMs = null;
+      for (let i = sortedInj.length - 1; i > 0; i--) {
+        if (sortedInj[i].doseMg !== sortedInj[i - 1].doseMg) {
+          lastDoseChangeMs = new Date(sortedInj[i].date + 'T12:00:00').getTime();
+          break;
+        }
+      }
+      const todayMsForMaint = new Date().setHours(12, 0, 0, 0);
+      const daysSinceDoseChange = lastDoseChangeMs != null
+        ? Math.floor((todayMsForMaint - lastDoseChangeMs) / 86400000) : null;
+      const doseChangeHold = daysSinceDoseChange != null && daysSinceDoseChange < DOSE_MAINTENANCE_HOLD_DAYS;
+
+      // Same trend signal the loss-phase dose recommendation already uses
+      // (computeLogbook's twoWeekLoss — positive = losing, negative =
+      // gaining), just with maintenance-appropriate bands instead of the
+      // loss-phase ones.
+      const recentTrend = rows.find(r => r.twoWeekLoss != null);
+      const twoWeekLoss = recentTrend ? recentTrend.twoWeekLoss : null;
+      const windowAvgStr = windowAvg.toFixed(1);
+      let maint;
+      if (doseChangeHold) {
+        maint = {
+          emoji: '⏳',
+          line1: `Maintaining — 14-day avg is ${windowAvgStr} lbs.`,
+          line2: `Dose changed ${daysSinceDoseChange} day${daysSinceDoseChange === 1 ? '' : 's'} ago — trend guidance resumes once the 2-week average reflects it.`,
+        };
+      } else if (twoWeekLoss == null) {
+        maint = {
+          emoji: '🎯',
+          line1: `Maintaining — 14-day avg is ${windowAvgStr} lbs.`,
+          line2: `Trend guidance kicks in once there's ~3 weeks of history.`,
+        };
+      } else if (twoWeekLoss >= MAINTENANCE_DRIFT_LBS) {
+        maint = {
+          emoji: '📉',
+          line1: `Still trending down — 14-day avg is ${windowAvgStr} lbs, down ${twoWeekLoss.toFixed(1)} lbs over 2 weeks.`,
+          line2: `Talk to your prescriber about stepping down dose, or add some calories back in to hold here.`,
+        };
+      } else if (twoWeekLoss <= -MAINTENANCE_DRIFT_LBS) {
+        maint = {
+          emoji: '📈',
+          line1: `Trending back up — 14-day avg is ${windowAvgStr} lbs, up ${Math.abs(twoWeekLoss).toFixed(1)} lbs over 2 weeks.`,
+          line2: `Worth a dose conversation with your prescriber, or tightening calorie intake, before it goes further.`,
+        };
+      } else {
+        maint = {
+          emoji: '🎯',
+          line1: `Maintaining — 14-day avg is ${windowAvgStr} lbs, holding steady at your ${goalLbs} lb goal.`,
+          line2: null,
+        };
+      }
+
       return (
         <>
           {confetti}
-          <div style={{ borderRadius: 18, overflow: 'hidden', marginBottom: 10, textAlign: 'center',
-                        position: 'relative', padding: '18px 18px 16px',
-                        background: 'linear-gradient(135deg, #ffd60a, #ff9500)',
-                        boxShadow: '0 4px 14px rgba(255,149,0,.25)',
-                        animation: 'goalPop .5s cubic-bezier(.34,1.56,.64,1)' }}>
-            <button onClick={silence} aria-label="Silence"
-                    style={{ position: 'absolute', top: 10, right: 10, width: 22, height: 22, zIndex: 1,
-                             borderRadius: '50%', border: 'none', background: 'rgba(28,28,30,.18)',
-                             color: 'rgba(28,28,30,.65)', fontSize: 12, display: 'flex', alignItems: 'center',
-                             justifyContent: 'center', cursor: 'pointer' }}>✕</button>
-            {/* The animated transform below creates its own stacking context,
-                which otherwise paints this purely-decorative emoji over the
-                absolutely-positioned ✕ button and swallows its clicks. */}
-            <div style={{ fontSize: 32, lineHeight: 1, marginBottom: 4, pointerEvents: 'none',
-                          animation: 'goalFloat 2.2s ease-in-out infinite' }}>{milestone.emoji}</div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: '#1c1c1e' }}>
-              {milestone.at === 0 ? 'Goal Reached!' : `${roundedBeyond} lbs Past Goal!`}
-            </div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(28,28,30,.65)', marginTop: 2 }}>
-              {milestone.tag} — {currentLbs.toFixed(1)} lbs now, goal was {goalLbs}
+          {/* Persistent maintenance status — unlike the gold milestone
+              banner below, this never disappears or silences once at goal,
+              so there's always something here to accompany any confetti. */}
+          <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: tierSilenced ? 10 : 6,
+                        padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10,
+                        background: '#eef6ff', border: '1px solid rgba(74,144,217,.25)' }}>
+            <div style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>{maint.emoji}</div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1c1e' }}>{maint.line1}</div>
+              {maint.line2 && (
+                <div style={{ fontSize: 12, color: '#3c3c43', marginTop: 2 }}>{maint.line2}</div>
+              )}
+              {isAdmin && (
+                <button onClick={() => document.getElementById('weight-goal-stat')
+                                          ?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                        style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                 border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
+                                 textDecoration: 'underline' }}>
+                  Edit goal →
+                </button>
+              )}
             </div>
           </div>
+          {!tierSilenced && (
+            <div style={{ borderRadius: 18, overflow: 'hidden', marginBottom: 10, textAlign: 'center',
+                          position: 'relative', padding: '18px 18px 16px',
+                          background: 'linear-gradient(135deg, #ffd60a, #ff9500)',
+                          boxShadow: '0 4px 14px rgba(255,149,0,.25)',
+                          animation: 'goalPop .5s cubic-bezier(.34,1.56,.64,1)' }}>
+              <button onClick={silence} aria-label="Silence"
+                      style={{ position: 'absolute', top: 10, right: 10, width: 22, height: 22, zIndex: 1,
+                               borderRadius: '50%', border: 'none', background: 'rgba(28,28,30,.18)',
+                               color: 'rgba(28,28,30,.65)', fontSize: 12, display: 'flex', alignItems: 'center',
+                               justifyContent: 'center', cursor: 'pointer' }}>✕</button>
+              {/* The animated transform below creates its own stacking context,
+                  which otherwise paints this purely-decorative emoji over the
+                  absolutely-positioned ✕ button and swallows its clicks. */}
+              <div style={{ fontSize: 32, lineHeight: 1, marginBottom: 4, pointerEvents: 'none',
+                            animation: 'goalFloat 2.2s ease-in-out infinite' }}>{milestone.emoji}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: '#1c1c1e' }}>
+                {milestone.at === 0 ? 'Goal Reached!' : `${roundedBeyond} lbs Past Goal!`}
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(28,28,30,.65)', marginTop: 2 }}>
+                {milestone.tag} — {currentLbs.toFixed(1)} lbs now, goal was {goalLbs}
+              </div>
+            </div>
+          )}
         </>
       );
     }
@@ -4292,8 +4390,9 @@
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)',
                         borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
             {stats.map(({ label, value, color, sub }) => (
-              <div key={label} style={{ padding: '10px 4px', textAlign: 'center',
-                                        borderRight: '.5px solid rgba(0,0,0,.05)' }}>
+              <div key={label} id={label === 'Goal' ? 'weight-goal-stat' : undefined}
+                   style={{ padding: '10px 4px', textAlign: 'center',
+                            borderRight: '.5px solid rgba(0,0,0,.05)' }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93',
                               textTransform: 'uppercase', letterSpacing: .4, marginBottom: 3 }}>{label}</div>
                 {label === 'Goal' && isAdmin ? (
@@ -7025,7 +7124,7 @@
 
               {/* ── WEIGHT TAB ── */}
               <div style={{ display: activeTab==='weight' ? undefined : 'none' }}>
-              <GoalBanner rows={rows} goalLbs={goalLbs} />
+              <GoalBanner rows={rows} goalLbs={goalLbs} injections={injections} isAdmin={isAdmin} />
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>

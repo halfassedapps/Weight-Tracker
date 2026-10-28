@@ -354,6 +354,16 @@
       try { localStorage.setItem(LS_GOAL_LBS_KEY, String(n)); } catch (_) {}
     }
 
+    const LS_HEIGHT_IN_KEY = 'weight-tracker-height-in';
+    function lsLoadHeightIn() {
+      const raw = localStorage.getItem(LS_HEIGHT_IN_KEY);
+      const n = raw != null ? Number(raw) : NaN;
+      return Number.isFinite(n) && n > 0 ? n : HEIGHT_IN_DEFAULT;
+    }
+    function lsSaveHeightIn(n) {
+      try { localStorage.setItem(LS_HEIGHT_IN_KEY, String(n)); } catch (_) {}
+    }
+
     // Purely a view preference (not synced) — whether the weight chart/table
     // shows per-dose line coloring, pills, and a Dose column.
     const LS_SHOW_INJ_DATA_KEY = 'weight-tracker-show-inj-data';
@@ -470,7 +480,7 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [], goalLbs }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [], goalLbs, heightIn }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -498,6 +508,7 @@
           ? weightAnnotations.filter(a => a.id && a.startDate && a.endDate && a.label)
           : [],
         goalLbs: typeof goalLbs === 'number' && goalLbs > 0 ? goalLbs : GOAL_LBS_DEFAULT,
+        heightIn: typeof heightIn === 'number' && heightIn > 0 ? heightIn : HEIGHT_IN_DEFAULT,
       };
     }
 
@@ -551,10 +562,10 @@
     // write, same as calorieTargets/proteinTargets — this is a full-content PATCH
     // of weight-data.json, so any field the caller omits here is deleted from the
     // Gist, not merely left unmodified.
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = [], goalLbs = GOAL_LBS_DEFAULT) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = [], goalLbs = GOAL_LBS_DEFAULT, heightIn = HEIGHT_IN_DEFAULT) {
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
-        injSchedule, goalLbs,
+        injSchedule, goalLbs, heightIn,
         injections: injections.map(serializeInjEntry),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
         calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy, Protein, Carbs, Fat, HasWorkout }) =>
@@ -3575,7 +3586,24 @@
     }
 
     const GOAL_LBS_DEFAULT = 155;
-    const HEIGHT_IN        = 67; // 5'7"
+    const HEIGHT_IN_DEFAULT = 67; // 5'7"
+    // Escalating severity palette matching the rest of the app's category
+    // bands (BP_BANDS/bpCategory) — blue for below-normal since it's not an
+    // escalating-risk direction the same way over-normal is.
+    const BMI_RANGES = [
+      { label: 'Underweight',     range: 'Below 18.5', color: '#5ac8fa' },
+      { label: 'Normal',          range: '18.5 – 24.9', color: '#34c759' },
+      { label: 'Overweight',      range: '25.0 – 29.9', color: '#ffd60a' },
+      { label: 'Obese',           range: '30.0 – 39.9', color: '#ff9500' },
+      { label: 'Morbidly Obese',  range: '40.0+',       color: '#ff3b30' },
+    ];
+    function bmiCategory(bmi) {
+      if (bmi < 18.5) return BMI_RANGES[0];
+      if (bmi < 25)   return BMI_RANGES[1];
+      if (bmi < 30)   return BMI_RANGES[2];
+      if (bmi < 40)   return BMI_RANGES[3];
+      return BMI_RANGES[4];
+    }
     const LS_GOAL_BANNER_DISMISS_KEY = 'weight-tracker-goal-banner-dismiss';
     const LS_GOAL_CELEBRATED_KEY = 'weight-tracker-goal-celebrated';
     // Daily weight fluctuates — a single weigh-in at/under goal doesn't mean
@@ -3850,7 +3878,7 @@
     }
 
     function WeightChart({ rows, injections, injSchedule, annotations = [], isAdmin, onSaveAnnotation, onDeleteAnnotation,
-                            goalLbs = GOAL_LBS_DEFAULT, onSaveGoal }) {
+                            goalLbs = GOAL_LBS_DEFAULT, onSaveGoal, heightIn = HEIGHT_IN_DEFAULT, onSaveHeight }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
@@ -3862,6 +3890,8 @@
       const [editingGoal, setEditingGoal] = useState(false);
       const [goalDraft, setGoalDraft] = useState(() => String(goalLbs));
       const [goalInputFocused, setGoalInputFocused] = useState(false);
+      const [editingHeight, setEditingHeight] = useState(false);
+      const [heightDraft, setHeightDraft] = useState(() => String(heightIn));
       const [viewMode, setViewMode] = useState('graph'); // 'graph' | 'table'
       const [showInjections, setShowInjections] = useState(lsLoadShowInjData);
       // The pill and its popover aren't touching (popover floats above the
@@ -4228,6 +4258,9 @@
       const periodLoss = lbsAt(cutoffMs) - currentLbs;
       const periodLossSign = periodLoss >= 0 ? '↓' : '↑';
 
+      const bmi = 703 * currentLbs / (heightIn * heightIn);
+      const bmiCat = bmiCategory(bmi);
+
       const stats = [
         { label: 'Starting',    value: startLbs.toFixed(1) + ' lbs', sub: startDateStr },
         { label: 'Current',     value: currentLbs.toFixed(1) + ' lbs', sub: currentDateStr },
@@ -4237,6 +4270,7 @@
         { label: '% to Goal',   value: pctGoal.toFixed(1) + '%',   color: '#34c759' },
         { label: 'Lost',        value: totalLost.toFixed(1) + ' lbs', color: '#34c759' },
         { label: '% Body Wt',   value: pctBodyLost.toFixed(1) + '%',  color: '#34c759' },
+        { label: 'BMI',         value: bmi.toFixed(1), sub: bmiCat.label, color: bmiCat.color },
       ];
 
       // Renders the chart (header text + SVG) onto a canvas and shares it via
@@ -4395,17 +4429,65 @@
         await onSaveGoal?.(n);
       };
 
+      const commitHeight = async () => {
+        const n = parseFloat(heightDraft);
+        setEditingHeight(false);
+        if (!Number.isFinite(n) || n <= 0 || n === heightIn) return;
+        await onSaveHeight?.(n);
+      };
+
       return (
         <div>
           {/* Stats header */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)',
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)',
                         borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
             {stats.map(({ label, value, color, sub }) => (
               <div key={label} id={label === 'Goal' ? 'weight-goal-stat' : undefined}
-                   style={{ padding: '10px 4px', textAlign: 'center',
+                   style={{ padding: '10px 2px', textAlign: 'center', minWidth: 0,
                             borderRight: '.5px solid rgba(0,0,0,.05)' }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93',
-                              textTransform: 'uppercase', letterSpacing: .4, marginBottom: 3 }}>{label}</div>
+                <div style={{ fontSize: 9.5, fontWeight: 600, color: '#8e8e93',
+                              textTransform: 'uppercase', letterSpacing: .2, marginBottom: 3,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+                  {label === 'BMI' && (
+                    <InfoDot align="right">
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>BMI categories</div>
+                      {BMI_RANGES.map(r => (
+                        <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: r.color, flexShrink: 0 }} />
+                          <span style={{ flex: 1 }}>{r.label}</span>
+                          <span style={{ color: '#aeaeb2' }}>{r.range}</span>
+                        </div>
+                      ))}
+                      {isAdmin && (
+                        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,.15)',
+                                      display: 'flex', alignItems: 'center', gap: 6 }}
+                             onClick={e => e.stopPropagation()}>
+                          <span style={{ color: '#aeaeb2' }}>Height (in)</span>
+                          {editingHeight ? (
+                            <>
+                              <input type="number" step="0.5" min="1" value={heightDraft} autoFocus
+                                     onChange={e => setHeightDraft(e.target.value)}
+                                     onKeyDown={e => { if (e.key === 'Enter') commitHeight(); if (e.key === 'Escape') setEditingHeight(false); }}
+                                     style={{ width: 44, fontSize: 11, textAlign: 'center', borderRadius: 4,
+                                              border: '1px solid #8e8e93', padding: '1px 2px', background: '#1c1c1e',
+                                              color: '#fff' }} />
+                              <button onClick={commitHeight} aria-label="Save height"
+                                      style={{ fontSize: 11, color: '#34c759', background: 'none', border: 'none',
+                                               cursor: 'pointer', padding: 0, lineHeight: 1 }}>✓</button>
+                            </>
+                          ) : (
+                            <span onClick={() => { setHeightDraft(String(heightIn)); setEditingHeight(true); }}
+                                  style={{ fontWeight: 700, cursor: 'pointer', textDecoration: 'underline',
+                                           textDecorationStyle: 'dotted', textDecorationColor: '#8e8e93' }}>
+                              {heightIn}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </InfoDot>
+                  )}
+                </div>
                 {label === 'Goal' && isAdmin ? (
                   editingGoal ? (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3,
@@ -4435,11 +4517,12 @@
                     </div>
                   )
                 ) : (
-                  <div style={{ fontSize: 15, fontWeight: 700, color: color ?? '#1c1c1e',
-                                fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: color ?? '#1c1c1e',
+                                fontVariantNumeric: 'tabular-nums', lineHeight: 1.2 }}>{value}</div>
                 )}
                 {sub && (
-                  <div style={{ fontSize: 10, color: '#aeaeb2', marginTop: 1 }}>{sub}</div>
+                  <div style={{ fontSize: 9, color: '#aeaeb2', marginTop: 1, whiteSpace: 'nowrap',
+                                overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</div>
                 )}
               </div>
             ))}
@@ -5767,10 +5850,19 @@
     // Small "i" badge that toggles an explanatory popover on click — for
     // chart headers where a brief methodology note helps (e.g. how BP
     // readings get averaged) but would clutter the header if always visible.
-    function InfoDot({ children }) {
+    function InfoDot({ children, align = 'left' }) {
       const [open, setOpen] = useState(false);
+      const rootRef = useRef(null);
+      useEffect(() => {
+        if (!open) return;
+        const onDocClick = e => {
+          if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+        };
+        document.addEventListener('mousedown', onDocClick);
+        return () => document.removeEventListener('mousedown', onDocClick);
+      }, [open]);
       return (
-        <span style={{ position: 'relative', display: 'inline-block', marginLeft: 6 }}>
+        <span ref={rootRef} style={{ position: 'relative', display: 'inline-block', marginLeft: 6 }}>
           <button onClick={() => setOpen(o => !o)}
                   style={{ width: 15, height: 15, borderRadius: '50%', border: 'none',
                            background: '#e5e5ea', color: '#8e8e93', fontSize: 10, fontWeight: 700,
@@ -5779,7 +5871,8 @@
             i
           </button>
           {open && (
-            <div style={{ position: 'absolute', top: 20, left: 0, zIndex: 10, width: 230,
+            <div style={{ position: 'absolute', top: 20, zIndex: 10, width: 230,
+                          ...(align === 'right' ? { right: 0 } : { left: 0 }),
                           background: '#1c1c1e', color: '#fff', fontSize: 11, fontWeight: 400,
                           lineHeight: 1.45, borderRadius: 10, padding: '10px 12px',
                           boxShadow: '0 4px 16px rgba(0,0,0,.25)' }}
@@ -6296,6 +6389,7 @@
       const [proteinTargets, setProteinTargets] = useState(lsLoadProteinTargets);
       const [weightAnnotations, setWeightAnnotations] = useState(lsLoadWeightAnnotations);
       const [goalLbs, setGoalLbs] = useState(lsLoadGoalLbs);
+      const [heightIn, setHeightIn] = useState(lsLoadHeightIn);
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
       const [activeTab,  setActiveTab]   = useState('weight');
@@ -6343,14 +6437,14 @@
       // Returns true/false so callers can commit local state only on a confirmed
       // write — a mutation must never appear to "succeed" locally while silently
       // failing to reach the shared Gist.
-      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations, newGoal = goalLbs) => {
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations, newGoal = goalLbs, newHeight = heightIn) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) {
           setGistOk(false); setGistMsg('Not logged in');
           return false;
         }
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations, newGoal);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations, newGoal, newHeight);
           setGistOk(true); setGistMsg('');
           return true;
         } catch (e) {
@@ -6369,12 +6463,13 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
               if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
               if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
               if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
+              if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
                 const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
@@ -6417,17 +6512,18 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations, goalLbs);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations, goalLbs, heightIn);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
             if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
             if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
             if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
+            if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -6441,7 +6537,7 @@
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs]);
+      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn]);
 
       // Admin login (view-only user entering PAT)
       const adminLogin = useCallback(async (rawPat, setMsg) => {
@@ -6452,13 +6548,14 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             if (gistTargets) setCalorieTargets(gistTargets);
             if (gistProtTargets) setProteinTargets(gistProtTargets);
             if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
             if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
+            if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -6522,13 +6619,25 @@
       const saveGoalLbs = useCallback(async (newGoal) => {
         setSyncPending(true);
         try {
-          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, newGoal);
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, newGoal, heightIn);
           if (ok) { setGoalLbs(newGoal); lsSaveGoalLbs(newGoal); }
           return ok;
         } finally {
           setSyncPending(false);
         }
-      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations]);
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, heightIn]);
+
+      // A single current value, not dated history — see lsLoadHeightIn.
+      const saveHeightIn = useCallback(async (newHeight) => {
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, newHeight);
+          if (ok) { setHeightIn(newHeight); lsSaveHeightIn(newHeight); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs]);
 
       // Upserts by id — used for both add (a fresh crypto.randomUUID() from the
       // modal) and edit (the existing annotation's id).
@@ -7151,7 +7260,8 @@
                 <WeightChart rows={rows} injections={injections} injSchedule={injSchedule}
                              annotations={weightAnnotations} isAdmin={isAdmin}
                              onSaveAnnotation={saveWeightAnnotation} onDeleteAnnotation={deleteWeightAnnotation}
-                             goalLbs={goalLbs} onSaveGoal={saveGoalLbs} />
+                             goalLbs={goalLbs} onSaveGoal={saveGoalLbs}
+                             heightIn={heightIn} onSaveHeight={saveHeightIn} />
               </div>
 
               {/* Weight Loss Per Dose */}
@@ -7319,7 +7429,7 @@
                       </div>
                       <div style={{ textAlign: 'right', fontSize: 16, color: '#3c3c43',
                                     fontVariantNumeric: 'tabular-nums' }}>
-                        {(703 * item.lbs / (HEIGHT_IN * HEIGHT_IN)).toFixed(1)}
+                        {(703 * item.lbs / (heightIn * heightIn)).toFixed(1)}
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         {baselineLbs != null && (() => {

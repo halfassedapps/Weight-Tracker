@@ -3801,8 +3801,18 @@
                 <div style={{ fontSize: 12, color: '#3c3c43', marginTop: 2 }}>{maint.line2}</div>
               )}
               {isAdmin && (
-                <button onClick={() => document.getElementById('weight-goal-stat')
-                                          ?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                <button onClick={() => {
+                          // Scrolling to the stat alone was a dead end — it's
+                          // already near the top of the page most of the time,
+                          // so nothing visibly happened, and even when it did
+                          // scroll, the stat still just *displays* the goal
+                          // until a second click opens the real input. Drive
+                          // that same click programmatically instead of
+                          // duplicating its edit-mode state here.
+                          document.getElementById('weight-goal-stat')
+                            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          document.getElementById('weight-goal-edit-trigger')?.click();
+                        }}
                         style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
                                  border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
                                  textDecoration: 'underline' }}>
@@ -4409,7 +4419,8 @@
                                        cursor: 'pointer', padding: 0, lineHeight: 1 }}>✓</button>
                     </div>
                   ) : (
-                    <div onClick={() => { setGoalDraft(String(goalLbs)); setEditingGoal(true); }}
+                    <div id="weight-goal-edit-trigger"
+                         onClick={() => { setGoalDraft(String(goalLbs)); setEditingGoal(true); }}
                          style={{ fontSize: 15, fontWeight: 700, color: '#1c1c1e', cursor: 'pointer',
                                   fontVariantNumeric: 'tabular-nums', textDecoration: 'underline',
                                   textDecorationStyle: 'dotted', textDecorationColor: '#c7c7cc',

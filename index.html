@@ -53,6 +53,26 @@
     const LS_INTERVALS_ACTIVITIES_KEY = 'weight-tracker-intervals-activities';
     const LS_BP_KEY               = 'weight-tracker-blood-pressure';
     const LS_ANNOTATIONS_KEY      = 'weight-tracker-annotations';
+    // Pure per-device view preferences (which chart view, time range, etc. a
+    // visitor last used) — deliberately local-only, not synced to the Gist,
+    // since Gist writes need an admin PAT and a view-only visitor couldn't
+    // otherwise save their own preferences at all.
+    const LS_ACTIVE_TAB_KEY            = 'weight-tracker-active-tab';
+    const LS_WEIGHT_VIEW_MODE_KEY      = 'weight-tracker-weight-view-mode';
+    const LS_WEIGHT_TREND_DAYS_KEY     = 'weight-tracker-weight-trend-days';
+    const LS_WEIGHT_AGGREGATE_KEY      = 'weight-tracker-weight-aggregate';
+    const LS_WEIGHT_TREND_MODES_KEY    = 'weight-tracker-weight-trend-modes';
+    const LS_WEIGHT_RATES_FROM_TODAY_KEY = 'weight-tracker-weight-rates-from-today';
+    const LS_BP_RANGE_MODE_KEY   = 'weight-tracker-bp-range-mode';
+    const LS_BP_CUSTOM_DAYS_KEY  = 'weight-tracker-bp-custom-days';
+    const LS_BP_VIEW_MODE_KEY    = 'weight-tracker-bp-view-mode';
+    const LS_RIDES_RANGE_MODE_KEY  = 'weight-tracker-rides-range-mode';
+    const LS_RIDES_CUSTOM_DAYS_KEY = 'weight-tracker-rides-custom-days';
+    const LS_RIDES_VIEW_MODE_KEY   = 'weight-tracker-rides-view-mode';
+    const LS_CAL_RANGE_MODE_KEY  = 'weight-tracker-cal-range-mode';
+    const LS_CAL_CUSTOM_DAYS_KEY = 'weight-tracker-cal-custom-days';
+    const LS_PK_RANGE_MODE_KEY   = 'weight-tracker-pk-range-mode';
+    const LS_PK_CUSTOM_DAYS_KEY  = 'weight-tracker-pk-custom-days';
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     function lastImportIsToday() {
       const name = localStorage.getItem(LS_LAST_CSV_KEY) ?? '';
@@ -1298,8 +1318,12 @@
                                   marginRight: 5, verticalAlign: 'middle', borderRadius: 3 });
 
     function CaloriesActivitySection({ calorieData, rows, calorieTargets, proteinTargets, onSaveProteinTargets, isAdmin, onSaveCalorieTargets, intervalsCalories }) {
-      const [rangeMode, setRangeMode] = useState('30d');
-      const [customDays, setCustomDays] = useState(30);
+      const [rangeMode, setRangeMode] = useState(() => localStorage.getItem(LS_CAL_RANGE_MODE_KEY) || '30d');
+      useEffect(() => { try { localStorage.setItem(LS_CAL_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
+      const [customDays, setCustomDays] = useState(
+        () => parseInt(localStorage.getItem(LS_CAL_CUSTOM_DAYS_KEY), 10) || 30
+      );
+      useEffect(() => { try { localStorage.setItem(LS_CAL_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
       const [windowOffset, setWindowOffset] = useState(0);
       const selectRange = (mode) => { setRangeMode(mode); setWindowOffset(0); };
 
@@ -1908,11 +1932,16 @@
     };
 
     function BpChart({ bpData }) {
-      const [rangeMode, setRangeMode] = useState('all');
-      const [customDays, setCustomDays] = useState(30);
+      const [rangeMode, setRangeMode] = useState(() => localStorage.getItem(LS_BP_RANGE_MODE_KEY) || 'all');
+      useEffect(() => { try { localStorage.setItem(LS_BP_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
+      const [customDays, setCustomDays] = useState(
+        () => parseInt(localStorage.getItem(LS_BP_CUSTOM_DAYS_KEY), 10) || 30
+      );
+      useEffect(() => { try { localStorage.setItem(LS_BP_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
       const [windowOffset, setWindowOffset] = useState(0);
       const [tip, setTip] = useState(null);
-      const [viewMode, setViewMode] = useState('table'); // 'graph' | 'table'
+      const [viewMode, setViewMode] = useState(() => localStorage.getItem(LS_BP_VIEW_MODE_KEY) || 'table'); // 'graph' | 'table'
+      useEffect(() => { try { localStorage.setItem(LS_BP_VIEW_MODE_KEY, viewMode); } catch (_) {} }, [viewMode]);
       const [sharing, setSharing] = useState(false);
       const svgRef = useRef(null);
       const selectRange = mode => { setRangeMode(mode); setWindowOffset(0); };
@@ -2275,13 +2304,18 @@
 
     /* ─── Rides Chart ────────────────────────────────────────────────────────── */
     function RidesChart({ ridesData }) {
-      const [rangeMode, setRangeMode] = useState('30d');
-      const [customDays, setCustomDays] = useState(30);
+      const [rangeMode, setRangeMode] = useState(() => localStorage.getItem(LS_RIDES_RANGE_MODE_KEY) || '30d');
+      useEffect(() => { try { localStorage.setItem(LS_RIDES_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
+      const [customDays, setCustomDays] = useState(
+        () => parseInt(localStorage.getItem(LS_RIDES_CUSTOM_DAYS_KEY), 10) || 30
+      );
+      useEffect(() => { try { localStorage.setItem(LS_RIDES_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
       const [windowOffset, setWindowOffset] = useState(0);
       const [tip, setTip] = useState(null);
       const [selectedDate, setSelectedDate] = useState(null);
       const [sharing, setSharing] = useState(false);
-      const [viewMode, setViewMode] = useState('table'); // 'graph' | 'table'
+      const [viewMode, setViewMode] = useState(() => localStorage.getItem(LS_RIDES_VIEW_MODE_KEY) || 'table'); // 'graph' | 'table'
+      useEffect(() => { try { localStorage.setItem(LS_RIDES_VIEW_MODE_KEY, viewMode); } catch (_) {} }, [viewMode]);
       const [expandedRideDates, setExpandedRideDates] = useState(() => new Set());
       const toggleRideDate = date => setExpandedRideDates(prev => {
         const next = new Set(prev);
@@ -2734,8 +2768,12 @@
       );
       const [sharing,      setSharing]      = useState(false);
       const svgRef = useRef(null);
-      const [rangeMode,    setRangeMode]    = useState('30d'); // '7d' | '14d' | '30d' | 'all' | 'custom'
-      const [customDays,   setCustomDays]   = useState(30);
+      const [rangeMode,    setRangeMode]    = useState(() => localStorage.getItem(LS_PK_RANGE_MODE_KEY) || '30d'); // '7d' | '14d' | '30d' | 'all' | 'custom'
+      useEffect(() => { try { localStorage.setItem(LS_PK_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
+      const [customDays,   setCustomDays]   = useState(
+        () => parseInt(localStorage.getItem(LS_PK_CUSTOM_DAYS_KEY), 10) || 30
+      );
+      useEffect(() => { try { localStorage.setItem(LS_PK_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
       const [windowOffset, setWindowOffset] = useState(0);
       const selectRange = (mode) => { setRangeMode(mode); setWindowOffset(0); };
       const toggleSplit = () => {
@@ -3892,7 +3930,8 @@
       const [goalInputFocused, setGoalInputFocused] = useState(false);
       const [editingHeight, setEditingHeight] = useState(false);
       const [heightDraft, setHeightDraft] = useState(() => String(heightIn));
-      const [viewMode, setViewMode] = useState('graph'); // 'graph' | 'table'
+      const [viewMode, setViewMode] = useState(() => localStorage.getItem(LS_WEIGHT_VIEW_MODE_KEY) || 'graph'); // 'graph' | 'table'
+      useEffect(() => { try { localStorage.setItem(LS_WEIGHT_VIEW_MODE_KEY, viewMode); } catch (_) {} }, [viewMode]);
       const [showInjections, setShowInjections] = useState(lsLoadShowInjData);
       // The pill and its popover aren't touching (popover floats above the
       // row), so a plain onMouseLeave on the pill would close it the instant
@@ -3907,14 +3946,29 @@
         annoHideTimer.current = setTimeout(() => setAnnoTip(null), 250);
       };
       // Regression window for the Current Trend line. 0 = all data.
-      const [trendDays, setTrendDays] = useState(21);
+      const [trendDays, setTrendDays] = useState(
+        () => parseInt(localStorage.getItem(LS_WEIGHT_TREND_DAYS_KEY), 10) || 21
+      );
+      useEffect(() => { try { localStorage.setItem(LS_WEIGHT_TREND_DAYS_KEY, String(trendDays)); } catch (_) {} }, [trendDays]);
       // How the plotted weight data itself is grouped — not a projection,
       // the actual logged points averaged into coarser buckets.
-      const [aggregate, setAggregate] = useState('daily');
+      const [aggregate, setAggregate] = useState(() => localStorage.getItem(LS_WEIGHT_AGGREGATE_KEY) || 'daily');
+      useEffect(() => { try { localStorage.setItem(LS_WEIGHT_AGGREGATE_KEY, aggregate); } catch (_) {} }, [aggregate]);
       const svgRef = useRef(null);
-      const [trendModes, setTrendModes] = useState(['current']); // ids of checked trend lines
+      const [trendModes, setTrendModes] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_WEIGHT_TREND_MODES_KEY)) || ['current']; }
+        catch (_) { return ['current']; }
+      }); // ids of checked trend lines
+      useEffect(() => {
+        try { localStorage.setItem(LS_WEIGHT_TREND_MODES_KEY, JSON.stringify(trendModes)); } catch (_) {}
+      }, [trendModes]);
       const [trendMenuOpen, setTrendMenuOpen] = useState(false);
-      const [ratesFromToday, setRatesFromToday] = useState(false); // false: rate lines span from the starting date, like Current
+      const [ratesFromToday, setRatesFromToday] = useState(
+        () => localStorage.getItem(LS_WEIGHT_RATES_FROM_TODAY_KEY) === 'true'
+      ); // false: rate lines span from the starting date, like Current
+      useEffect(() => {
+        try { localStorage.setItem(LS_WEIGHT_RATES_FROM_TODAY_KEY, String(ratesFromToday)); } catch (_) {}
+      }, [ratesFromToday]);
       const trendMenuRef = useRef(null);
       useEffect(() => {
         if (!trendMenuOpen) return;
@@ -6392,7 +6446,12 @@
       const [heightIn, setHeightIn] = useState(lsLoadHeightIn);
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
-      const [activeTab,  setActiveTab]   = useState('weight');
+      const [activeTab,  setActiveTab]   = useState(() => {
+        const saved = localStorage.getItem(LS_ACTIVE_TAB_KEY);
+        const valid = ['weight', 'bp', 'tirz', 'dosing', 'nutrition', 'activity', 'videos'];
+        return valid.includes(saved) ? saved : 'weight';
+      });
+      useEffect(() => { try { localStorage.setItem(LS_ACTIVE_TAB_KEY, activeTab); } catch (_) {} }, [activeTab]);
       const [error,      setError]      = useState('');
       const [dragging,   setDragging]   = useState(false);
       const [showInj,    setShowInj]    = useState(false);

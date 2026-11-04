@@ -3650,6 +3650,14 @@
     // land there. Require the trailing 2-week average to hold there too
     // before celebrating.
     const GOAL_AVG_WINDOW_DAYS = 14;
+    // A single day's reading a hair over goal (scale noise, water weight)
+    // shouldn't yank the whole banner away — compare with this much slack
+    // instead of an exact >= 0. Applied consistently to both "is there
+    // anything to show at all" and "does today count as at-goal", so a
+    // borderline day doesn't flip between the blue pre-goal banner and
+    // nothing, or get stuck showing "lbs to go" once the trailing average
+    // has already caught up.
+    const GOAL_BANNER_NOISE_TOLERANCE_LBS = 0.5;
     // Once at goal, how much 2-week drift (lbs, either direction) counts as
     // "still trending" rather than noise. Deliberately tighter than the
     // loss-phase doseGuidance bands (3/5/8 lbs/2wk) — maintenance has no
@@ -3742,8 +3750,12 @@
       // doesn't count until the broader average actually holds at goal too.
       const windowRows = hasData ? rows.slice(0, GOAL_AVG_WINDOW_DAYS) : [];
       const windowAvg  = windowRows.length ? avg(windowRows.map(r => r.lbs)) : null;
-      const atGoal     = hasData && beyond >= 0 && windowAvg != null && windowAvg <= goalLbs;
-      const milestone  = atGoal ? GOAL_MILESTONES.find(m => beyond >= m.at) : null;
+      const nearGoalToday = hasData && beyond >= -GOAL_BANNER_NOISE_TOLERANCE_LBS;
+      const atGoal     = nearGoalToday && windowAvg != null && windowAvg <= goalLbs;
+      // beyond can be slightly negative here (within the noise tolerance
+      // above) — clamp so that still resolves to the "Goal reached" tier
+      // instead of falling through GOAL_MILESTONES.find with no match.
+      const milestone  = atGoal ? GOAL_MILESTONES.find(m => Math.max(beyond, 0) >= m.at) : null;
       const milestoneAt = milestone ? milestone.at : null;
 
       useEffect(() => {
@@ -3767,7 +3779,7 @@
       // Not at goal at all right now — nothing to show. (Not `confetti` —
       // if a milestone just fired and goalLbs/rows changed again within its
       // 3.2s window, there'd be nothing left to justify celebrating.)
-      if (beyond < 0) return null;
+      if (!nearGoalToday) return null;
 
       if (!atGoal) {
         const avgBeyond = Math.round((windowAvg - goalLbs) * 10) / 10;

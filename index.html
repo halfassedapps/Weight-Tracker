@@ -4013,7 +4013,11 @@
       // known). VW/cW are deliberately NOT defined here.
       const VH = 200;
       // Extra top padding reserves a dedicated band for dose-change pills,
-      // kept clear of the plotted line entirely (linked via leader lines).
+      // kept clear of the plotted line entirely (linked via leader lines) —
+      // only needed while those pills are actually drawn (showInjections);
+      // otherwise it's just a dead strip of empty chart, exaggerated by the
+      // scroll-mode height fix which can turn that into a lot of real
+      // pixels on a wide container.
       // Extra bottom padding (beyond the Week/month/goal-date label stack)
       // reserves a dedicated row for annotation pills, directly under the
       // x-axis — the existing label rows all read their own y-offsets
@@ -4021,7 +4025,7 @@
       // row just above them (at ANNO_ROW_Y) pushes everything else down
       // automatically without needing to touch their individual offsets.
       const ANNO_ROW_H = 12;
-      const PAD = { t: 32, r: 14, b: 38 + ANNO_ROW_H, l: 38 };
+      const PAD = { t: showInjections ? 32 : 14, r: 14, b: 38 + ANNO_ROW_H, l: 38 };
       const cH = VH - PAD.t - PAD.b;
       const ANNO_ROW_Y = PAD.t + cH + 4;
       const scrollRef = useRef(null);

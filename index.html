@@ -61,6 +61,7 @@
     const LS_WEIGHT_VIEW_MODE_KEY      = 'weight-tracker-weight-view-mode';
     const LS_WEIGHT_TREND_DAYS_KEY     = 'weight-tracker-weight-trend-days';
     const LS_WEIGHT_AGGREGATE_KEY      = 'weight-tracker-weight-aggregate';
+    const LS_WEIGHT_DATA_RANGE_KEY     = 'weight-tracker-weight-data-range';
     const LS_WEIGHT_TREND_MODES_KEY    = 'weight-tracker-weight-trend-modes';
     const LS_WEIGHT_RATES_FROM_TODAY_KEY = 'weight-tracker-weight-rates-from-today';
     const LS_BP_RANGE_MODE_KEY   = 'weight-tracker-bp-range-mode';
@@ -3967,6 +3968,13 @@
       // the actual logged points averaged into coarser buckets.
       const [aggregate, setAggregate] = useState(() => localStorage.getItem(LS_WEIGHT_AGGREGATE_KEY) || 'daily');
       useEffect(() => { try { localStorage.setItem(LS_WEIGHT_AGGREGATE_KEY, aggregate); } catch (_) {} }, [aggregate]);
+      // How much weigh-in history is actually shown (graph + table) —
+      // independent of the Trend period selector, which only controls the
+      // regression line's fit window. 0 = all time.
+      const [dataRangeDays, setDataRangeDays] = useState(
+        () => parseInt(localStorage.getItem(LS_WEIGHT_DATA_RANGE_KEY), 10) || 0
+      );
+      useEffect(() => { try { localStorage.setItem(LS_WEIGHT_DATA_RANGE_KEY, String(dataRangeDays)); } catch (_) {} }, [dataRangeDays]);
       const svgRef = useRef(null);
       const [trendModes, setTrendModes] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_WEIGHT_TREND_MODES_KEY)) || ['current']; }
@@ -4007,28 +4015,56 @@
       const cH  = VH - PAD.t - PAD.b;
       const ANNO_ROW_Y = PAD.t + cH + 4;
 
+      // Hoisted above pts/displayPts — the data-range filter below needs
+      // "today" to compute its cutoff before anything else is built.
+      const todayD  = new Date(); todayD.setHours(12, 0, 0, 0);
+      const todayMs = todayD.getTime();
+
       // oldest-first for regression + charting
       const pts = [...rows].reverse().map(r => ({
         ms:  new Date(r.date + 'T12:00:00').getTime(),
         lbs: r.lbs,
       }));
 
+      // Data range selector — how much weigh-in history is actually shown
+      // (graph + table). Independent of the Trend period selector below,
+      // which only controls the regression line's fit window — the two
+      // used to be conflated, so picking a short trend period silently
+      // hid older weigh-in data too.
+      const DATA_RANGE_OPTIONS = [
+        { days: 14,  label: 'Last 2 weeks' },
+        { days: 30,  label: 'Last month' },
+        { days: 90,  label: 'Last 3 months' },
+        { days: 180, label: 'Last 6 months' },
+        { days: 365, label: 'Last year' },
+        { days: 0,   label: 'All time' },
+      ];
+      const rangeCutoffMs = dataRangeDays > 0 ? todayMs - dataRangeDays * 86400000 : 0;
+      const viewPts  = dataRangeDays > 0 ? pts.filter(p => p.ms >= rangeCutoffMs) : pts;
+      // Guard: an empty window (e.g. a gap in logging right at the cutoff)
+      // falls back to just the latest point rather than rendering nothing.
+      const viewPtsSafe = viewPts.length ? viewPts : pts.slice(-1);
+      const viewStartMs = viewPtsSafe[0].ms;
+      const viewRows = dataRangeDays > 0
+        ? rows.filter(r => new Date(r.date + 'T12:00:00').getTime() >= rangeCutoffMs)
+        : rows;
+
       // Aggregate selector — groups the *actual* logged weight into coarser
       // buckets (unlike the Trend Lines menu, which only adds hypothetical
       // projections on top of the daily data). Weekly/Monthly only appear
-      // once the selected Trend period is long enough to make them
-      // meaningful — e.g. Monthly on a 3-week window would average almost
+      // once the selected Data range is long enough to make them
+      // meaningful — e.g. Monthly on a 2-week window would average almost
       // everything into a single point.
       const AGGREGATE_OPTIONS = [
         { id: 'daily',   label: 'Daily',   minDays: 0 },
         { id: 'weekly',  label: 'Weekly',  minDays: 7 },
         { id: 'monthly', label: 'Monthly', minDays: 30 },
       ];
-      const availableAggregates = AGGREGATE_OPTIONS.filter(o => trendDays === 0 || trendDays >= o.minDays);
+      const availableAggregates = AGGREGATE_OPTIONS.filter(o => dataRangeDays === 0 || dataRangeDays >= o.minDays);
       useEffect(() => {
         const opt = AGGREGATE_OPTIONS.find(o => o.id === aggregate);
-        if (opt && trendDays !== 0 && trendDays < opt.minDays) setAggregate('daily');
-      }, [trendDays]);
+        if (opt && dataRangeDays !== 0 && dataRangeDays < opt.minDays) setAggregate('daily');
+      }, [dataRangeDays]);
 
       const binPtsByUnit = (points, unit) => {
         const bins = new Map();
@@ -4048,12 +4084,13 @@
         return [...bins.entries()].sort((a, b) => a[0] - b[0])
           .map(([ms, arr]) => ({ ms, lbs: avg(arr), n: arr.length }));
       };
-      // The data actually plotted/listed — raw daily points, or binned
-      // averages. Only replaces what's *drawn as the weight line* and the
-      // table rows; the regression, goal projection, and chart's y-range
-      // still reason over the real daily pts so aggregating the view never
-      // skews the underlying analysis.
-      const displayPts = aggregate === 'daily' ? pts : binPtsByUnit(pts, aggregate === 'weekly' ? 'week' : 'month');
+      // The data actually plotted/listed — raw daily points (within the
+      // selected data range), or binned averages of them. Only replaces
+      // what's *drawn as the weight line* and the table rows; the
+      // regression and goal projection still reason over the full
+      // lifetime pts (scoped by the separate Trend period selector) so
+      // zooming the view never skews the underlying analysis.
+      const displayPts = aggregate === 'daily' ? viewPtsSafe : binPtsByUnit(viewPtsSafe, aggregate === 'weekly' ? 'week' : 'month');
 
       // Dose timeline: which *weekly* tirz dose was active at any point in
       // time, and where the weekly total actually changed (used to color-grade
@@ -4093,9 +4130,10 @@
         return pts[pts.length - 1].lbs;
       };
 
+      // Regression origin — always the full lifetime first point, regardless
+      // of the Data range selector, so zooming the view never shifts what
+      // the trend line/goal date actually mean.
       const startMs  = pts[0].ms;
-      const todayD   = new Date(); todayD.setHours(12,0,0,0);
-      const todayMs  = todayD.getTime();
 
       // Regression window driven by trendDays selector (0 = all data)
       const cutoffMs = trendDays > 0 ? todayMs - trendDays * 86400000 : 0;
@@ -4150,16 +4188,22 @@
         : goalDriftDays >  DRIFT_THRESH ? '#ff9500'
         : '#aeaeb2';
 
+      // Regression's fitted value at any date — intcp is anchored at startMs
+      // (lifetime day 0), so any other date's value has to be computed
+      // relative to that same origin, not wherever the chart happens to
+      // start drawing (viewStartMs, once the Data range selector is zoomed).
+      const regLbsAt = ms => intcp + slope * (ms - startMs) / 86400000;
+
       // Today's position on the current-trend regression line — used both as a
       // possible anchor for the rate lines (see below) and on its own.
-      const anchorLbs = intcp + slope * ((todayMs - startMs) / 86400000);
+      const anchorLbs = regLbsAt(todayMs);
 
       // The 1-4 lb/wk hypothetical lines fan out from a single shared anchor
       // point, either "today" (continuing the regression's current value forward)
-      // or the chart's starting date (intcp — the regression's value at day 0,
+      // or the chart's visible starting date (the regression's value there,
       // exactly where the "Current" line itself begins), per the toggle below.
-      const ratesAnchorMs  = ratesFromToday ? todayMs : startMs;
-      const ratesAnchorLbs = ratesFromToday ? anchorLbs : intcp;
+      const ratesAnchorMs  = ratesFromToday ? todayMs : viewStartMs;
+      const ratesAnchorLbs = ratesFromToday ? anchorLbs : regLbsAt(viewStartMs);
 
       // Goal date for each rate-based line, independent of endMs/xOf/yOf (computed
       // before the chart's x range so the range can expand to fit whichever
@@ -4186,17 +4230,28 @@
         .filter(g => g != null);
       const latestGoalMs = checkedGoalDates.length ? Math.max(...checkedGoalDates) : null;
       const maxFutureMs = Math.max(todayMs - startMs, 90 * 86400000);
-      const endMs = latestGoalMs
-        ? Math.min(latestGoalMs + 14 * 86400000, todayMs + maxFutureMs)
-        : startMs + 180 * 86400000;
+      // Always include at least a short buffer past today — the "no goal
+      // projected" fallback (startMs + 180d) used to be able to land
+      // *before* today once there was more than ~6 months of history,
+      // silently clipping the most recent data and the "today" marker off
+      // the right edge of the viewBox (invisible, since SVG clips to it by
+      // default) instead of visibly running out of room.
+      const FUTURE_BUFFER_DAYS = 14;
+      const endMs = Math.max(
+        latestGoalMs
+          ? Math.min(latestGoalMs + 14 * 86400000, todayMs + maxFutureMs)
+          : startMs + 180 * 86400000,
+        todayMs + FUTURE_BUFFER_DAYS * 86400000
+      );
 
-      // Y range: full history max → goal - 8.
-      // Using only the regression window (rys) caused historical dose-change
-      // dots to render above the SVG when the user has lost significant weight.
-      const maxLbs = Math.max(...pts.map(p => p.lbs)) + 5;
+      // Y range: visible-window max → goal - 8. Scoped to viewPtsSafe (not
+      // the full lifetime pts) so zooming the Data range in actually gives
+      // better vertical resolution; safe because the dose-change dots below
+      // are filtered to the same [viewStartMs, endMs] window.
+      const maxLbs = Math.max(...viewPtsSafe.map(p => p.lbs)) + 5;
       const minLbs = goalLbs - 8;
 
-      const xOf = ms  => PAD.l + (ms - startMs) / (endMs - startMs) * cW;
+      const xOf = ms  => PAD.l + (ms - viewStartMs) / (endMs - viewStartMs) * cW;
       const yOf = lbs => PAD.t + (1 - (lbs - minLbs) / (maxLbs - minLbs)) * cH;
 
       const todayX  = xOf(todayMs);
@@ -4205,8 +4260,8 @@
       const TREND_LINES = trendModes.map(id => {
         if (id === 'current') {
           return { id, color: TREND_OPTIONS.find(o => o.id === 'current').color,
-            x1: PAD.l, y1: yOf(intcp),
-            x2: PAD.l + cW, y2: yOf(intcp + slope * (endMs - startMs) / 86400000),
+            x1: PAD.l, y1: yOf(regLbsAt(viewStartMs)),
+            x2: PAD.l + cW, y2: yOf(regLbsAt(endMs)),
             goalMs, lbsPerWeek: slope * -7 };
         }
         const opt = TREND_OPTIONS.find(o => o.id === id);
@@ -4219,15 +4274,15 @@
 
       // Monthly x-axis ticks
       const xTicks = [];
-      const td = new Date(startMs); td.setDate(1); td.setMonth(td.getMonth() + 1);
+      const td = new Date(viewStartMs); td.setDate(1); td.setMonth(td.getMonth() + 1);
       while (td.getTime() <= endMs) { xTicks.push(td.getTime()); td.setMonth(td.getMonth() + 1); }
 
-      // Weekly x-axis ticks — weeks elapsed since start. Numeric labels are
-      // thinned out (every Nth week) when the visible range is long enough
-      // that every-week labels would overlap; the tick marks themselves
-      // still appear every week.
+      // Weekly x-axis ticks — weeks elapsed since the visible window's
+      // start. Numeric labels are thinned out (every Nth week) when the
+      // visible range is long enough that every-week labels would overlap;
+      // the tick marks themselves still appear every week.
       const weekTicks = [];
-      for (let ms = startMs, n = 0; ms <= endMs; ms += 7 * 86400000, n++) {
+      for (let ms = viewStartMs, n = 0; ms <= endMs; ms += 7 * 86400000, n++) {
         weekTicks.push({ ms, n });
       }
       const weekPxGap    = cW / Math.max(weekTicks.length - 1, 1);
@@ -4267,14 +4322,15 @@
         doseSegments.push({ dose: curDose, pts: curRun });
       }
 
-      // Dose changes before the chart's first data point would otherwise be
+      // Dose changes before the chart's visible window would otherwise be
       // dropped entirely (e.g. the first injection often predates the first
-      // logged weight) — keep whichever was still active at chart start and
-      // pin it to the left edge instead of losing it.
-      const priorChanges = doseChanges.filter(c => c.ms < startMs);
+      // logged weight, or the Data range selector has zoomed in) — keep
+      // whichever was still active at the window's start and pin it to the
+      // left edge instead of losing it.
+      const priorChanges = doseChanges.filter(c => c.ms < viewStartMs);
       const visibleDoseChanges = [
-        ...(priorChanges.length ? [{ ...priorChanges[priorChanges.length - 1], ms: startMs }] : []),
-        ...doseChanges.filter(c => c.ms >= startMs && c.ms <= endMs),
+        ...(priorChanges.length ? [{ ...priorChanges[priorChanges.length - 1], ms: viewStartMs }] : []),
+        ...doseChanges.filter(c => c.ms >= viewStartMs && c.ms <= endMs),
       ];
 
       // Pills live in a dedicated band above the chart (clear of the line
@@ -4595,8 +4651,43 @@
             ))}
           </div>
 
-          {/* Trend period selector + Trend line picker */}
+          {/* Weigh-in data display: how much history is shown, and how it's
+              bucketed — independent of the Trend period/Trend Lines row
+              below, which only controls the fitted trend line. */}
           <div style={{ display:'flex', gap:8, padding:'8px 14px 4px', alignItems:'center', flexWrap:'wrap' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ fontSize:10, fontWeight:600, color:'#8e8e93' }}>Data range</span>
+              <select value={dataRangeDays} onChange={e => setDataRangeDays(Number(e.target.value))}
+                      style={{ fontSize:10, fontWeight:600, padding:'4px 6px', borderRadius:8,
+                               background:'#f2f2f7', color:'#3c3c43', border:'none', outline:'none', cursor:'pointer' }}>
+                {DATA_RANGE_OPTIONS.map(o => <option key={o.days} value={o.days}>{o.label}</option>)}
+              </select>
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ fontSize:10, fontWeight:600, color:'#8e8e93' }}>Show as</span>
+              <select value={aggregate} onChange={e => setAggregate(e.target.value)}
+                      style={{ fontSize:10, fontWeight:600, padding:'4px 6px', borderRadius:8,
+                               background:'#f2f2f7', color:'#3c3c43', border:'none', outline:'none', cursor:'pointer' }}>
+                {availableAggregates.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </div>
+            <div style={{ marginLeft: 'auto', display: 'flex', background: '#f2f2f7', borderRadius: 8, padding: 2 }}>
+              {[['graph','Graph'],['table','Table']].map(([id,label]) => (
+                <button key={id} onClick={() => setViewMode(id)}
+                        style={{ fontSize:10, fontWeight:600, padding:'4px 10px', borderRadius:6, border:'none',
+                                 cursor:'pointer', background: viewMode===id ? '#fff' : 'transparent',
+                                 color: viewMode===id ? '#1c1c1e' : '#8e8e93',
+                                 boxShadow: viewMode===id ? '0 1px 2px rgba(0,0,0,.1)' : 'none' }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Trend period selector + Trend line picker — these evaluate and
+              draw the fitted trend line(s) only; they never affect which
+              weigh-in data points are actually shown above. */}
+          <div style={{ display:'flex', gap:8, padding:'4px 14px 4px', alignItems:'center', flexWrap:'wrap' }}>
             <div style={{ display:'flex', alignItems:'center', gap:6 }}>
               <span style={{ fontSize:10, fontWeight:600, color:'#8e8e93' }}>Trend period</span>
               <select value={trendDays} onChange={e => setTrendDays(Number(e.target.value))}
@@ -4608,14 +4699,6 @@
                 <option value={42}>Last 6 weeks</option>
                 <option value={90}>Last 3 months</option>
                 <option value={0}>All time</option>
-              </select>
-            </div>
-            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <span style={{ fontSize:10, fontWeight:600, color:'#8e8e93' }}>Show as</span>
-              <select value={aggregate} onChange={e => setAggregate(e.target.value)}
-                      style={{ fontSize:10, fontWeight:600, padding:'4px 6px', borderRadius:8,
-                               background:'#f2f2f7', color:'#3c3c43', border:'none', outline:'none', cursor:'pointer' }}>
-                {availableAggregates.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
               </select>
             </div>
           <div style={{ position: 'relative' }} ref={trendMenuRef}>
@@ -4649,17 +4732,6 @@
               </div>
             )}
           </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', background: '#f2f2f7', borderRadius: 8, padding: 2 }}>
-            {[['graph','Graph'],['table','Table']].map(([id,label]) => (
-              <button key={id} onClick={() => setViewMode(id)}
-                      style={{ fontSize:10, fontWeight:600, padding:'4px 10px', borderRadius:6, border:'none',
-                               cursor:'pointer', background: viewMode===id ? '#fff' : 'transparent',
-                               color: viewMode===id ? '#1c1c1e' : '#8e8e93',
-                               boxShadow: viewMode===id ? '0 1px 2px rgba(0,0,0,.1)' : 'none' }}>
-                {label}
-              </button>
-            ))}
-          </div>
           </div>{/* end trend controls row */}
 
           {/* Show/hide injection data — affects the line coloring + dose
@@ -4682,7 +4754,7 @@
             // place of a rolling average, which wouldn't mean anything once
             // each row is already itself a multi-day average.
             const tableRows = aggregate === 'daily'
-              ? rows.map(r => ({
+              ? viewRows.map(r => ({
                   key: r.date,
                   dateLabel: (({ wd, mo, day }) => `${wd} ${mo} ${day}`)(fmtDate(r.date)),
                   lbs: r.lbs,
@@ -4739,7 +4811,7 @@
                  const rect = e.currentTarget.getBoundingClientRect();
                  const svgX = (e.clientX - rect.left) / rect.width * VW;
                  if (svgX < PAD.l || svgX > PAD.l + cW) { setWeightTip(null); return; }
-                 const ms = startMs + (svgX - PAD.l) / cW * (endMs - startMs);
+                 const ms = viewStartMs + (svgX - PAD.l) / cW * (endMs - viewStartMs);
                  let best = displayPts[0], minD = Infinity;
                  displayPts.forEach(p => { const d = Math.abs(p.ms - ms); if (d < minD) { minD = d; best = p; } });
                  // Only show tip when the cursor is near the nearest plotted point —
@@ -4977,8 +5049,8 @@
                 ? `Week of ${new Date(weightTip.ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
                 : new Date(weightTip.ms).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
               // Same "weeks elapsed since start" reference as the x-axis Week
-              // ticks above (startMs, floor to whole weeks).
-              const daysSinceStart  = Math.round((weightTip.ms - startMs) / 86400000);
+              // ticks above (viewStartMs, floor to whole weeks).
+              const daysSinceStart  = Math.round((weightTip.ms - viewStartMs) / 86400000);
               const weeksSinceStart = Math.floor(daysSinceStart / 7);
               const wx = xOf(weightTip.ms);
               const wy = yOf(weightTip.lbs);

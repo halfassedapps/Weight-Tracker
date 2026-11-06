@@ -4017,6 +4017,23 @@
       const cH = VH - PAD.t - PAD.b;
       const ANNO_ROW_Y = PAD.t + cH + 4;
       const scrollRef = useRef(null);
+      const chartWrapRef = useRef(null);
+      // Scroll mode needs the container's *real* pixel width — unlike
+      // fit-mode's elastic width:100% (where the logical 360-unit viewBox
+      // is scaled to fit regardless of container size), the scrollable
+      // plot SVG is sized in literal unscaled pixels, so a fixed 360
+      // reference would render far smaller than the available space on a
+      // wide (e.g. desktop) container.
+      const [containerW, setContainerW] = useState(null);
+      useEffect(() => {
+        if (!chartWrapRef.current || typeof ResizeObserver === 'undefined') return;
+        const ro = new ResizeObserver(entries => {
+          const w = entries[0]?.contentRect?.width;
+          if (w) setContainerW(w);
+        });
+        ro.observe(chartWrapRef.current);
+        return () => ro.disconnect();
+      }, []);
 
       // Hoisted above pts/displayPts — the data-range filter below needs
       // "today" to compute its cutoff before anything else is built.
@@ -4248,16 +4265,23 @@
       );
 
       // Chart width. Up to ~6 months, squeeze to fit the container exactly
-      // like before (BASE_VW/FIT_CW, elastic via width:100%). Past that,
-      // squeezing further makes individual points unreadable, so instead
-      // hold the per-day pixel density constant at whatever it was right at
-      // the 6-month mark, and let the chart grow wider than its container —
-      // the plot SVG below scrolls horizontally (native momentum scroll)
-      // while the y-axis gutter stays fixed alongside it.
+      // like before (BASE_VW/FIT_CW, elastic via width:100%, unaffected by
+      // the container's real size — the viewBox just scales to it). Past
+      // that, squeezing further makes individual points unreadable, so
+      // instead hold the per-day pixel density constant at whatever it was
+      // right at the 6-month mark, and let the chart grow wider than its
+      // container — the plot SVG below scrolls horizontally (native
+      // momentum scroll) while the y-axis gutter stays fixed alongside it.
+      // That density has to come from the container's *measured* pixel
+      // width (containerW), not the logical 360-unit constant — unlike fit
+      // mode, the scrollable SVG is sized in literal unscaled pixels, so a
+      // fixed reference renders far smaller than the available space on a
+      // wide (e.g. desktop) container.
       const FIT_MAX_DAYS = 180;
       const BASE_VW = 360;
       const FIT_CW  = BASE_VW - PAD.l - PAD.r;
-      const PX_PER_DAY = FIT_CW / FIT_MAX_DAYS;
+      const measuredCW = containerW != null ? Math.max(containerW - PAD.l - PAD.r, 1) : FIT_CW;
+      const PX_PER_DAY = measuredCW / FIT_MAX_DAYS;
       const visibleDaySpan = (endMs - viewStartMs) / 86400000;
       const scrollMode = visibleDaySpan > FIT_MAX_DAYS;
       const cW = scrollMode ? PX_PER_DAY * visibleDaySpan : FIT_CW;
@@ -4841,7 +4865,7 @@
               </div>
             );
           })() : (
-          <div style={{ position: 'relative' }}>
+          <div ref={chartWrapRef} style={{ position: 'relative' }}>
             {/* Sticky y-axis gutter — only needed once the chart is wider
                 than its container (scrollMode) and the plot below actually
                 scrolls. A plain opaque overlay, not a second data source:

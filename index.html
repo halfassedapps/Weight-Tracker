@@ -4371,13 +4371,20 @@
       const td = new Date(viewStartMs); td.setDate(1); td.setMonth(td.getMonth() + 1);
       while (td.getTime() <= endMs) { xTicks.push(td.getTime()); td.setMonth(td.getMonth() + 1); }
 
-      // Weekly x-axis ticks — weeks elapsed since the visible window's
-      // start. Numeric labels are thinned out (every Nth week) when the
-      // visible range is long enough that every-week labels would overlap;
-      // the tick marks themselves still appear every week.
+      // Weekly x-axis ticks — week number is weeks elapsed since the true
+      // lifetime start (startMs), not the visible window's start, so it
+      // stays stable as the Data range selector zooms in and out instead
+      // of resetting to "Week 0" every time. Tick *positions* are anchored
+      // the same way (every 7 days from startMs) so gridlines land on the
+      // same absolute dates regardless of range — only which of them fall
+      // in [viewStartMs, endMs] changes. Numeric labels are thinned out
+      // (every Nth week) when the visible range is long enough that
+      // every-week labels would overlap; the tick marks themselves still
+      // appear every week.
       const weekTicks = [];
-      for (let ms = viewStartMs, n = 0; ms <= endMs; ms += 7 * 86400000, n++) {
-        weekTicks.push({ ms, n });
+      const firstWeekN = Math.ceil((viewStartMs - startMs) / (7 * 86400000));
+      for (let n = firstWeekN; startMs + n * 7 * 86400000 <= endMs; n++) {
+        weekTicks.push({ ms: startMs + n * 7 * 86400000, n });
       }
       const weekPxGap    = cW / Math.max(weekTicks.length - 1, 1);
       const weekLabelStep = Math.max(1, Math.ceil(6 / weekPxGap));
@@ -5169,9 +5176,10 @@
                 : aggregate === 'weekly'
                 ? `Week of ${new Date(weightTip.ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
                 : new Date(weightTip.ms).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-              // Same "weeks elapsed since start" reference as the x-axis Week
-              // ticks above (viewStartMs, floor to whole weeks).
-              const daysSinceStart  = Math.round((weightTip.ms - viewStartMs) / 86400000);
+              // Same "weeks elapsed since the true lifetime start" reference
+              // as the x-axis Week ticks above (startMs, floor to whole
+              // weeks) — stays stable across Data range changes.
+              const daysSinceStart  = Math.round((weightTip.ms - startMs) / 86400000);
               const weeksSinceStart = Math.floor(daysSinceStart / 7);
               const wx = xOf(weightTip.ms);
               const wy = yOf(weightTip.lbs);

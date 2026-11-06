@@ -4000,7 +4000,10 @@
         return () => document.removeEventListener('pointerdown', onPointerDown);
       }, [trendMenuOpen]);
 
-      const VW = 360, VH = 200;
+      // VH/cH never change with the Data range — only chart *width* grows
+      // for long ranges (see scrollMode/cW below, computed once endMs is
+      // known). VW/cW are deliberately NOT defined here.
+      const VH = 200;
       // Extra top padding reserves a dedicated band for dose-change pills,
       // kept clear of the plotted line entirely (linked via leader lines).
       // Extra bottom padding (beyond the Week/month/goal-date label stack)
@@ -4011,9 +4014,9 @@
       // automatically without needing to touch their individual offsets.
       const ANNO_ROW_H = 12;
       const PAD = { t: 32, r: 14, b: 38 + ANNO_ROW_H, l: 38 };
-      const cW  = VW - PAD.l - PAD.r;
-      const cH  = VH - PAD.t - PAD.b;
+      const cH = VH - PAD.t - PAD.b;
       const ANNO_ROW_Y = PAD.t + cH + 4;
+      const scrollRef = useRef(null);
 
       // Hoisted above pts/displayPts — the data-range filter below needs
       // "today" to compute its cutoff before anything else is built.
@@ -4243,6 +4246,38 @@
           : startMs + 180 * 86400000,
         todayMs + FUTURE_BUFFER_DAYS * 86400000
       );
+
+      // Chart width. Up to ~6 months, squeeze to fit the container exactly
+      // like before (BASE_VW/FIT_CW, elastic via width:100%). Past that,
+      // squeezing further makes individual points unreadable, so instead
+      // hold the per-day pixel density constant at whatever it was right at
+      // the 6-month mark, and let the chart grow wider than its container —
+      // the plot SVG below scrolls horizontally (native momentum scroll)
+      // while the y-axis gutter stays fixed alongside it.
+      const FIT_MAX_DAYS = 180;
+      const BASE_VW = 360;
+      const FIT_CW  = BASE_VW - PAD.l - PAD.r;
+      const PX_PER_DAY = FIT_CW / FIT_MAX_DAYS;
+      const visibleDaySpan = (endMs - viewStartMs) / 86400000;
+      const scrollMode = visibleDaySpan > FIT_MAX_DAYS;
+      const cW = scrollMode ? PX_PER_DAY * visibleDaySpan : FIT_CW;
+      const VW = PAD.l + cW + PAD.r;
+
+      // Default scroll position: today, near the right edge — not all the
+      // way to scrollWidth, which can run far past today into pure
+      // goal-projection space on a shallow trend (the future buffer chases
+      // whatever the trend line projects, sometimes a year-plus out) and
+      // would land the default view on an empty chart. A 24px margin keeps
+      // the "today" marker from sitting flush against the edge. Deliberately
+      // scoped to just the inputs that actually resize the chart — not
+      // hover/tooltip state — so scrolling left to browse history doesn't
+      // get yanked back on every mousemove-triggered re-render.
+      useEffect(() => {
+        if (!scrollMode || !scrollRef.current) return;
+        const el = scrollRef.current;
+        const target = xOf(todayMs) - el.clientWidth + 24;
+        el.scrollLeft = Math.max(0, Math.min(target, el.scrollWidth - el.clientWidth));
+      }, [scrollMode, dataRangeDays, aggregate, showInjections, rows.length]);
 
       // Y range: visible-window max → goal - 8. Scoped to viewPtsSafe (not
       // the full lifetime pts) so zooming the Data range in actually gives
@@ -4806,7 +4841,31 @@
               </div>
             );
           })() : (
-          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+          <div style={{ position: 'relative' }}>
+            {/* Sticky y-axis gutter — only needed once the chart is wider
+                than its container (scrollMode) and the plot below actually
+                scrolls. A plain opaque overlay, not a second data source:
+                it mirrors the same yOf/goal-label math as the plot SVG's
+                own (still-present) y-axis text, so it lines up exactly at
+                scrollLeft 0 and simply masks the real labels as they
+                scroll out from underneath it. */}
+            {scrollMode && (
+              <svg width={PAD.l} height={VH} viewBox={`0 0 ${PAD.l} ${VH}`}
+                   style={{ position: 'absolute', top: 0, left: 0, zIndex: 2,
+                            background: '#fff', pointerEvents: 'none' }}>
+                {yTicks.map(v => (
+                  <text key={v} x={PAD.l - 5} y={yOf(v) + 3} textAnchor="end"
+                        fontSize="4.5" fill="#aeaeb2">{v}</text>
+                ))}
+                <text x={PAD.l - 5} y={goalY + 3} textAnchor="end"
+                      fontSize="4.5" fill="#34c759" fontWeight="600">{goalLbs}</text>
+              </svg>
+            )}
+            <div ref={scrollRef}
+                 style={scrollMode ? { overflowX: 'auto', WebkitOverflowScrolling: 'touch' } : undefined}>
+          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`}
+               width={scrollMode ? VW : undefined} height={scrollMode ? VH : undefined}
+               style={scrollMode ? { display: 'block' } : { width: '100%', height: 'auto', display: 'block' }}
                onMouseMove={e => {
                  const rect = e.currentTarget.getBoundingClientRect();
                  const svgX = (e.clientX - rect.left) / rect.width * VW;
@@ -5218,6 +5277,8 @@
               );
             })()}
           </svg>
+            </div>
+          </div>
           )}
 
           {annoModal && (

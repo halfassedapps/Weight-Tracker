@@ -21,6 +21,14 @@
       0%   { transform: translate(0, 0) rotate(0deg); opacity: 1; }
       100% { transform: translate(var(--drift), 100vh) rotate(var(--rot)); opacity: 0; }
     }
+    /* Scrollbars are hidden app-wide (below) for a cleaner app-like look,
+       but that leaves the weight chart's long-range horizontal scroll with
+       no visible affordance at all. Opt it back in, styled thin. */
+    .wc-hscroll { scrollbar-width: thin; scrollbar-color: rgba(0,0,0,.22) transparent; }
+    .wc-hscroll::-webkit-scrollbar { display: block; height: 6px; }
+    .wc-hscroll::-webkit-scrollbar-track { background: transparent; }
+    .wc-hscroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,.22); border-radius: 3px; }
+    .wc-hscroll::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.35); }
     ::-webkit-scrollbar { display: none; }
   </style>
 </head>
@@ -4294,6 +4302,20 @@
       // squished chart with illegibly tiny text on wide containers.
       const pxPerUnit = containerW != null ? containerW / BASE_VW : 1;
 
+      // Popovers (goal/weight/trend-line tooltips) clamp into this instead
+      // of the full [PAD.l, PAD.l+cW] chart bounds once scrolled — most of
+      // that logical width is off-screen in scroll mode, so clamping to
+      // just the chart's own bounds still let a tooltip land outside the
+      // currently *visible* scrolled slice, bleeding past the real viewport
+      // edge with no way to scroll to it (scrollbars are hidden app-wide).
+      const visibleLBound = () => {
+        const el = scrollRef.current;
+        if (!scrollMode || !el) return [PAD.l, PAD.l + cW];
+        const left  = el.scrollLeft / pxPerUnit;
+        const right = left + el.clientWidth / pxPerUnit;
+        return [Math.max(PAD.l, left), Math.min(PAD.l + cW, right)];
+      };
+
       // Default scroll position: today, near the right edge — not all the
       // way to scrollWidth, which can run far past today into pure
       // goal-projection space on a shallow trend (the future buffer chases
@@ -4365,7 +4387,10 @@
       const tipH = prevGoalMs ? 56 : 44;
       const statusLabel = driftSymbol === '←' ? 'Improving' : driftSymbol === '→' ? 'Worsening' : 'Stable';
       const tipGx  = goalMs ? xOf(goalMs) : null;
-      const tipX   = tipGx != null ? (tipGx + tipW + 10 > PAD.l + cW ? tipGx - tipW - 8 : tipGx + 8) : 0;
+      const [goalTipVisL, goalTipVisR] = visibleLBound();
+      const tipX   = tipGx != null
+        ? (tipGx + tipW + 10 > goalTipVisR ? Math.max(goalTipVisL, tipGx - tipW - 8) : tipGx + 8)
+        : 0;
       const tipY   = tipGx != null ? Math.max(PAD.t, goalY - tipH / 2) : 0;
 
       // Color-graded weight line: split displayPts into runs sharing the
@@ -4894,7 +4919,7 @@
                       fontSize="4.5" fill="#34c759" fontWeight="600">{goalLbs}</text>
               </svg>
             )}
-            <div ref={scrollRef}
+            <div ref={scrollRef} className={scrollMode ? 'wc-hscroll' : undefined}
                  style={scrollMode ? { overflowX: 'auto', WebkitOverflowScrolling: 'touch' } : undefined}>
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`}
                width={scrollMode ? VW * pxPerUnit : undefined} height={scrollMode ? VH * pxPerUnit : undefined}
@@ -5147,7 +5172,8 @@
               const wx = xOf(weightTip.ms);
               const wy = yOf(weightTip.lbs);
               const TW = aggregate === 'daily' ? 68 : 80, TH = 36, TR = 4;
-              const tx = Math.max(PAD.l, Math.min(wx - TW / 2, PAD.l + cW - TW));
+              const [wVisL, wVisR] = visibleLBound();
+              const tx = Math.max(wVisL, Math.min(wx - TW / 2, wVisR - TW));
               const ty = Math.max(PAD.t + 2, wy - TH - 6);
               return (
                 <g style={{ pointerEvents:'none' }}>
@@ -5178,7 +5204,8 @@
               const rate = trendLineTip.lbsPerWeek;
               const rateStr = rate != null ? `${rate >= 0 ? '' : '+'}${(-rate).toFixed(2)} lbs/wk` : null;
               const TH = rateStr ? 34 : 26;
-              const tx = Math.max(PAD.l, Math.min(trendLineTip.x - TW / 2, PAD.l + cW - TW));
+              const [tlVisL, tlVisR] = visibleLBound();
+              const tx = Math.max(tlVisL, Math.min(trendLineTip.x - TW / 2, tlVisR - TW));
               const ty = Math.max(PAD.t + 2, trendLineTip.y - TH - 6);
               const dateStr = trendLineTip.goalMs
                 ? new Date(trendLineTip.goalMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
@@ -5311,6 +5338,14 @@
             })()}
           </svg>
             </div>
+            {/* Scrollbars are hidden app-wide, and a thin opt-in scrollbar
+                (see .wc-hscroll) is easy to miss, especially on touch —
+                spell it out explicitly so long ranges aren't a dead end. */}
+            {scrollMode && (
+              <div style={{ textAlign: 'center', fontSize: 10, color: '#aeaeb2', padding: '4px 0 0' }}>
+                ← Scroll to see full history →
+              </div>
+            )}
           </div>
           )}
 

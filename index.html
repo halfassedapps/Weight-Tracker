@@ -4264,28 +4264,35 @@
         todayMs + FUTURE_BUFFER_DAYS * 86400000
       );
 
-      // Chart width. Up to ~6 months, squeeze to fit the container exactly
-      // like before (BASE_VW/FIT_CW, elastic via width:100%, unaffected by
-      // the container's real size — the viewBox just scales to it). Past
-      // that, squeezing further makes individual points unreadable, so
-      // instead hold the per-day pixel density constant at whatever it was
-      // right at the 6-month mark, and let the chart grow wider than its
-      // container — the plot SVG below scrolls horizontally (native
-      // momentum scroll) while the y-axis gutter stays fixed alongside it.
-      // That density has to come from the container's *measured* pixel
-      // width (containerW), not the logical 360-unit constant — unlike fit
-      // mode, the scrollable SVG is sized in literal unscaled pixels, so a
-      // fixed reference renders far smaller than the available space on a
-      // wide (e.g. desktop) container.
+      // Chart width, in the same logical 360-unit coordinate system used
+      // everywhere below (xOf/yOf/PAD/font sizes/etc.) regardless of mode —
+      // up to ~6 months this is just BASE_VW/FIT_CW, squeezed to fit the
+      // container exactly like before via elastic width:100%. Past that,
+      // squeezing further makes individual points unreadable, so instead
+      // hold the per-day *logical-unit* density constant at whatever it
+      // was right at the 6-month mark, and let the logical width grow
+      // past 360 — the plot SVG scrolls horizontally once it's rendered
+      // wider than its container (see pxPerUnit below).
       const FIT_MAX_DAYS = 180;
       const BASE_VW = 360;
       const FIT_CW  = BASE_VW - PAD.l - PAD.r;
-      const measuredCW = containerW != null ? Math.max(containerW - PAD.l - PAD.r, 1) : FIT_CW;
-      const PX_PER_DAY = measuredCW / FIT_MAX_DAYS;
+      const PX_PER_DAY_UNITS = FIT_CW / FIT_MAX_DAYS;
       const visibleDaySpan = (endMs - viewStartMs) / 86400000;
       const scrollMode = visibleDaySpan > FIT_MAX_DAYS;
-      const cW = scrollMode ? PX_PER_DAY * visibleDaySpan : FIT_CW;
+      const cW = scrollMode ? PX_PER_DAY_UNITS * visibleDaySpan : FIT_CW;
       const VW = PAD.l + cW + PAD.r;
+
+      // Real CSS pixels per logical unit, for scroll mode's explicit
+      // width/height only (fit mode keeps using width:100%/height:auto,
+      // which already does this scaling itself). Calibrated from the
+      // container's measured width so the two modes line up exactly at
+      // the 180-day transition (VW=360 then renders at the container's
+      // own width, same as fit mode would). Applying it to BOTH width and
+      // height — not just width — matters: fit mode's width:100% always
+      // scaled both dimensions together to preserve the 360:200 aspect
+      // ratio, so scaling only width here previously rendered a short,
+      // squished chart with illegibly tiny text on wide containers.
+      const pxPerUnit = containerW != null ? containerW / BASE_VW : 1;
 
       // Default scroll position: today, near the right edge — not all the
       // way to scrollWidth, which can run far past today into pure
@@ -4299,7 +4306,9 @@
       useEffect(() => {
         if (!scrollMode || !scrollRef.current) return;
         const el = scrollRef.current;
-        const target = xOf(todayMs) - el.clientWidth + 24;
+        // xOf is in logical units — convert to real CSS px (pxPerUnit)
+        // before comparing against scrollLeft/clientWidth.
+        const target = xOf(todayMs) * pxPerUnit - el.clientWidth + 24;
         el.scrollLeft = Math.max(0, Math.min(target, el.scrollWidth - el.clientWidth));
       }, [scrollMode, dataRangeDays, aggregate, showInjections, rows.length]);
 
@@ -4874,7 +4883,7 @@
                 scrollLeft 0 and simply masks the real labels as they
                 scroll out from underneath it. */}
             {scrollMode && (
-              <svg width={PAD.l} height={VH} viewBox={`0 0 ${PAD.l} ${VH}`}
+              <svg width={PAD.l * pxPerUnit} height={VH * pxPerUnit} viewBox={`0 0 ${PAD.l} ${VH}`}
                    style={{ position: 'absolute', top: 0, left: 0, zIndex: 2,
                             background: '#fff', pointerEvents: 'none' }}>
                 {yTicks.map(v => (
@@ -4888,7 +4897,7 @@
             <div ref={scrollRef}
                  style={scrollMode ? { overflowX: 'auto', WebkitOverflowScrolling: 'touch' } : undefined}>
           <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`}
-               width={scrollMode ? VW : undefined} height={scrollMode ? VH : undefined}
+               width={scrollMode ? VW * pxPerUnit : undefined} height={scrollMode ? VH * pxPerUnit : undefined}
                style={scrollMode ? { display: 'block' } : { width: '100%', height: 'auto', display: 'block' }}
                onMouseMove={e => {
                  const rect = e.currentTarget.getBoundingClientRect();

@@ -136,6 +136,77 @@ def find_latest_export(folder):
     return matches[0]
 
 
+# ─── Export cleanup ──────────────────────────────────────────────────────────
+# Health Auto Export drops a new file in DrClaude on every run, and nothing
+# was ever removing them — left alone they just accumulate in iCloud forever.
+# Once a file's been successfully pushed to the Gist, rename it so it's
+# visibly "done" and never reconsidered by find_latest_export (EXPORT_RE is
+# anchored, so the suffix below drops it out of that match); a separate
+# sweep then trashes anything — imported or not — older than RETENTION_DAYS.
+IMPORTED_SUFFIX = '.imported'
+RETENTION_DAYS = 7
+# Same shape as EXPORT_RE, plus an optional .imported marker before the
+# optional .csv — matches both freshly-exported and already-imported files,
+# for the retention sweep below.
+ANY_EXPORT_RE = re.compile(
+    r'^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.imported)?(\.csv)?$',
+    re.IGNORECASE,
+)
+
+
+def mark_imported(path):
+    """Rename a just-processed export in place so it's flagged as done and
+    EXPORT_RE stops matching it. Best-effort — a rename failure (e.g. iCloud
+    still has the file locked) just means it gets reprocessed next run,
+    which is harmless since the Gist merge logic is idempotent."""
+    if IMPORTED_SUFFIX in path.stem:
+        return path
+    new_path = path.with_name(f'{path.stem}{IMPORTED_SUFFIX}{path.suffix}')
+    try:
+        path.rename(new_path)
+        return new_path
+    except OSError as e:
+        print(f'[watcher] Could not mark {path.name} as imported: {e}')
+        return path
+
+
+def trash_file(path):
+    """Move to macOS Trash rather than deleting outright — this runs
+    unattended on a schedule, so a cleanup mistake should still be
+    recoverable the same way an accidental Finder delete would be."""
+    escaped = str(path).replace('\\', '\\\\').replace('"', '\\"')
+    try:
+        subprocess.run(
+            ['osascript', '-e', f'tell application "Finder" to delete POSIX file "{escaped}"'],
+            check=True, capture_output=True, text=True, timeout=15,
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f'[watcher] Could not trash {path.name}: {e}')
+        return False
+
+
+def cleanup_old_exports(folder, days=RETENTION_DAYS, skip=None):
+    """Trash export files (imported or not) whose *filename* date is older
+    than `days` — not disk mtime, which iCloud sync can skew well past the
+    file's actual export date. `skip` protects whichever file this run just
+    processed, in case the automation's been broken long enough that the
+    single newest file available is itself already past the cutoff; we
+    always want a chance to import it before anything considers trashing it.
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    for p in folder.iterdir():
+        if not p.is_file() or p == skip or not ANY_EXPORT_RE.match(p.name):
+            continue
+        ts = export_ts(p.name)
+        try:
+            file_dt = datetime.strptime(ts, '%Y-%m-%d_%H%M%S')
+        except ValueError:
+            continue
+        if file_dt < cutoff and trash_file(p):
+            print(f'[watcher] Trashed old export: {p.name}')
+
+
 # ─── Date parsing (mirrors index.html's msToLocalDate — local calendar day,
 # not UTC, so this lines up with intervals.icu's start_date_local too) ──────
 def parse_dt(raw):
@@ -581,6 +652,12 @@ def main():
     state = load_state()
     has_new_export = latest is not None and state.get('lastFile') != latest.name
 
+    # Runs every invocation, independent of whether there's new data this
+    # time, so the folder doesn't just accumulate a day's worth of exports
+    # forever. `latest` is protected even if it's already past the cutoff —
+    # see cleanup_old_exports' docstring.
+    cleanup_old_exports(folder, skip=latest)
+
     intervals_creds = get_intervals_credentials()
 
     # Nothing to do: no new CSV to import, and no intervals.icu key to sync
@@ -631,6 +708,7 @@ def main():
     if has_new_export:
         state['lastFile'] = latest.name
         save_state(state)
+        mark_imported(latest)
     print(f"[watcher] Pushed {len(payload['entries'])} weight rows, {len(payload['calories'])} calorie rows, "
           f"{len(payload['bloodPressure'])} BP readings to Gist. ({latest.name if has_new_export else 'no new export'})")
 

@@ -4917,9 +4917,12 @@
                 it mirrors the same yOf/goal-label math as the plot SVG's
                 own (still-present) y-axis text, so it lines up exactly at
                 scrollLeft 0 and simply masks the real labels as they
-                scroll out from underneath it. */}
+                scroll out from underneath it. Height is capped to the plot
+                area (PAD.t+cH), not the full VH — the bottom margin holds
+                the "+ Note" button and week/month axis labels, which must
+                stay visible rather than get painted over by this overlay. */}
             {scrollMode && (
-              <svg width={PAD.l * pxPerUnit} height={VH * pxPerUnit} viewBox={`0 0 ${PAD.l} ${VH}`}
+              <svg width={PAD.l * pxPerUnit} height={(PAD.t + cH) * pxPerUnit} viewBox={`0 0 ${PAD.l} ${PAD.t + cH}`}
                    style={{ position: 'absolute', top: 0, left: 0, zIndex: 2,
                             background: '#fff', pointerEvents: 'none' }}>
                 {yTicks.map(v => (

@@ -889,6 +889,15 @@
     // titration guidance generally calls for at least this long before
     // reassessing (see the justIncreased note in doseGuidance).
     const DOSE_INCREASE_HOLD_DAYS = 21;
+    // How long a user-declared "stay at my dose" override (see DosePanel's
+    // doseHold) keeps silencing an "increase" recommendation before it
+    // auto-expires and normal guidance — including whatever the survey
+    // signals (GI tolerance, appetite suppression) look like by then —
+    // takes back over on its own. Same length as DOSE_INCREASE_HOLD_DAYS
+    // (a coincidence of both being "about 3 weeks"), kept as its own
+    // constant since the two represent different things and shouldn't
+    // become accidentally coupled if one changes later.
+    const DOSE_HOLD_EXPIRE_DAYS = 21;
 
     // appetiteSignal may only ever soften an 'increase' into a 'stay' — it must
     // never touch 'stay'/'monitor'/'contact', which exist to catch weight loss
@@ -3424,8 +3433,22 @@
       // being honored (not actively cleared) the moment the real logged dose
       // changes — at that point the premise "I'm staying at X" is no longer
       // true either way.
-      const holdAtDose = doseMg => setDoseHold({ doseMg, at: Date.now() });
+      // Anchored to local midnight (not Date.now()) so the age-in-days math
+      // against todayMs elsewhere (also midnight-anchored) comes out as a
+      // clean whole number of calendar days regardless of what time of day
+      // the hold was declared — otherwise "held this afternoon" would read
+      // as 22 days left, not 21, since todayMs would sit slightly before it.
+      const holdAtDose = doseMg => setDoseHold({ doseMg, at: new Date().setHours(0, 0, 0, 0) });
       const clearDoseHold = () => setDoseHold(null);
+      // Proactively clear an expired hold (rather than just letting
+      // doseHoldActive's own expiry check below silently stop honoring it)
+      // so the stored value doesn't linger indefinitely and so a later
+      // visit starts from a clean state. Effect, not a render-time call —
+      // doseHold is owned by App, and setting another component's state
+      // mid-render isn't safe.
+      useEffect(() => {
+        if (doseHold && new Date().setHours(0, 0, 0, 0) - doseHold.at >= DOSE_HOLD_EXPIRE_DAYS * 86400000) setDoseHold(null);
+      }, [doseHold]);
 
       if (!injections || injections.length === 0) return null;
 
@@ -3467,14 +3490,17 @@
       // which this override is meant to silence. Keyed to ds.lastDose, not
       // just "is there a hold at all", so a hold declared at one dose
       // doesn't keep silently applying after a real injection changes it.
-      const doseHoldActive = g.action === 'increase' && doseHold && doseHold.doseMg === ds.lastDose;
+      const doseHoldAgeDays = doseHold ? Math.floor((todayMs - doseHold.at) / 86400000) : null;
+      const doseHoldExpired = doseHoldAgeDays != null && doseHoldAgeDays >= DOSE_HOLD_EXPIRE_DAYS;
+      const doseHoldActive = g.action === 'increase' && doseHold && !doseHoldExpired && doseHold.doseMg === ds.lastDose;
+      const doseHoldDaysLeft = doseHoldActive ? DOSE_HOLD_EXPIRE_DAYS - doseHoldAgeDays : null;
       const displayG = doseHoldActive
         ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
         : g;
       const displayRecWeekly = doseHoldActive ? weeklyDose : recWeekly;
       const displayPerInjMg  = doseHoldActive ? weeklyDose / injPerWeek : perInjMg;
       const displaySubtext = doseHoldActive
-        ? `You chose to hold at ${round2(ds.lastDose)} mg on ${new Date(doseHold.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} instead of increasing. Still tracking the usual guidance below in case anything changes.`
+        ? `You chose to hold at ${round2(ds.lastDose)} mg on ${new Date(doseHold.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} instead of increasing. This hold auto-expires in ${doseHoldDaysLeft} day${doseHoldDaysLeft === 1 ? '' : 's'}, after which the usual guidance (including anything new from your symptom surveys) resumes automatically.`
         : subtext;
 
       const DOSING_RULES = [
@@ -6690,8 +6716,12 @@
       const currentPerInjMg = ds.lastDose;
       // Honor a hold declared in the dose panel (see DosePanel) so this
       // banner's syringe graphic doesn't tell the user to draw up an
-      // increase they already chose not to take.
-      const doseHoldActive = g.action === 'increase' && doseHold && doseHold.doseMg === ds.lastDose;
+      // increase they already chose not to take. Same expiry rule as
+      // DosePanel's own doseHoldActive — this component doesn't own the
+      // hold, just displays it, so the check has to be duplicated rather
+      // than shared.
+      const doseHoldExpired = doseHold && (todayMs - doseHold.at) >= DOSE_HOLD_EXPIRE_DAYS * 86400000;
+      const doseHoldActive = g.action === 'increase' && doseHold && !doseHoldExpired && doseHold.doseMg === ds.lastDose;
       const displayG = doseHoldActive
         ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
         : g;

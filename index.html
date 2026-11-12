@@ -5371,11 +5371,19 @@
               const gx1 = Math.max(PAD.l, Math.min(xOf(aStartMs), PAD.l + cW));
               const gx2 = Math.max(PAD.l, Math.min(xOf(aEndMs),   PAD.l + cW));
               const pillCx = sameDay ? gx1 : (gx1 + gx2) / 2;
-              // Cap the pill to the actual date-range width (never wider than
-              // the gap between its own guide lines) so a short range can't
-              // visually read as spanning far more time than it actually does
-              // — the label just gets truncated to whatever fits.
-              const maxPillW = sameDay ? 56 : Math.max(10, Math.min(56, gx2 - gx1));
+              // Tied to the actual date-range width (never wider than the
+              // gap between its own guide lines) so a short range can't
+              // visually read as spanning far more time than it actually
+              // does — the label just gets truncated to whatever fits.
+              // Floored at 36 rather than letting it shrink indefinitely,
+              // though: a narrow multi-day range (a couple of days, at a
+              // zoomed-out "All time" scale) was truncating short labels
+              // like "Sick" to a single letter even with open space on
+              // every side. The pill can overflow slightly past its own
+              // guide lines at that floor — a small, deliberate tradeoff
+              // for an actually-readable label — while wider ranges are
+              // still capped at their own true span as before.
+              const maxPillW = sameDay ? 56 : Math.max(36, Math.min(72, gx2 - gx1));
               const maxChars = Math.max(1, Math.floor((maxPillW - 8) / 3.4));
               const shortLabel = a.label.length > maxChars
                 ? a.label.slice(0, Math.max(1, maxChars - 1)) + '…' : a.label;

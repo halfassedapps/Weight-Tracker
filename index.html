@@ -83,6 +83,39 @@
     const LS_CAL_CUSTOM_DAYS_KEY = 'weight-tracker-cal-custom-days';
     const LS_PK_RANGE_MODE_KEY   = 'weight-tracker-pk-range-mode';
     const LS_PK_CUSTOM_DAYS_KEY  = 'weight-tracker-pk-custom-days';
+
+    /* ─── Deep linking ────────────────────────────────────────────────────────── */
+    // Lets a specific tab + its current view settings (range, graph/table,
+    // which toggles are on) be captured into a URL and sent to someone else —
+    // they land directly on that configured view instead of the last tab/
+    // settings their own browser happened to have. Deliberately simple: the
+    // params below just seed each component's normal useState initializer
+    // (read once, same as the existing localStorage fallback they sit next
+    // to), so a deep link behaves exactly like the recipient had clicked
+    // those same controls themselves — including the existing persistence
+    // effects then saving them to their own localStorage going forward. No
+    // separate "shared/locked view" mode, and never anything PAT/auth-related
+    // in the URL — this is purely about which view renders, not who can edit.
+    const VALID_DEEP_LINK_TABS = ['weight', 'bp', 'tirz', 'dosing', 'nutrition', 'activity', 'videos'];
+    function parseDeepLink() {
+      try {
+        const sp = new URLSearchParams(window.location.search);
+        const tab = sp.get('tab');
+        if (!VALID_DEEP_LINK_TABS.includes(tab)) return null;
+        const params = {};
+        for (const [k, v] of sp.entries()) if (k !== 'tab') params[k] = v;
+        return { tab, params };
+      } catch (_) { return null; }
+    }
+    // undefined (param absent) vs '' (present but empty, e.g. trend=) matter
+    // differently to callers — this just centralizes the URL-building half.
+    function buildDeepLink(tab, params) {
+      const sp = new URLSearchParams();
+      sp.set('tab', tab);
+      Object.entries(params).forEach(([k, v]) => { if (v != null) sp.set(k, String(v)); });
+      return `${window.location.origin}${window.location.pathname}?${sp.toString()}`;
+    }
+
     const EXPORT_RE       = /^(Automation_Daily_export|HealthExport)_\d{4}-\d{2}-\d{2}_\d{6}(\.csv)?$/i;
     function lastImportIsToday() {
       const name = localStorage.getItem(LS_LAST_CSV_KEY) ?? '';
@@ -1337,11 +1370,11 @@
     const swatch = (color) => ({ display: 'inline-block', width: 12, height: 12, background: color,
                                   marginRight: 5, verticalAlign: 'middle', borderRadius: 3 });
 
-    function CaloriesActivitySection({ calorieData, rows, calorieTargets, proteinTargets, onSaveProteinTargets, isAdmin, onSaveCalorieTargets, intervalsCalories }) {
-      const [rangeMode, setRangeMode] = useState(() => localStorage.getItem(LS_CAL_RANGE_MODE_KEY) || '30d');
+    function CaloriesActivitySection({ calorieData, rows, calorieTargets, proteinTargets, onSaveProteinTargets, isAdmin, onSaveCalorieTargets, intervalsCalories, deepLinkParams }) {
+      const [rangeMode, setRangeMode] = useState(() => deepLinkParams?.range || localStorage.getItem(LS_CAL_RANGE_MODE_KEY) || '30d');
       useEffect(() => { try { localStorage.setItem(LS_CAL_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
       const [customDays, setCustomDays] = useState(
-        () => parseInt(localStorage.getItem(LS_CAL_CUSTOM_DAYS_KEY), 10) || 30
+        () => parseInt(deepLinkParams?.customDays ?? localStorage.getItem(LS_CAL_CUSTOM_DAYS_KEY), 10) || 30
       );
       useEffect(() => { try { localStorage.setItem(LS_CAL_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
       const [windowOffset, setWindowOffset] = useState(0);
@@ -1392,6 +1425,9 @@
                        style={{ width: 56, fontSize: 10, fontWeight: 600, padding: '5px 6px', borderRadius: 8,
                                 border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' }} />
               )}
+              <div style={{ marginLeft: 'auto' }}>
+                <CopyLinkButton tab="nutrition" params={{ range: rangeMode, customDays }} />
+              </div>
             </div>
             {windowDays !== 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -1951,16 +1987,16 @@
       return `${h}:${String(m).padStart(2, '0')}${ap}`;
     };
 
-    function BpChart({ bpData }) {
-      const [rangeMode, setRangeMode] = useState(() => localStorage.getItem(LS_BP_RANGE_MODE_KEY) || 'all');
+    function BpChart({ bpData, deepLinkParams }) {
+      const [rangeMode, setRangeMode] = useState(() => deepLinkParams?.range || localStorage.getItem(LS_BP_RANGE_MODE_KEY) || 'all');
       useEffect(() => { try { localStorage.setItem(LS_BP_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
       const [customDays, setCustomDays] = useState(
-        () => parseInt(localStorage.getItem(LS_BP_CUSTOM_DAYS_KEY), 10) || 30
+        () => parseInt(deepLinkParams?.customDays ?? localStorage.getItem(LS_BP_CUSTOM_DAYS_KEY), 10) || 30
       );
       useEffect(() => { try { localStorage.setItem(LS_BP_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
       const [windowOffset, setWindowOffset] = useState(0);
       const [tip, setTip] = useState(null);
-      const [viewMode, setViewMode] = useState(() => localStorage.getItem(LS_BP_VIEW_MODE_KEY) || 'table'); // 'graph' | 'table'
+      const [viewMode, setViewMode] = useState(() => deepLinkParams?.view || localStorage.getItem(LS_BP_VIEW_MODE_KEY) || 'table'); // 'graph' | 'table'
       useEffect(() => { try { localStorage.setItem(LS_BP_VIEW_MODE_KEY, viewMode); } catch (_) {} }, [viewMode]);
       const [sharing, setSharing] = useState(false);
       const svgRef = useRef(null);
@@ -2306,7 +2342,7 @@
           </div>
 
           {/* Share */}
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'6px 14px 10px' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap: 8, padding:'6px 14px 10px' }}>
             <button onClick={shareChart} disabled={sharing}
                     style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600,
                              color:'#4a90d9', background:'#f0f6ff', border:'none', borderRadius:12,
@@ -2317,24 +2353,25 @@
               </svg>
               {sharing ? 'Sharing…' : 'Share'}
             </button>
+            <CopyLinkButton tab="bp" params={{ range: rangeMode, customDays, view: viewMode }} />
           </div>
         </div>
       );
     }
 
     /* ─── Rides Chart ────────────────────────────────────────────────────────── */
-    function RidesChart({ ridesData }) {
-      const [rangeMode, setRangeMode] = useState(() => localStorage.getItem(LS_RIDES_RANGE_MODE_KEY) || '30d');
+    function RidesChart({ ridesData, deepLinkParams }) {
+      const [rangeMode, setRangeMode] = useState(() => deepLinkParams?.range || localStorage.getItem(LS_RIDES_RANGE_MODE_KEY) || '30d');
       useEffect(() => { try { localStorage.setItem(LS_RIDES_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
       const [customDays, setCustomDays] = useState(
-        () => parseInt(localStorage.getItem(LS_RIDES_CUSTOM_DAYS_KEY), 10) || 30
+        () => parseInt(deepLinkParams?.customDays ?? localStorage.getItem(LS_RIDES_CUSTOM_DAYS_KEY), 10) || 30
       );
       useEffect(() => { try { localStorage.setItem(LS_RIDES_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
       const [windowOffset, setWindowOffset] = useState(0);
       const [tip, setTip] = useState(null);
       const [selectedDate, setSelectedDate] = useState(null);
       const [sharing, setSharing] = useState(false);
-      const [viewMode, setViewMode] = useState(() => localStorage.getItem(LS_RIDES_VIEW_MODE_KEY) || 'table'); // 'graph' | 'table'
+      const [viewMode, setViewMode] = useState(() => deepLinkParams?.view || localStorage.getItem(LS_RIDES_VIEW_MODE_KEY) || 'table'); // 'graph' | 'table'
       useEffect(() => { try { localStorage.setItem(LS_RIDES_VIEW_MODE_KEY, viewMode); } catch (_) {} }, [viewMode]);
       const [expandedRideDates, setExpandedRideDates] = useState(() => new Set());
       const toggleRideDate = date => setExpandedRideDates(prev => {
@@ -2763,7 +2800,7 @@
           )}
 
           {/* Share */}
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'6px 14px 10px' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap: 8, padding:'6px 14px 10px' }}>
             <button onClick={shareChart} disabled={sharing}
                     style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600,
                              color:'#4a90d9', background:'#f0f6ff', border:'none', borderRadius:12,
@@ -2774,24 +2811,27 @@
               </svg>
               {sharing ? 'Preparing…' : 'Share'}
             </button>
+            <CopyLinkButton tab="activity" params={{ range: rangeMode, customDays, view: viewMode }} />
           </div>
         </div>
       );
     }
 
     /* ─── PK Chart ───────────────────────────────────────────────────────────── */
-    function PkChart({ injections, rows, isAdmin, injSchedule, onSaveSchedule }) {
+    function PkChart({ injections, rows, isAdmin, injSchedule, onSaveSchedule, deepLinkParams }) {
       if (!injections.length) return null;
       const [tip, setTip] = useState(null); // { x, y, level, dateStr, wLbs }
       const [splitManual, setSplitManual] = useState(
-        () => localStorage.getItem(LS_SPLIT_KEY) === 'true'
+        () => deepLinkParams?.split != null
+          ? deepLinkParams.split === '1'
+          : localStorage.getItem(LS_SPLIT_KEY) === 'true'
       );
       const [sharing,      setSharing]      = useState(false);
       const svgRef = useRef(null);
-      const [rangeMode,    setRangeMode]    = useState(() => localStorage.getItem(LS_PK_RANGE_MODE_KEY) || '30d'); // '7d' | '14d' | '30d' | 'all' | 'custom'
+      const [rangeMode,    setRangeMode]    = useState(() => deepLinkParams?.range || localStorage.getItem(LS_PK_RANGE_MODE_KEY) || '30d'); // '7d' | '14d' | '30d' | 'all' | 'custom'
       useEffect(() => { try { localStorage.setItem(LS_PK_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
       const [customDays,   setCustomDays]   = useState(
-        () => parseInt(localStorage.getItem(LS_PK_CUSTOM_DAYS_KEY), 10) || 30
+        () => parseInt(deepLinkParams?.customDays ?? localStorage.getItem(LS_PK_CUSTOM_DAYS_KEY), 10) || 30
       );
       useEffect(() => { try { localStorage.setItem(LS_PK_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
       const [windowOffset, setWindowOffset] = useState(0);
@@ -3357,7 +3397,7 @@
           </div>
 
           {/* Share */}
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'6px 14px 10px' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap: 8, padding:'6px 14px 10px' }}>
             <button onClick={shareChart} disabled={sharing}
                     style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, fontWeight:600,
                              color:'#4a90d9', background:'#f0f6ff', border:'none', borderRadius:12,
@@ -3368,6 +3408,7 @@
               </svg>
               {sharing ? 'Preparing…' : 'Share'}
             </button>
+            <CopyLinkButton tab="tirz" params={{ range: rangeMode, customDays, split: splitManual ? 1 : 0 }} />
           </div>
         </div>
       );
@@ -4018,7 +4059,8 @@
     }
 
     function WeightChart({ rows, injections, injSchedule, annotations = [], isAdmin, onSaveAnnotation, onDeleteAnnotation,
-                            goalLbs = GOAL_LBS_DEFAULT, onSaveGoal, heightIn = HEIGHT_IN_DEFAULT, onSaveHeight }) {
+                            goalLbs = GOAL_LBS_DEFAULT, onSaveGoal, heightIn = HEIGHT_IN_DEFAULT, onSaveHeight,
+                            deepLinkParams }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
@@ -4032,9 +4074,11 @@
       const [goalInputFocused, setGoalInputFocused] = useState(false);
       const [editingHeight, setEditingHeight] = useState(false);
       const [heightDraft, setHeightDraft] = useState(() => String(heightIn));
-      const [viewMode, setViewMode] = useState(() => localStorage.getItem(LS_WEIGHT_VIEW_MODE_KEY) || 'graph'); // 'graph' | 'table'
+      const [viewMode, setViewMode] = useState(() => deepLinkParams?.view || localStorage.getItem(LS_WEIGHT_VIEW_MODE_KEY) || 'graph'); // 'graph' | 'table'
       useEffect(() => { try { localStorage.setItem(LS_WEIGHT_VIEW_MODE_KEY, viewMode); } catch (_) {} }, [viewMode]);
-      const [showInjections, setShowInjections] = useState(lsLoadShowInjData);
+      const [showInjections, setShowInjections] = useState(
+        () => deepLinkParams?.inj != null ? deepLinkParams.inj === '1' : lsLoadShowInjData()
+      );
       // The pill and its popover aren't touching (popover floats above the
       // row), so a plain onMouseLeave on the pill would close it the instant
       // the cursor crosses that gap while moving toward the popover (e.g. to
@@ -4049,22 +4093,28 @@
       };
       // Regression window for the Current Trend line. 0 = all data.
       const [trendDays, setTrendDays] = useState(
-        () => parseInt(localStorage.getItem(LS_WEIGHT_TREND_DAYS_KEY), 10) || 21
+        () => parseInt(deepLinkParams?.trendDays ?? localStorage.getItem(LS_WEIGHT_TREND_DAYS_KEY), 10) || 21
       );
       useEffect(() => { try { localStorage.setItem(LS_WEIGHT_TREND_DAYS_KEY, String(trendDays)); } catch (_) {} }, [trendDays]);
       // How the plotted weight data itself is grouped — not a projection,
       // the actual logged points averaged into coarser buckets.
-      const [aggregate, setAggregate] = useState(() => localStorage.getItem(LS_WEIGHT_AGGREGATE_KEY) || 'daily');
+      const [aggregate, setAggregate] = useState(() => deepLinkParams?.agg || localStorage.getItem(LS_WEIGHT_AGGREGATE_KEY) || 'daily');
       useEffect(() => { try { localStorage.setItem(LS_WEIGHT_AGGREGATE_KEY, aggregate); } catch (_) {} }, [aggregate]);
       // How much weigh-in history is actually shown (graph + table) —
       // independent of the Trend period selector, which only controls the
       // regression line's fit window. 0 = all time.
       const [dataRangeDays, setDataRangeDays] = useState(
-        () => parseInt(localStorage.getItem(LS_WEIGHT_DATA_RANGE_KEY), 10) || 0
+        () => parseInt(deepLinkParams?.range ?? localStorage.getItem(LS_WEIGHT_DATA_RANGE_KEY), 10) || 0
       );
       useEffect(() => { try { localStorage.setItem(LS_WEIGHT_DATA_RANGE_KEY, String(dataRangeDays)); } catch (_) {} }, [dataRangeDays]);
       const svgRef = useRef(null);
       const [trendModes, setTrendModes] = useState(() => {
+        // '' (param present but empty) means "no trend lines" and must be
+        // distinguished from the param being absent entirely — an empty
+        // string split on ',' would otherwise yield [''], a bogus mode id.
+        if (deepLinkParams?.trend != null) {
+          return deepLinkParams.trend === '' ? [] : deepLinkParams.trend.split(',');
+        }
         try { return JSON.parse(localStorage.getItem(LS_WEIGHT_TREND_MODES_KEY)) || ['current']; }
         catch (_) { return ['current']; }
       }); // ids of checked trend lines
@@ -4073,7 +4123,9 @@
       }, [trendModes]);
       const [trendMenuOpen, setTrendMenuOpen] = useState(false);
       const [ratesFromToday, setRatesFromToday] = useState(
-        () => localStorage.getItem(LS_WEIGHT_RATES_FROM_TODAY_KEY) === 'true'
+        () => deepLinkParams?.ratesToday != null
+          ? deepLinkParams.ratesToday === '1'
+          : localStorage.getItem(LS_WEIGHT_RATES_FROM_TODAY_KEY) === 'true'
       ); // false: rate lines span from the starting date, like Current
       useEffect(() => {
         try { localStorage.setItem(LS_WEIGHT_RATES_FROM_TODAY_KEY, String(ratesFromToday)); } catch (_) {}
@@ -5480,6 +5532,10 @@
               </svg>
               {sharing ? 'Preparing…' : 'Share'}
             </button>
+            <CopyLinkButton tab="weight" params={{
+              range: dataRangeDays, view: viewMode, agg: aggregate, inj: showInjections ? 1 : 0,
+              trend: trendModes.join(','), trendDays, ratesToday: ratesFromToday ? 1 : 0,
+            }} />
           </div>
         </div>
       );
@@ -6495,6 +6551,47 @@
       );
     }
 
+    // "Copy link" button for deep linking (see parseDeepLink/buildDeepLink
+    // above) — every tab gets one of these with its own set of params, so the
+    // recipient lands on that exact tab/view. `params` should match whatever
+    // that tab's own useState initializers read back out via deepLinkParams.
+    function CopyLinkButton({ tab, params }) {
+      const [copied, setCopied] = useState(false);
+      const copyLink = async () => {
+        const url = buildDeepLink(tab, params);
+        try {
+          await navigator.clipboard.writeText(url);
+        } catch (_) {
+          // Clipboard API can be unavailable (e.g. non-HTTPS context) —
+          // fall back to a manual-copy prompt rather than failing silently.
+          window.prompt('Copy this link:', url);
+          return;
+        }
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      };
+      return (
+        <button onClick={copyLink}
+                style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+                         color: copied ? '#34c759' : '#4a90d9', background: copied ? '#f0fdf4' : '#f0f6ff',
+                         border: 'none', borderRadius: 12, padding: '4px 10px', cursor: 'pointer' }}>
+          {copied ? (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#34c759" strokeWidth="2.5"
+                 strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          ) : (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
+                 strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            </svg>
+          )}
+          {copied ? 'Copied!' : 'Copy link'}
+        </button>
+      );
+    }
+
     /* ─── Injection Schedule Modal ───────────────────────────────────────────── */
     const SCHED_DAYS     = ['Su','Mo','Tu','We','Th','Fr','Sa'];
     const SCHED_DAYS_LNG = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -6966,6 +7063,10 @@
 
     /* ─── App ────────────────────────────────────────────────────────────────── */
     function App() {
+      // Parsed once from the URL this page loaded with — later navigation
+      // within the app (changing tabs/settings) doesn't re-run this, so it
+      // only ever seeds initial state, never fights with normal interaction.
+      const [deepLink] = useState(parseDeepLink);
       const saved = lsLoad();
       const [rows,        setRows]        = useState(saved?.logbook ?? []);
       const [meta,        setMeta]        = useState(saved?.meta    ?? null);
@@ -7012,9 +7113,9 @@
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
       const [activeTab,  setActiveTab]   = useState(() => {
+        if (deepLink) return deepLink.tab;
         const saved = localStorage.getItem(LS_ACTIVE_TAB_KEY);
-        const valid = ['weight', 'bp', 'tirz', 'dosing', 'nutrition', 'activity', 'videos'];
-        return valid.includes(saved) ? saved : 'weight';
+        return VALID_DEEP_LINK_TABS.includes(saved) ? saved : 'weight';
       });
       useEffect(() => { try { localStorage.setItem(LS_ACTIVE_TAB_KEY, activeTab); } catch (_) {} }, [activeTab]);
       const [error,      setError]      = useState('');
@@ -7868,7 +7969,8 @@
                     <div style={{ fontSize: 12, color: '#aeaeb2' }}>t½ = 5 d · tpeak = 36 h</div>
                   </div>
                   <PkChart injections={injections} rows={rows} isAdmin={isAdmin}
-                           injSchedule={injSchedule} onSaveSchedule={saveInjSchedule} />
+                           injSchedule={injSchedule} onSaveSchedule={saveInjSchedule}
+                           deepLinkParams={deepLink?.tab === 'tirz' ? deepLink.params : null} />
                 </div>
               </div>
 
@@ -7885,7 +7987,8 @@
                              annotations={weightAnnotations} isAdmin={isAdmin}
                              onSaveAnnotation={saveWeightAnnotation} onDeleteAnnotation={deleteWeightAnnotation}
                              goalLbs={goalLbs} onSaveGoal={saveGoalLbs}
-                             heightIn={heightIn} onSaveHeight={saveHeightIn} />
+                             heightIn={heightIn} onSaveHeight={saveHeightIn}
+                             deepLinkParams={deepLink?.tab === 'weight' ? deepLink.params : null} />
               </div>
 
               {/* Weight Loss Per Dose */}
@@ -7920,7 +8023,8 @@
                       </InfoDot>
                     </div>
                   </div>
-                  <BpChart bpData={bloodPressure} />
+                  <BpChart bpData={bloodPressure}
+                           deepLinkParams={deepLink?.tab === 'bp' ? deepLink.params : null} />
                 </div>
               ) : (
                 <div style={{ padding: '24px 16px', textAlign: 'center', color: '#aeaeb2', fontSize: 14 }}>
@@ -7935,7 +8039,8 @@
                 <CaloriesActivitySection calorieData={calories} rows={rows} calorieTargets={calorieTargets}
                                          proteinTargets={proteinTargets} onSaveProteinTargets={saveProteinTargets}
                                          isAdmin={isAdmin} onSaveCalorieTargets={saveCalorieTargets}
-                                         intervalsCalories={intervalsCalories} />
+                                         intervalsCalories={intervalsCalories}
+                                         deepLinkParams={deepLink?.tab === 'nutrition' ? deepLink.params : null} />
               )}
               </div>{/* end nutrition tab */}
 
@@ -7947,7 +8052,8 @@
                   <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Rides</div>
                   </div>
-                  <RidesChart ridesData={intervalRides} />
+                  <RidesChart ridesData={intervalRides}
+                              deepLinkParams={deepLink?.tab === 'activity' ? deepLink.params : null} />
                 </div>
               )}
 
@@ -8082,6 +8188,9 @@
                            isAdmin={isAdmin} onSaveSchedule={saveInjSchedule}
                            calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
                            pendingSurvey={pendingSurvey} doseHold={doseHold} setDoseHold={setDoseHold} />
+                <div style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 10px' }}>
+                  <CopyLinkButton tab="dosing" params={{}} />
+                </div>
 
               {/* Injection log */}
               <div style={{ marginTop: 10, borderRadius: 18, background: '#fff',
@@ -8276,6 +8385,9 @@
               {/* ── PROGRESS VIDEOS TAB ── */}
               <div style={{ display: activeTab==='videos' ? undefined : 'none' }}>
                 <ProgressVideosGrid videos={videos} onPlayVideo={setPlayingVideo} />
+                <div style={{ display: 'flex', justifyContent: 'center', margin: '10px 0' }}>
+                  <CopyLinkButton tab="videos" params={{}} />
+                </div>
               </div>{/* end videos tab */}
 
               {/* ── Admin settings (outside tabs) ── */}

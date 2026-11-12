@@ -4369,7 +4369,7 @@
         if (opt && effectiveRangeDays !== 0 && effectiveRangeDays < opt.minDays) setAggregate('daily');
       }, [effectiveRangeDays]);
 
-      const binPtsByUnit = (points, unit) => {
+      const binPtsByUnit = (points, unit, minMs) => {
         const bins = new Map();
         for (const p of points) {
           const d = new Date(p.ms);
@@ -4381,6 +4381,15 @@
           } else {
             keyMs = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
           }
+          // A bucket's calendar boundary (Sunday / the 1st) can fall before
+          // the visible window actually starts, when that boundary doesn't
+          // line up with the picked range — only ever true of the single
+          // earliest bucket, since every later one sits a full unit ahead of
+          // it. Left uncapped, xOf(keyMs) would come out less than PAD.l and
+          // plot that point off the chart, past the y-axis. Clamping folds
+          // it in with the rest of that first partial bucket instead of
+          // dropping it or drawing it out of bounds.
+          if (minMs != null && keyMs < minMs) keyMs = minMs;
           if (!bins.has(keyMs)) bins.set(keyMs, []);
           bins.get(keyMs).push(p.lbs);
         }
@@ -4393,7 +4402,7 @@
       // regression and goal projection still reason over the full
       // lifetime pts (scoped by the separate Trend period selector) so
       // zooming the view never skews the underlying analysis.
-      const displayPts = aggregate === 'daily' ? viewPtsSafe : binPtsByUnit(viewPtsSafe, aggregate === 'weekly' ? 'week' : 'month');
+      const displayPts = aggregate === 'daily' ? viewPtsSafe : binPtsByUnit(viewPtsSafe, aggregate === 'weekly' ? 'week' : 'month', viewStartMs);
 
       // Dose timeline: which *weekly* tirz dose was active at any point in
       // time, and where the weekly total actually changed (used to color-grade

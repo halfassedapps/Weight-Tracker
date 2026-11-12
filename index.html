@@ -76,13 +76,23 @@
     const LS_BP_RANGE_MODE_KEY   = 'weight-tracker-bp-range-mode';
     const LS_BP_CUSTOM_DAYS_KEY  = 'weight-tracker-bp-custom-days';
     const LS_BP_VIEW_MODE_KEY    = 'weight-tracker-bp-view-mode';
+    const LS_BP_CUSTOM_START_KEY = 'weight-tracker-bp-custom-start';
+    const LS_BP_CUSTOM_END_KEY   = 'weight-tracker-bp-custom-end';
     const LS_RIDES_RANGE_MODE_KEY  = 'weight-tracker-rides-range-mode';
     const LS_RIDES_CUSTOM_DAYS_KEY = 'weight-tracker-rides-custom-days';
     const LS_RIDES_VIEW_MODE_KEY   = 'weight-tracker-rides-view-mode';
+    const LS_RIDES_CUSTOM_START_KEY = 'weight-tracker-rides-custom-start';
+    const LS_RIDES_CUSTOM_END_KEY   = 'weight-tracker-rides-custom-end';
     const LS_CAL_RANGE_MODE_KEY  = 'weight-tracker-cal-range-mode';
     const LS_CAL_CUSTOM_DAYS_KEY = 'weight-tracker-cal-custom-days';
+    const LS_CAL_CUSTOM_START_KEY = 'weight-tracker-cal-custom-start';
+    const LS_CAL_CUSTOM_END_KEY   = 'weight-tracker-cal-custom-end';
     const LS_PK_RANGE_MODE_KEY   = 'weight-tracker-pk-range-mode';
     const LS_PK_CUSTOM_DAYS_KEY  = 'weight-tracker-pk-custom-days';
+    const LS_PK_CUSTOM_START_KEY = 'weight-tracker-pk-custom-start';
+    const LS_PK_CUSTOM_END_KEY   = 'weight-tracker-pk-custom-end';
+    const LS_WEIGHT_CUSTOM_START_KEY = 'weight-tracker-weight-custom-start';
+    const LS_WEIGHT_CUSTOM_END_KEY   = 'weight-tracker-weight-custom-end';
 
     /* ─── Deep linking ────────────────────────────────────────────────────────── */
     // Lets a specific tab + its current view settings (range, graph/table,
@@ -1345,6 +1355,39 @@
       }
     }
 
+    // Resolves an explicit [start,end] calendar-date pair (the "Date range…"
+    // option's native date pickers) into inclusive ms bounds, or null if
+    // either date is missing or the pair is nonsensical (end < start) —
+    // callers fall back to their normal range-mode math in that case, so an
+    // incomplete pick just behaves like no custom range was chosen yet
+    // rather than erroring or rendering an empty chart.
+    function customDateRangeMs(startDate, endDate) {
+      if (!startDate || !endDate) return null;
+      const start = new Date(startDate + 'T00:00:00').getTime();
+      const end = new Date(endDate + 'T23:59:59').getTime();
+      return (Number.isFinite(start) && Number.isFinite(end) && start <= end) ? { start, end } : null;
+    }
+
+    // Reusable start/end <input type="date"> pair for the "Date range…"
+    // option on every range-mode selector (BP/Rides/Nutrition/Tirzepatide/
+    // Weight) — one shared component rather than repeating the same two
+    // inputs five times. min/max cross-constrain each other (end can't be
+    // set before start and vice versa) as a first line of defense, on top
+    // of customDateRangeMs's own guard.
+    function DateRangeInputs({ startDate, endDate, onStartChange, onEndChange, min, max }) {
+      const inputStyle = { fontSize: 10, fontWeight: 600, padding: '5px 6px', borderRadius: 8,
+                            border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' };
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input type="date" value={startDate} min={min} max={endDate || max}
+                 onChange={e => onStartChange(e.target.value)} style={inputStyle} />
+          <span style={{ fontSize: 10, color: '#aeaeb2' }}>to</span>
+          <input type="date" value={endDate} min={startDate || min} max={max}
+                 onChange={e => onEndChange(e.target.value)} style={inputStyle} />
+        </div>
+      );
+    }
+
     // An SVG <path> 'd' for a bar rounded only at the data-end — the end
     // touching the baseline stays square. A plain <rect rx> rounds all 4
     // corners, which is wrong for a bar (the baseline-touching end isn't a
@@ -1377,6 +1420,14 @@
         () => parseInt(deepLinkParams?.customDays ?? localStorage.getItem(LS_CAL_CUSTOM_DAYS_KEY), 10) || 30
       );
       useEffect(() => { try { localStorage.setItem(LS_CAL_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
+      const [customStartDate, setCustomStartDate] = useState(
+        () => deepLinkParams?.start ?? localStorage.getItem(LS_CAL_CUSTOM_START_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_CAL_CUSTOM_START_KEY, customStartDate); } catch (_) {} }, [customStartDate]);
+      const [customEndDate, setCustomEndDate] = useState(
+        () => deepLinkParams?.end ?? localStorage.getItem(LS_CAL_CUSTOM_END_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_CAL_CUSTOM_END_KEY, customEndDate); } catch (_) {} }, [customEndDate]);
       const [windowOffset, setWindowOffset] = useState(0);
       const selectRange = (mode) => { setRangeMode(mode); setWindowOffset(0); };
 
@@ -1387,11 +1438,16 @@
       const todayMs = new Date().setHours(0, 0, 0, 0);
       const startMs = new Date(sorted[0].date + 'T00:00:00').getTime();
 
+      // 'dates' isn't one of windowDaysForRange's cases, so windowDays comes
+      // back 0 (its "all" default) whenever a custom range is active — that
+      // conveniently also hides the Earlier/Later pager below, which has no
+      // meaning for a fixed window.
+      const customRange = rangeMode === 'dates' ? customDateRangeMs(customStartDate, customEndDate) : null;
       const windowDays = windowDaysForRange(rangeMode, customDays);
       const refEnd = todayMs + STEP;
       const pageShift = windowOffset * windowDays * STEP;
-      const visStartMs = windowDays ? refEnd - windowDays * STEP - pageShift : startMs;
-      const visEndMs = windowDays ? refEnd - pageShift : todayMs + STEP;
+      const visStartMs = customRange ? customRange.start : (windowDays ? refEnd - windowDays * STEP - pageShift : startMs);
+      const visEndMs = customRange ? customRange.end : (windowDays ? refEnd - pageShift : todayMs + STEP);
       const canScrollEarlier = windowDays && startMs < visStartMs;
       const canScrollLater = windowDays && windowOffset > 0;
 
@@ -1417,6 +1473,7 @@
                 <option value="30d">Month</option>
                 <option value="all">All</option>
                 <option value="custom">Custom</option>
+                <option value="dates">Date range…</option>
               </select>
               {rangeMode === 'custom' && (
                 <input type="number" min="1" step="1" value={customDays}
@@ -1425,8 +1482,13 @@
                        style={{ width: 56, fontSize: 10, fontWeight: 600, padding: '5px 6px', borderRadius: 8,
                                 border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' }} />
               )}
+              {rangeMode === 'dates' && (
+                <DateRangeInputs startDate={customStartDate} endDate={customEndDate}
+                                  onStartChange={setCustomStartDate} onEndChange={setCustomEndDate}
+                                  min={sorted[0].date} max={today()} />
+              )}
               <div style={{ marginLeft: 'auto' }}>
-                <CopyLinkButton tab="nutrition" params={{ range: rangeMode, customDays }} />
+                <CopyLinkButton tab="nutrition" params={{ range: rangeMode, customDays, start: customStartDate, end: customEndDate }} />
               </div>
             </div>
             {windowDays !== 0 && (
@@ -1994,6 +2056,14 @@
         () => parseInt(deepLinkParams?.customDays ?? localStorage.getItem(LS_BP_CUSTOM_DAYS_KEY), 10) || 30
       );
       useEffect(() => { try { localStorage.setItem(LS_BP_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
+      const [customStartDate, setCustomStartDate] = useState(
+        () => deepLinkParams?.start ?? localStorage.getItem(LS_BP_CUSTOM_START_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_BP_CUSTOM_START_KEY, customStartDate); } catch (_) {} }, [customStartDate]);
+      const [customEndDate, setCustomEndDate] = useState(
+        () => deepLinkParams?.end ?? localStorage.getItem(LS_BP_CUSTOM_END_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_BP_CUSTOM_END_KEY, customEndDate); } catch (_) {} }, [customEndDate]);
       const [windowOffset, setWindowOffset] = useState(0);
       const [tip, setTip] = useState(null);
       const [viewMode, setViewMode] = useState(() => deepLinkParams?.view || localStorage.getItem(LS_BP_VIEW_MODE_KEY) || 'table'); // 'graph' | 'table'
@@ -2014,11 +2084,12 @@
       const todayMs = new Date().setHours(0, 0, 0, 0);
       const startMs = sorted[0].ms;
 
+      const customRange = rangeMode === 'dates' ? customDateRangeMs(customStartDate, customEndDate) : null;
       const windowDays = windowDaysForRange(rangeMode, customDays);
       const refEnd = todayMs + STEP;
       const pageShift = windowOffset * windowDays * STEP;
-      const visStartMs = windowDays ? refEnd - windowDays * STEP - pageShift : startMs;
-      const visEndMs   = windowDays ? refEnd - pageShift : todayMs + STEP;
+      const visStartMs = customRange ? customRange.start : (windowDays ? refEnd - windowDays * STEP - pageShift : startMs);
+      const visEndMs   = customRange ? customRange.end   : (windowDays ? refEnd - pageShift : todayMs + STEP);
       const canScrollEarlier = windowDays && startMs < visStartMs;
       const canScrollLater   = windowDays && windowOffset > 0;
 
@@ -2146,6 +2217,7 @@
               <option value="30d">Month</option>
               <option value="all">All</option>
               <option value="custom">Custom</option>
+              <option value="dates">Date range…</option>
             </select>
             {rangeMode === 'custom' && (
               <input type="number" min="1" step="1" value={customDays}
@@ -2165,6 +2237,13 @@
               ))}
             </div>
           </div>
+          {rangeMode === 'dates' && (
+            <div style={{ padding:'0 14px 4px' }}>
+              <DateRangeInputs startDate={customStartDate} endDate={customEndDate}
+                                onStartChange={setCustomStartDate} onEndChange={setCustomEndDate}
+                                min={msToLocalDate(startMs)} max={today()} />
+            </div>
+          )}
 
           {/* Earlier/Later */}
           {windowDays !== 0 && (
@@ -2353,7 +2432,7 @@
               </svg>
               {sharing ? 'Sharing…' : 'Share'}
             </button>
-            <CopyLinkButton tab="bp" params={{ range: rangeMode, customDays, view: viewMode }} />
+            <CopyLinkButton tab="bp" params={{ range: rangeMode, customDays, view: viewMode, start: customStartDate, end: customEndDate }} />
           </div>
         </div>
       );
@@ -2367,6 +2446,14 @@
         () => parseInt(deepLinkParams?.customDays ?? localStorage.getItem(LS_RIDES_CUSTOM_DAYS_KEY), 10) || 30
       );
       useEffect(() => { try { localStorage.setItem(LS_RIDES_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
+      const [customStartDate, setCustomStartDate] = useState(
+        () => deepLinkParams?.start ?? localStorage.getItem(LS_RIDES_CUSTOM_START_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_RIDES_CUSTOM_START_KEY, customStartDate); } catch (_) {} }, [customStartDate]);
+      const [customEndDate, setCustomEndDate] = useState(
+        () => deepLinkParams?.end ?? localStorage.getItem(LS_RIDES_CUSTOM_END_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_RIDES_CUSTOM_END_KEY, customEndDate); } catch (_) {} }, [customEndDate]);
       const [windowOffset, setWindowOffset] = useState(0);
       const [tip, setTip] = useState(null);
       const [selectedDate, setSelectedDate] = useState(null);
@@ -2403,11 +2490,12 @@
       const todayMs = new Date().setHours(0, 0, 0, 0);
       const startMs = new Date(sorted[0].date + 'T00:00:00').getTime();
 
+      const customRange = rangeMode === 'dates' ? customDateRangeMs(customStartDate, customEndDate) : null;
       const windowDays = windowDaysForRange(rangeMode, customDays);
       const refEnd = todayMs + STEP;
       const pageShift = windowOffset * windowDays * STEP;
-      const visStartMs = windowDays ? refEnd - windowDays * STEP - pageShift : startMs;
-      const visEndMs   = windowDays ? refEnd - pageShift : todayMs + STEP;
+      const visStartMs = customRange ? customRange.start : (windowDays ? refEnd - windowDays * STEP - pageShift : startMs);
+      const visEndMs   = customRange ? customRange.end   : (windowDays ? refEnd - pageShift : todayMs + STEP);
       const canScrollEarlier = windowDays && startMs < visStartMs;
       const canScrollLater   = windowDays && windowOffset > 0;
 
@@ -2543,6 +2631,7 @@
               <option value="30d">Month</option>
               <option value="all">All</option>
               <option value="custom">Custom</option>
+              <option value="dates">Date range…</option>
             </select>
             {rangeMode === 'custom' && (
               <input type="number" min="1" step="1" value={customDays}
@@ -2562,6 +2651,13 @@
               ))}
             </div>
           </div>
+          {rangeMode === 'dates' && (
+            <div style={{ padding:'0 14px 4px' }}>
+              <DateRangeInputs startDate={customStartDate} endDate={customEndDate}
+                                onStartChange={setCustomStartDate} onEndChange={setCustomEndDate}
+                                min={msToLocalDate(startMs)} max={today()} />
+            </div>
+          )}
 
           {/* Earlier/Later */}
           {windowDays !== 0 && (
@@ -2811,7 +2907,7 @@
               </svg>
               {sharing ? 'Preparing…' : 'Share'}
             </button>
-            <CopyLinkButton tab="activity" params={{ range: rangeMode, customDays, view: viewMode }} />
+            <CopyLinkButton tab="activity" params={{ range: rangeMode, customDays, view: viewMode, start: customStartDate, end: customEndDate }} />
           </div>
         </div>
       );
@@ -2834,6 +2930,14 @@
         () => parseInt(deepLinkParams?.customDays ?? localStorage.getItem(LS_PK_CUSTOM_DAYS_KEY), 10) || 30
       );
       useEffect(() => { try { localStorage.setItem(LS_PK_CUSTOM_DAYS_KEY, String(customDays)); } catch (_) {} }, [customDays]);
+      const [customStartDate, setCustomStartDate] = useState(
+        () => deepLinkParams?.start ?? localStorage.getItem(LS_PK_CUSTOM_START_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_PK_CUSTOM_START_KEY, customStartDate); } catch (_) {} }, [customStartDate]);
+      const [customEndDate, setCustomEndDate] = useState(
+        () => deepLinkParams?.end ?? localStorage.getItem(LS_PK_CUSTOM_END_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_PK_CUSTOM_END_KEY, customEndDate); } catch (_) {} }, [customEndDate]);
       const [windowOffset, setWindowOffset] = useState(0);
       const selectRange = (mode) => { setRangeMode(mode); setWindowOffset(0); };
       const toggleSplit = () => {
@@ -2849,15 +2953,17 @@
       const todayMs = todayD.getTime();
       const endMs   = todayMs + 21 * 86400000;
 
+      const customRange       = rangeMode === 'dates' ? customDateRangeMs(customStartDate, customEndDate) : null;
       const windowDays       = windowDaysForRange(rangeMode, customDays);
       const refEnd           = windowDays ? todayMs - windowOffset * windowDays * 86400000 : null;
-      const visStartMs       = (() => {
+      const visStartMs       = customRange ? customRange.start : (() => {
         if (windowDays) return refEnd - windowDays * 86400000;
         // "all" view: snap to first of the month so month labels land inside the chart
         const d = new Date(startMs); d.setDate(1); d.setHours(12, 0, 0, 0);
         return d.getTime();
       })();
-      const visEndMs         = windowDays ? (windowOffset === 0 ? todayMs + 7 * 86400000 : refEnd) : todayMs + 7 * 86400000;
+      const visEndMs         = customRange ? customRange.end
+        : windowDays ? (windowOffset === 0 ? todayMs + 7 * 86400000 : refEnd) : todayMs + 7 * 86400000;
       const canScrollEarlier = !!windowDays && visStartMs > startMs;
       const canScrollLater   = windowOffset > 0;
 
@@ -3140,6 +3246,7 @@
               <option value="30d">Month</option>
               <option value="all">All · Weekly</option>
               <option value="custom">Custom</option>
+              <option value="dates">Date range…</option>
             </select>
             {rangeMode === 'custom' && (
               <input type="number" min="1" step="1" value={customDays}
@@ -3148,8 +3255,13 @@
                      style={{ width: 60, fontSize: 11, fontWeight: 600, padding: '5px 6px', borderRadius: 10,
                               border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' }} />
             )}
+            {rangeMode === 'dates' && (
+              <DateRangeInputs startDate={customStartDate} endDate={customEndDate}
+                                onStartChange={setCustomStartDate} onEndChange={setCustomEndDate}
+                                min={msToLocalDate(startMs)} max={today()} />
+            )}
           </div>
-          {rangeMode !== 'all' && (
+          {rangeMode !== 'all' && rangeMode !== 'dates' && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                           padding: '0 14px 2px' }}>
               <button onClick={() => canScrollEarlier && setWindowOffset(o => o + 1)}
@@ -3408,7 +3520,7 @@
               </svg>
               {sharing ? 'Preparing…' : 'Share'}
             </button>
-            <CopyLinkButton tab="tirz" params={{ range: rangeMode, customDays, split: splitManual ? 1 : 0 }} />
+            <CopyLinkButton tab="tirz" params={{ range: rangeMode, customDays, split: splitManual ? 1 : 0, start: customStartDate, end: customEndDate }} />
           </div>
         </div>
       );
@@ -3756,6 +3868,9 @@
 
     const GOAL_LBS_DEFAULT = 155;
     const HEIGHT_IN_DEFAULT = 67; // 5'7"
+    // Sentinel for the Weight tab's Data range <select> — distinct from
+    // every real DATA_RANGE_OPTIONS bucket (0 already means "All time").
+    const CUSTOM_RANGE_DAYS = -1;
     // Escalating severity palette matching the rest of the app's category
     // bands (BP_BANDS/bpCategory) — blue for below-normal since it's not an
     // escalating-risk direction the same way over-normal is.
@@ -4107,6 +4222,16 @@
         () => parseInt(deepLinkParams?.range ?? localStorage.getItem(LS_WEIGHT_DATA_RANGE_KEY), 10) || 0
       );
       useEffect(() => { try { localStorage.setItem(LS_WEIGHT_DATA_RANGE_KEY, String(dataRangeDays)); } catch (_) {} }, [dataRangeDays]);
+      // -1 (CUSTOM_RANGE_DAYS) is a sentinel for "Date range…", distinct from
+      // every real bucket in DATA_RANGE_OPTIONS (0 already means "All time").
+      const [customRangeStart, setCustomRangeStart] = useState(
+        () => deepLinkParams?.start ?? localStorage.getItem(LS_WEIGHT_CUSTOM_START_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_WEIGHT_CUSTOM_START_KEY, customRangeStart); } catch (_) {} }, [customRangeStart]);
+      const [customRangeEnd, setCustomRangeEnd] = useState(
+        () => deepLinkParams?.end ?? localStorage.getItem(LS_WEIGHT_CUSTOM_END_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_WEIGHT_CUSTOM_END_KEY, customRangeEnd); } catch (_) {} }, [customRangeEnd]);
       const svgRef = useRef(null);
       const [trendModes, setTrendModes] = useState(() => {
         // '' (param present but empty) means "no trend lines" and must be
@@ -4202,15 +4327,24 @@
         { days: 180, label: 'Last 6 months' },
         { days: 365, label: 'Last year' },
         { days: 0,   label: 'All time' },
+        { days: CUSTOM_RANGE_DAYS, label: 'Date range…' },
       ];
-      const rangeCutoffMs = dataRangeDays > 0 ? todayMs - dataRangeDays * 86400000 : 0;
-      const viewPts  = dataRangeDays > 0 ? pts.filter(p => p.ms >= rangeCutoffMs) : pts;
+      // A custom range fixes BOTH ends (unlike the preset buckets, which
+      // only clip the start — the end is always "now", handled separately
+      // below via endMs), so it needs its own upper bound here too.
+      const customRange = dataRangeDays === CUSTOM_RANGE_DAYS ? customDateRangeMs(customRangeStart, customRangeEnd) : null;
+      const rangeCutoffMs = customRange ? customRange.start : (dataRangeDays > 0 ? todayMs - dataRangeDays * 86400000 : 0);
+      const rangeUpperMs = customRange ? customRange.end : Infinity;
+      const viewPts  = (customRange || dataRangeDays > 0) ? pts.filter(p => p.ms >= rangeCutoffMs && p.ms <= rangeUpperMs) : pts;
       // Guard: an empty window (e.g. a gap in logging right at the cutoff)
       // falls back to just the latest point rather than rendering nothing.
       const viewPtsSafe = viewPts.length ? viewPts : pts.slice(-1);
       const viewStartMs = viewPtsSafe[0].ms;
-      const viewRows = dataRangeDays > 0
-        ? rows.filter(r => new Date(r.date + 'T12:00:00').getTime() >= rangeCutoffMs)
+      const viewRows = (customRange || dataRangeDays > 0)
+        ? rows.filter(r => {
+            const ms = new Date(r.date + 'T12:00:00').getTime();
+            return ms >= rangeCutoffMs && ms <= rangeUpperMs;
+          })
         : rows;
 
       // Aggregate selector — groups the *actual* logged weight into coarser
@@ -4224,11 +4358,16 @@
         { id: 'weekly',  label: 'Weekly',  minDays: 7 },
         { id: 'monthly', label: 'Monthly', minDays: 30 },
       ];
-      const availableAggregates = AGGREGATE_OPTIONS.filter(o => dataRangeDays === 0 || dataRangeDays >= o.minDays);
+      // A custom range has no "days back from today" count of its own, so
+      // its gating is based on the picked span's actual length instead.
+      const effectiveRangeDays = customRange
+        ? Math.round((customRange.end - customRange.start) / 86400000)
+        : dataRangeDays;
+      const availableAggregates = AGGREGATE_OPTIONS.filter(o => effectiveRangeDays === 0 || effectiveRangeDays >= o.minDays);
       useEffect(() => {
         const opt = AGGREGATE_OPTIONS.find(o => o.id === aggregate);
-        if (opt && dataRangeDays !== 0 && dataRangeDays < opt.minDays) setAggregate('daily');
-      }, [dataRangeDays]);
+        if (opt && effectiveRangeDays !== 0 && effectiveRangeDays < opt.minDays) setAggregate('daily');
+      }, [effectiveRangeDays]);
 
       const binPtsByUnit = (points, unit) => {
         const bins = new Map();
@@ -4401,7 +4540,12 @@
       // the right edge of the viewBox (invisible, since SVG clips to it by
       // default) instead of visibly running out of room.
       const FUTURE_BUFFER_DAYS = 14;
-      const endMs = Math.max(
+      // A custom range fixes the right edge exactly where picked — no future
+      // buffer, no goal-projection extension — since the whole point of
+      // picking an explicit end date is to look at that historical window,
+      // not have it stretched out to "today" (or beyond, for a goal that
+      // hasn't been reached yet).
+      const endMs = customRange ? customRange.end : Math.max(
         latestGoalMs
           ? Math.min(latestGoalMs + 14 * 86400000, todayMs + maxFutureMs)
           : startMs + 180 * 86400000,
@@ -4899,6 +5043,11 @@
                 {DATA_RANGE_OPTIONS.map(o => <option key={o.days} value={o.days}>{o.label}</option>)}
               </select>
             </div>
+            {dataRangeDays === CUSTOM_RANGE_DAYS && (
+              <DateRangeInputs startDate={customRangeStart} endDate={customRangeEnd}
+                                onStartChange={setCustomRangeStart} onEndChange={setCustomRangeEnd}
+                                min={msToLocalDate(startMs)} max={today()} />
+            )}
             <div style={{ display:'flex', alignItems:'center', gap:6 }}>
               <span style={{ fontSize:10, fontWeight:600, color:'#8e8e93' }}>Show as</span>
               <select value={aggregate} onChange={e => setAggregate(e.target.value)}
@@ -5535,6 +5684,7 @@
             <CopyLinkButton tab="weight" params={{
               range: dataRangeDays, view: viewMode, agg: aggregate, inj: showInjections ? 1 : 0,
               trend: trendModes.join(','), trendDays, ratesToday: ratesFromToday ? 1 : 0,
+              start: customRangeStart, end: customRangeEnd,
             }} />
           </div>
         </div>

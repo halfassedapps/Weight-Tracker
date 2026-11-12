@@ -3874,20 +3874,25 @@
     // Escalating severity palette matching the rest of the app's category
     // bands (BP_BANDS/bpCategory) — blue for below-normal since it's not an
     // escalating-risk direction the same way over-normal is.
+    // min/max are the real category thresholds (bmiCategory's lookup and the
+    // popover's weight-range math both derive from these — range is just the
+    // pre-formatted BMI display string, since "Below 18.5"/"40.0+" read
+    // better than anything a generic formatter would produce from the raw
+    // numbers).
     const BMI_RANGES = [
-      { label: 'Underweight',     range: 'Below 18.5', color: '#5ac8fa' },
-      { label: 'Normal',          range: '18.5 – 24.9', color: '#34c759' },
-      { label: 'Overweight',      range: '25.0 – 29.9', color: '#ffd60a' },
-      { label: 'Obese',           range: '30.0 – 39.9', color: '#ff9500' },
-      { label: 'Morbidly Obese',  range: '40.0+',       color: '#ff3b30' },
+      { label: 'Underweight',     range: 'Below 18.5', min: 0,    max: 18.5,     color: '#5ac8fa' },
+      { label: 'Normal',          range: '18.5 – 24.9', min: 18.5, max: 25,       color: '#34c759' },
+      { label: 'Overweight',      range: '25.0 – 29.9', min: 25,   max: 30,       color: '#ffd60a' },
+      { label: 'Obese',           range: '30.0 – 39.9', min: 30,   max: 40,       color: '#ff9500' },
+      { label: 'Morbidly Obese',  range: '40.0+',       min: 40,   max: Infinity, color: '#ff3b30' },
     ];
     function bmiCategory(bmi) {
-      if (bmi < 18.5) return BMI_RANGES[0];
-      if (bmi < 25)   return BMI_RANGES[1];
-      if (bmi < 30)   return BMI_RANGES[2];
-      if (bmi < 40)   return BMI_RANGES[3];
-      return BMI_RANGES[4];
+      return BMI_RANGES.find(r => bmi < r.max) ?? BMI_RANGES[BMI_RANGES.length - 1];
     }
+    // Inverse of the BMI formula (bmi = 703 * lbs / height^2) — used to show
+    // each category's weight-range equivalent at the user's own height,
+    // since the BMI numbers alone don't mean much without that context.
+    const lbsAtBmi = (bmi, hIn) => bmi * hIn * hIn / 703;
     const LS_GOAL_BANNER_DISMISS_KEY = 'weight-tracker-goal-banner-dismiss';
     const LS_GOAL_CELEBRATED_KEY = 'weight-tracker-goal-celebrated';
     // Daily weight fluctuates — a single weigh-in at/under goal doesn't mean
@@ -4964,13 +4969,31 @@
                   {label === 'BMI' && (
                     <InfoDot align="right">
                       <div style={{ fontWeight: 700, marginBottom: 6 }}>BMI categories</div>
-                      {BMI_RANGES.map(r => (
-                        <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
-                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: r.color, flexShrink: 0 }} />
-                          <span style={{ flex: 1 }}>{r.label}</span>
-                          <span style={{ color: '#aeaeb2' }}>{r.range}</span>
-                        </div>
-                      ))}
+                      {BMI_RANGES.map(r => {
+                        // Weight bounds at this user's own height. The -0.1
+                        // only applies to a genuinely two-sided row (r.min >
+                        // 0) — same "24.9"-style exclusive-upper-bound trick
+                        // r.range already uses there, so the two columns
+                        // describe exactly the same cutoff. The opening
+                        // "Below X" row has no such adjacent overlap to
+                        // avoid, so it converts straight from r.max.
+                        const lbsLo = Math.round(lbsAtBmi(r.min, heightIn));
+                        const lbsHi = !Number.isFinite(r.max) ? null
+                          : Math.round(lbsAtBmi(r.min > 0 ? r.max - 0.1 : r.max, heightIn));
+                        const lbsRange = r.min <= 0 ? `Below ${lbsHi} lbs`
+                          : lbsHi == null ? `${lbsLo}+ lbs`
+                          : `${lbsLo} – ${lbsHi} lbs`;
+                        return (
+                          <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: r.color, flexShrink: 0 }} />
+                            <span style={{ flex: 1 }}>{r.label}</span>
+                            <span style={{ textAlign: 'right' }}>
+                              <div style={{ color: '#aeaeb2' }}>{r.range}</div>
+                              <div style={{ fontSize: 10, color: '#8e8e93', marginTop: 1 }}>{lbsRange}</div>
+                            </span>
+                          </div>
+                        );
+                      })}
                       {isAdmin && (
                         <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,.15)',
                                       display: 'flex', alignItems: 'center', gap: 6 }}

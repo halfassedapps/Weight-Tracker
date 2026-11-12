@@ -3500,7 +3500,7 @@
       const displayRecWeekly = doseHoldActive ? weeklyDose : recWeekly;
       const displayPerInjMg  = doseHoldActive ? weeklyDose / injPerWeek : perInjMg;
       const displaySubtext = doseHoldActive
-        ? `You chose to hold at ${round2(ds.lastDose)} mg on ${new Date(doseHold.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} instead of increasing. This hold auto-expires in ${doseHoldDaysLeft} day${doseHoldDaysLeft === 1 ? '' : 's'}, after which the usual guidance (including anything new from your symptom surveys) resumes automatically.`
+        ? `You chose to hold at ${round1(weeklyDose)} mg/wk on ${new Date(doseHold.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} instead of increasing. This hold auto-expires in ${doseHoldDaysLeft} day${doseHoldDaysLeft === 1 ? '' : 's'}, after which the usual guidance (including anything new from your symptom surveys) resumes automatically.`
         : subtext;
 
       const DOSING_RULES = [
@@ -3613,11 +3613,17 @@
                       doesn't change the underlying recommendation, just what's
                       displayed, and "Reconsider" always gets the real one back. */}
                   {isAdmin && g.action === 'increase' && !doseHoldActive && (
+                    // Keyed to ds.lastDose (the per-injection dose) internally
+                    // — that's the right granularity for detecting an actual
+                    // injection-logged change later — but displayed as the
+                    // weekly total, matching the "Increase to" figure right
+                    // above it rather than mixing weekly vs. per-injection
+                    // numbers in the same decision.
                     <button onClick={() => holdAtDose(ds.lastDose)}
                             style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
                                      border: 'none', padding: 0, marginTop: 6, cursor: 'pointer',
                                      textDecoration: 'underline', display: 'block' }}>
-                      Stay at {round2(ds.lastDose)} mg instead →
+                      Stay at {round1(weeklyDose)} mg instead →
                     </button>
                   )}
                   {isAdmin && doseHoldActive && (

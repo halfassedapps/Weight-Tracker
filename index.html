@@ -6150,12 +6150,22 @@
       );
     }
 
+    // Units-table bounds for DoseCalculatorModal — covers the full titration
+    // range (below the lowest real starting dose through past MAX_DOSE_MG)
+    // at a finer-than-prescribed granularity so any in-between draw-up a
+    // pharmacist or compounding vial might call for is still on the table.
+    const DOSE_TABLE_MIN_MG  = 1;
+    const DOSE_TABLE_MAX_MG  = 15;
+    const DOSE_TABLE_STEP_MG = 0.25;
+
     function DoseCalculatorModal({ initialDose = 2.25, initialConc = 12.5, surveyTrend = [], onClose }) {
       const [dose, setDose] = React.useState(String(initialDose));
       const [conc, setConc] = React.useState(() => {
         const saved = localStorage.getItem(LS_VIAL_CONC_KEY);
         return String(saved ?? initialConc);
       });
+      const [sharing, setSharing] = React.useState(false);
+      const [includeTable, setIncludeTable] = React.useState(false);
       const handleConcChange = (v) => {
         setConc(v);
         try { localStorage.setItem(LS_VIAL_CONC_KEY, v); } catch (_) {}
@@ -6166,13 +6176,97 @@
       const ml       = doseMg > 0 ? (doseMg / concMgMl).toFixed(2) : '—';
       const syringeMax = parseInt(localStorage.getItem(LS_SYRINGE_UNITS_KEY) || '100', 10);
 
+      // Quarter-mg steps as an integer loop (0.25 is an exact power-of-two
+      // fraction, so q*0.25 never drifts the way a float += loop would) —
+      // recomputed from concMgMl on every render, which is cheap enough at
+      // ~57 rows not to need memoizing.
+      const doseTableSteps = Math.round((DOSE_TABLE_MAX_MG - DOSE_TABLE_MIN_MG) / DOSE_TABLE_STEP_MG);
+      const doseTable = Array.from({ length: doseTableSteps + 1 }, (_, i) => {
+        const mg = DOSE_TABLE_MIN_MG + i * DOSE_TABLE_STEP_MG;
+        return { mg, units: round1(mg / concMgMl * 100), ml: (mg / concMgMl).toFixed(2) };
+      });
+
+      const shareCalculator = async () => {
+        if (sharing || doseMg <= 0) return;
+        setSharing(true);
+        try {
+          const scale = 3;
+          const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
+          const W = 320, headerH = 90, rowH = 15, tableHeaderH = 18;
+          const bodyH = includeTable ? tableHeaderH + doseTable.length * rowH + 10 : 0;
+
+          const canvas = document.createElement('canvas');
+          canvas.width = W * scale;
+          canvas.height = (headerH + bodyH + 10) * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(scale, scale);
+
+          ctx.textAlign = 'left';
+          ctx.fillStyle = '#1c1c1e';
+          ctx.font = `700 15px ${FONT}`;
+          ctx.fillText('💉 Dose Calculator', 16, 22);
+          ctx.fillStyle = '#8e8e93';
+          ctx.font = `600 11px ${FONT}`;
+          ctx.fillText(`Vial: ${concMgMl.toFixed(2)} mg/mL`, 16, 40);
+
+          ctx.fillStyle = '#4a90d9';
+          ctx.font = `800 26px ${FONT}`;
+          ctx.fillText(`${units} units`, 16, 68);
+          ctx.fillStyle = '#8e8e93';
+          ctx.font = `600 13px ${FONT}`;
+          ctx.fillText(`${ml} mL  ·  ${doseMg} mg  ·  ${syringeMax}-unit syringe`, 16, 84);
+
+          if (includeTable) {
+            ctx.font = `700 9px ${FONT}`;
+            ctx.fillStyle = '#8e8e93';
+            ctx.fillText('DOSE (MG)', 16, headerH + 10);
+            ctx.fillText('UNITS', 140, headerH + 10);
+            ctx.fillText('ML', 240, headerH + 10);
+            doseTable.forEach((r, i) => {
+              const rowY = headerH + tableHeaderH + i * rowH;
+              const isCurrent = doseMg > 0 && Math.abs(r.mg - doseMg) < 0.001;
+              if (isCurrent) { ctx.fillStyle = '#eaf3ff'; ctx.fillRect(10, rowY - 10, W - 20, rowH); }
+              else if (i % 2 === 1) { ctx.fillStyle = '#f7f7f9'; ctx.fillRect(10, rowY - 10, W - 20, rowH); }
+              ctx.font = `600 10.5px ${FONT}`;
+              ctx.fillStyle = isCurrent ? '#1c56a0' : '#3c3c43';
+              ctx.fillText(r.mg.toFixed(2), 16, rowY);
+              ctx.fillText(String(r.units), 140, rowY);
+              ctx.fillText(r.ml, 240, rowY);
+            });
+          }
+
+          const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+          const file = new File([fileBlob], 'dose-calculator.png', { type: 'image/png' });
+
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              files: [file],
+              title: 'Dose Calculator',
+              text: `${doseMg} mg = ${units} units (${ml} mL) @ ${concMgMl.toFixed(2)} mg/mL`,
+            });
+          } else {
+            const url = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'dose-calculator.png';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }
+        } catch (e) {
+          if (e.name !== 'AbortError') console.warn('[DoseCalculatorModal] share failed:', e);
+        } finally {
+          setSharing(false);
+        }
+      };
+
       return (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
                       zIndex: 1000, display: 'flex', alignItems: 'center',
                       justifyContent: 'center', padding: 16 }}
              onClick={onClose}>
           <div style={{ background: '#fff', borderRadius: 22, padding: '22px 20px 26px',
-                        width: '100%', maxWidth: 400,
+                        width: '100%', maxWidth: 400, maxHeight: '90vh', overflowY: 'auto',
                         boxShadow: '0 24px 64px rgba(0,0,0,.28)' }}
                onClick={e => e.stopPropagation()}>
 
@@ -6230,6 +6324,73 @@
               ) : (
                 <div style={{ fontSize: 14, color: '#aeaeb2' }}>Enter a dose above</div>
               )}
+            </div>
+
+            {/* Units table — full titration range at the current vial
+                concentration, so you're not stuck recalculating one dose at
+                a time. Fixed-height and independently scrollable rather than
+                growing the modal to fit all ~57 rows. */}
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                            letterSpacing: .4, marginBottom: 8 }}>
+                Units table @ {concMgMl.toFixed(2)} mg/mL
+              </div>
+              <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid #e5e5ea', borderRadius: 10 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      {['Dose (mg)', 'Units', 'mL'].map(h => (
+                        <th key={h} style={{ position: 'sticky', top: 0, background: '#f9f9fb',
+                                              fontSize: 10.5, fontWeight: 700, color: '#8e8e93',
+                                              textTransform: 'uppercase', letterSpacing: .3,
+                                              padding: '6px 10px', textAlign: 'center',
+                                              borderBottom: '1px solid #e5e5ea' }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {doseTable.map((r, i) => {
+                      const isCurrent = doseMg > 0 && Math.abs(r.mg - doseMg) < 0.001;
+                      return (
+                        <tr key={r.mg} style={{ background: isCurrent ? '#eaf3ff' : (i % 2 ? '#fafafc' : '#fff') }}>
+                          <td style={{ padding: '5px 10px', textAlign: 'center', fontWeight: isCurrent ? 700 : 600,
+                                        color: isCurrent ? '#1c56a0' : '#1c1c1e' }}>{r.mg.toFixed(2)}</td>
+                          <td style={{ padding: '5px 10px', textAlign: 'center', fontWeight: isCurrent ? 700 : 600,
+                                        color: isCurrent ? '#1c56a0' : '#1c1c1e' }}>{r.units}</td>
+                          <td style={{ padding: '5px 10px', textAlign: 'center', color: isCurrent ? '#1c56a0' : '#8e8e93' }}>
+                            {r.ml}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Share — includes the current result always, and the full
+                table (not just whatever's scrolled into view) when checked. */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5,
+                              color: '#3c3c43', cursor: 'pointer' }}>
+                <input type="checkbox" checked={includeTable}
+                       onChange={e => setIncludeTable(e.target.checked)}
+                       style={{ accentColor: '#4a90d9', width: 15, height: 15 }} />
+                Include units table
+              </label>
+              <button onClick={shareCalculator} disabled={sharing || doseMg <= 0}
+                      style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+                               color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,
+                               padding: '5px 12px', cursor: (sharing || doseMg <= 0) ? 'default' : 'pointer',
+                               opacity: (sharing || doseMg <= 0) ? .5 : 1 }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
+                     strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
+                </svg>
+                {sharing ? 'Preparing…' : 'Share'}
+              </button>
             </div>
           </div>
 

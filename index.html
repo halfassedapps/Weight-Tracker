@@ -48,6 +48,7 @@
     const LS_VIAL_MG_KEY      = 'weight-tracker-vial-mg';
     const LS_VIAL_VOL_KEY     = 'weight-tracker-vial-vol';
     const LS_SYRINGE_UNITS_KEY = 'weight-tracker-syringe-units';
+    const LS_DOSE_HOLD_KEY     = 'weight-tracker-dose-hold';
     const LS_POPOVER_DISMISS_KEY = 'weight-tracker-inj-popover-dismiss-date';
     // Local-only staging value for a banner-completed survey before its
     // injection has actually been logged — deliberately not synced to the
@@ -3366,7 +3367,7 @@
     /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
     // Standalone component for the dose recommendation, calculator, and syringe.
     // Extracted from PkChart so it can live in the "Dosing" tab independently.
-    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories, pendingSurvey }) {
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold }) {
       const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
@@ -3414,6 +3415,17 @@
         setSyringeUnits(n);
         try { localStorage.setItem(LS_SYRINGE_UNITS_KEY, String(n)); } catch (_) {}
       };
+      // User override for an "increase" recommendation — e.g. choosing to stay
+      // at their current dose against the suggestion. doseHold/setDoseHold are
+      // owned by App (not local state) so InjectionDayBanner's syringe graphic
+      // reflects a hold immediately too, not just on next remount. Keyed to
+      // the dose it was declared at, so it keeps applying across every
+      // subsequent injection logged at that same dose, but silently stops
+      // being honored (not actively cleared) the moment the real logged dose
+      // changes — at that point the premise "I'm staying at X" is no longer
+      // true either way.
+      const holdAtDose = doseMg => setDoseHold({ doseMg, at: Date.now() });
+      const clearDoseHold = () => setDoseHold(null);
 
       if (!injections || injections.length === 0) return null;
 
@@ -3449,6 +3461,21 @@
         : g.action === 'stay'    ? 'Weight loss on track — hold current dose'
         : g.action === 'monitor' ? 'Strong loss — stay put; drop down if >5 lbs next 2 wks too'
         : 'Unusually rapid loss — consult your prescriber';
+
+      // Only an "increase" can be held — the other actions (stay/monitor/
+      // contact) are either already a hold or a safety flag, neither of
+      // which this override is meant to silence. Keyed to ds.lastDose, not
+      // just "is there a hold at all", so a hold declared at one dose
+      // doesn't keep silently applying after a real injection changes it.
+      const doseHoldActive = g.action === 'increase' && doseHold && doseHold.doseMg === ds.lastDose;
+      const displayG = doseHoldActive
+        ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
+        : g;
+      const displayRecWeekly = doseHoldActive ? weeklyDose : recWeekly;
+      const displayPerInjMg  = doseHoldActive ? weeklyDose / injPerWeek : perInjMg;
+      const displaySubtext = doseHoldActive
+        ? `You chose to hold at ${round2(ds.lastDose)} mg on ${new Date(doseHold.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} instead of increasing. Still tracking the usual guidance below in case anything changes.`
+        : subtext;
 
       const DOSING_RULES = [
         { range: '> 8 lbs / 2 wks',  action: 'Contact prescriber',        color: '#ff3b30' },
@@ -3516,27 +3543,27 @@
               )}
             </div>
             <div style={{ padding: '12px 14px', borderRadius: 10,
-                          background: g.bg, border: `1px solid ${g.color}33` }}>
+                          background: displayG.bg, border: `1px solid ${displayG.color}33` }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <div style={{ textAlign: 'center', minWidth: 72 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: g.color, textTransform: 'uppercase',
+                  <div style={{ fontSize: 11, fontWeight: 600, color: displayG.color, textTransform: 'uppercase',
                                 letterSpacing: .4, marginBottom: 3 }}>
-                    {g.action === 'increase' ? 'Increase to' : g.action === 'contact' ? 'Hold at' : 'Stay at'}
+                    {displayG.action === 'increase' ? 'Increase to' : displayG.action === 'contact' ? 'Hold at' : 'Stay at'}
                   </div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: g.color, lineHeight: 1,
-                                fontVariantNumeric: 'tabular-nums' }}>{round1(recWeekly)} mg</div>
-                  <div style={{ fontSize: 11, color: g.color, opacity: .75, marginTop: 2 }}>
-                    {intervalActive ? `${round2(perInjMg)} mg every ${injSchedule.everyNDays}d`
-                      : injPerWeek > 1 ? `${round2(perInjMg)} mg × ${injPerWeek}/wk` : 'per week'}
+                  <div style={{ fontSize: 22, fontWeight: 800, color: displayG.color, lineHeight: 1,
+                                fontVariantNumeric: 'tabular-nums' }}>{round1(displayRecWeekly)} mg</div>
+                  <div style={{ fontSize: 11, color: displayG.color, opacity: .75, marginTop: 2 }}>
+                    {intervalActive ? `${round2(displayPerInjMg)} mg every ${injSchedule.everyNDays}d`
+                      : injPerWeek > 1 ? `${round2(displayPerInjMg)} mg × ${injPerWeek}/wk` : 'per week'}
                   </div>
-                  {g.action === 'increase' && dose == null && (
+                  {displayG.action === 'increase' && dose == null && (
                     <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>
                   )}
                 </div>
-                <div style={{ width: 1, alignSelf: 'stretch', background: `${g.color}33` }} />
+                <div style={{ width: 1, alignSelf: 'stretch', background: `${displayG.color}33` }} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 3 }}>{g.label}</div>
-                  <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{subtext}</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 3 }}>{displayG.label}</div>
+                  <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{displaySubtext}</div>
                   <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
                     2-wk loss: {lossSign}{Math.abs(recent.twoWeekLoss).toFixed(1)} lbs &nbsp;·&nbsp;
                     current: ≈{round1(weeklyDose)} mg/wk
@@ -3549,10 +3576,31 @@
                   {/* Only relevant when it actually bore on this recommendation —
                       crossCheck is now computed unconditionally, so this guard
                       keeps it from showing up next to an unrelated band. */}
-                  {(g.overridden || g.crossCheckBypassed) && crossCheck && (
+                  {!doseHoldActive && (g.overridden || g.crossCheckBypassed) && crossCheck && (
                     <div style={{ fontSize: 11.5, color: '#8e8e93', marginTop: 5, fontStyle: 'italic' }}>
                       {crossCheck.type === 'corroborated' ? '✓ ' : '⚠ '}{crossCheck.note}
                     </div>
+                  )}
+                  {/* Lets the user decline an "increase" suggestion outright
+                      (e.g. a personal/prescriber decision to hold) rather than
+                      seeing it resurface every time the panel re-renders — it
+                      doesn't change the underlying recommendation, just what's
+                      displayed, and "Reconsider" always gets the real one back. */}
+                  {isAdmin && g.action === 'increase' && !doseHoldActive && (
+                    <button onClick={() => holdAtDose(ds.lastDose)}
+                            style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                     border: 'none', padding: 0, marginTop: 6, cursor: 'pointer',
+                                     textDecoration: 'underline', display: 'block' }}>
+                      Stay at {round2(ds.lastDose)} mg instead →
+                    </button>
+                  )}
+                  {isAdmin && doseHoldActive && (
+                    <button onClick={clearDoseHold}
+                            style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                     border: 'none', padding: 0, marginTop: 6, cursor: 'pointer',
+                                     textDecoration: 'underline', display: 'block' }}>
+                      Reconsider — show increase guidance →
+                    </button>
                   )}
                 </div>
               </div>
@@ -3582,7 +3630,7 @@
                 </button>
               </div>
               {/* Syringe draw-up */}
-              <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${g.color}22` }}>
+              <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${displayG.color}22` }}>
                 {/* Vial config row */}
                 <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8, flexWrap:'wrap' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:6 }}>
@@ -3614,18 +3662,18 @@
                 </div>
                 {/* Draw-up header + calculator button */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: g.color,
+                  <div style={{ fontSize: 11, fontWeight: 600, color: displayG.color,
                                 textTransform: 'uppercase', letterSpacing: .4 }}>
                     {injPerWeek > 1 ? 'Draw up per injection' : 'Draw up'}
                   </div>
-                  <button onClick={() => { setCalcInitDose(perInjMg); setShowCalc(true); }}
+                  <button onClick={() => { setCalcInitDose(displayPerInjMg); setShowCalc(true); }}
                           style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12,
-                                   background: `${g.color}18`, color: g.color,
-                                   border: `1px solid ${g.color}33`, cursor: 'pointer' }}>
+                                   background: `${displayG.color}18`, color: displayG.color,
+                                   border: `1px solid ${displayG.color}33`, cursor: 'pointer' }}>
                     Calculator
                   </button>
                 </div>
-                <SyringeGraphic doseMg={perInjMg} concentration={vialConc} color={g.color} maxUnits={syringeUnits} />
+                <SyringeGraphic doseMg={displayPerInjMg} concentration={vialConc} color={displayG.color} maxUnits={syringeUnits} />
               </div>
             </div>
           </div>
@@ -6615,7 +6663,7 @@
 
     /* ─── Injection-day banner ───────────────────────────────────────────────── */
     function InjectionDayBanner({ rows, injections, injSchedule, calories, calorieTargets, intervalsCalories,
-                                   pendingSurvey, onSavePendingSurvey }) {
+                                   pendingSurvey, onSavePendingSurvey, doseHold }) {
       const [dismissedDate, setDismissedDate] = useState(
         () => localStorage.getItem(LS_POPOVER_DISMISS_KEY)
       );
@@ -6640,7 +6688,15 @@
       if (!rec) return null;
       const { g, perInjMg } = rec;
       const currentPerInjMg = ds.lastDose;
-      const changing = round2(perInjMg) !== round2(currentPerInjMg);
+      // Honor a hold declared in the dose panel (see DosePanel) so this
+      // banner's syringe graphic doesn't tell the user to draw up an
+      // increase they already chose not to take.
+      const doseHoldActive = g.action === 'increase' && doseHold && doseHold.doseMg === ds.lastDose;
+      const displayG = doseHoldActive
+        ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
+        : g;
+      const displayPerInjMg = doseHoldActive ? currentPerInjMg : perInjMg;
+      const changing = round2(displayPerInjMg) !== round2(currentPerInjMg);
 
       const vialConc = Math.max(parseFloat(localStorage.getItem(LS_VIAL_CONC_KEY) || '12.5'), 0.01);
       const syringeUnits = parseInt(localStorage.getItem(LS_SYRINGE_UNITS_KEY) || '100', 10);
@@ -6658,8 +6714,8 @@
       };
 
       return (
-        <div style={{ borderRadius: 18, overflow: 'hidden', background: g.bg,
-                      border: `1px solid ${g.color}33`, marginBottom: 10, position: 'relative' }}>
+        <div style={{ borderRadius: 18, overflow: 'hidden', background: displayG.bg,
+                      border: `1px solid ${displayG.color}33`, marginBottom: 10, position: 'relative' }}>
           <button onClick={dismiss} aria-label="Dismiss"
                   style={{ position: 'absolute', top: 10, right: 10, width: 22, height: 22,
                            borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,.08)',
@@ -6667,22 +6723,22 @@
                            justifyContent: 'center', cursor: 'pointer' }}>✕</button>
           <div style={{ padding: '14px 40px 14px 16px', display: 'flex', alignItems: 'center', gap: 16 }}>
             <div style={{ width: 140, flexShrink: 0 }}>
-              <SyringeGraphic doseMg={perInjMg} concentration={vialConc} color={g.color} maxUnits={syringeUnits} />
+              <SyringeGraphic doseMg={displayPerInjMg} concentration={vialConc} color={displayG.color} maxUnits={syringeUnits} />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: g.color, textTransform: 'uppercase',
+              <div style={{ fontSize: 11, fontWeight: 700, color: displayG.color, textTransform: 'uppercase',
                             letterSpacing: .5, marginBottom: 3 }}>
                 Today is injection day
               </div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 3 }}>
-                <span style={{ fontSize: 20, fontWeight: 800, color: '#1c1c1e' }}>{round2(perInjMg)} mg</span>
+                <span style={{ fontSize: 20, fontWeight: 800, color: '#1c1c1e' }}>{round2(displayPerInjMg)} mg</span>
                 {changing && (
                   <span style={{ fontSize: 12, color: '#8e8e93' }}>(was {round2(currentPerInjMg)} mg)</span>
                 )}
               </div>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: g.color }}>{g.label}</div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: displayG.color }}>{displayG.label}</div>
               <button onClick={() => setSurveyOpen(v => !v)}
-                      style={{ fontSize: 11.5, fontWeight: 600, color: g.color, background: 'none',
+                      style={{ fontSize: 11.5, fontWeight: 600, color: displayG.color, background: 'none',
                                border: 'none', padding: 0, marginTop: 5, cursor: 'pointer',
                                textDecoration: 'underline', opacity: .85 }}>
                 {surveyOpen ? 'Cancel' : hasPendingToday ? '✓ Update how you’re feeling' : 'Log how you’re feeling'}
@@ -6701,7 +6757,7 @@
                 <SurveySlider label="Food noise" value={surveyFoodNoise} onChange={setSurveyFoodNoise} />
                 <button onClick={saveSurvey}
                         style={{ fontSize: 13, fontWeight: 600, padding: '7px', borderRadius: 8,
-                                 background: g.color, color: '#fff', border: 'none', cursor: 'pointer' }}>
+                                 background: displayG.color, color: '#fff', border: 'none', cursor: 'pointer' }}>
                   Save
                 </button>
               </div>
@@ -6726,6 +6782,20 @@
         const next = { date, ...vals };
         setPendingSurvey(next);
         try { localStorage.setItem(LS_PENDING_SURVEY_KEY, JSON.stringify(next)); } catch (_) {}
+      }, []);
+      // Lifted to App (rather than owned by DosePanel alone) so a hold set
+      // from the dose panel is reflected immediately by InjectionDayBanner
+      // too — both read it, only DosePanel writes it, and they're siblings
+      // that don't otherwise share render-triggering state.
+      const [doseHold, setDoseHoldState] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_DOSE_HOLD_KEY) || 'null'); } catch (_) { return null; }
+      });
+      const setDoseHold = useCallback(next => {
+        setDoseHoldState(next);
+        try {
+          if (next) localStorage.setItem(LS_DOSE_HOLD_KEY, JSON.stringify(next));
+          else localStorage.removeItem(LS_DOSE_HOLD_KEY);
+        } catch (_) {}
       }, []);
       const clearPendingSurvey = () => {
         setPendingSurvey(null);
@@ -7586,7 +7656,7 @@
 
               <InjectionDayBanner rows={rows} injections={injections} injSchedule={injSchedule}
                                   calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
-                                  pendingSurvey={pendingSurvey} onSavePendingSurvey={savePendingSurvey} />
+                                  pendingSurvey={pendingSurvey} onSavePendingSurvey={savePendingSurvey} doseHold={doseHold} />
 
               {/* ── TIRZEPATIDE TAB ── */}
               <div style={{ display: activeTab==='tirz' ? undefined : 'none' }}>
@@ -7814,7 +7884,7 @@
                 <DosePanel rows={rows} injections={injections} injSchedule={injSchedule}
                            isAdmin={isAdmin} onSaveSchedule={saveInjSchedule}
                            calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
-                           pendingSurvey={pendingSurvey} />
+                           pendingSurvey={pendingSurvey} doseHold={doseHold} setDoseHold={setDoseHold} />
 
               {/* Injection log */}
               <div style={{ marginTop: 10, borderRadius: 18, background: '#fff',

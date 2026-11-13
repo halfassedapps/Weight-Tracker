@@ -611,6 +611,7 @@
       if (pat) {
         // Authenticated: use API (needed for writes + detecting missing file)
         const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+          cache: 'no-store',
           headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' },
         });
         if (!res.ok) throw new Error(`Gist fetch ${res.status}`);
@@ -621,7 +622,8 @@
       } else {
         // Unauthenticated: raw URL works for secret gists without auth
         const res = await fetch(
-          `https://gist.githubusercontent.com/${GIST_USER}/${gistId}/raw/weight-data.json?t=${Date.now()}`
+          `https://gist.githubusercontent.com/${GIST_USER}/${gistId}/raw/weight-data.json?t=${Date.now()}`,
+          { cache: 'no-store' }
         );
         if (!res.ok) throw new Error(`Gist fetch ${res.status}`);
         return parseGistPayload(await res.json());

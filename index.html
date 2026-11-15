@@ -3729,8 +3729,12 @@
       // hold-and-reassess state for the same lagging-signal problem.
       const maintDaysSinceChange = maintenanceMode ? daysSinceLastDoseChange(injections, todayMs) : null;
       const maintDoseChangeHold = maintDaysSinceChange != null && maintDaysSinceChange < DOSE_MAINTENANCE_HOLD_DAYS;
+      // Anchored to noon (not this component's own midnight-anchored todayMs)
+      // to match maintenanceSince's own noon anchoring — otherwise "started
+      // today" compares today's midnight against today's noon and comes out
+      // negative.
       const maintDaysSinceStart = maintenanceMode && maintenanceSince
-        ? Math.floor((todayMs - new Date(maintenanceSince + 'T12:00:00').getTime()) / 86400000) : null;
+        ? Math.floor((new Date().setHours(12, 0, 0, 0) - new Date(maintenanceSince + 'T12:00:00').getTime()) / 86400000) : null;
       const maintGuidance = maintenanceMode
         ? maintenanceDoseGuidance(recent.twoWeekLoss, weeklyDose, maintDoseChangeHold, maintDaysSinceChange, maintDaysSinceStart)
         : null;
@@ -3740,8 +3744,10 @@
       // this Dosing tab is the more natural home for a dosing decision.
       const maintCurrentCalTarget = maintenanceMode ? targetActiveAt(calorieTargets, today()) : null;
       const maintSuggestedCalTarget = maintenanceMode ? maintenanceCalorieSuggestion(calories, todayMs) : null;
+      // Prefill with the computed suggestion, not the currently-set target —
+      // same reasoning as GoalBanner's startCalEdit.
       const startMaintCalEdit = () => {
-        setCalDraft(String(maintCurrentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
+        setCalDraft(String(maintSuggestedCalTarget ?? maintCurrentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
       };
       const saveMaintCalTarget = async (n) => {
         if (isNaN(n) || n <= 0) { setCalErr('Enter a valid number'); return; }
@@ -3904,12 +3910,17 @@
               {/* Calorie intake — Maintenance Mode's other co-equal lever
                   (see maintenanceCalorieSuggestion), not just a dose-first
                   afterthought. Shown as its own row beneath the dose box
-                  rather than reworking that box's loss-phase-shared layout. */}
-              {maintenanceMode && (displayG.action === 'decrease' || displayG.action === 'increase') && (
+                  rather than reworking that box's loss-phase-shared layout.
+                  Always visible while in Maintenance Mode (not just when
+                  there's drift to react to) — otherwise the auto-calc number
+                  is never visible at all outside the decrease/increase view,
+                  leaving "Set manually" with nothing to start from. */}
+              {maintenanceMode && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${displayG.color}33` }}>
                   <div style={{ fontSize: 10.5, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
                                 letterSpacing: .4, marginBottom: 6 }}>
-                    Or adjust calories instead
+                    {displayG.action === 'decrease' || displayG.action === 'increase'
+                      ? 'Or adjust calories instead' : 'Calorie target'}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
                                 borderRadius: 10, background: '#fff', border: '1px solid rgba(74,144,217,.3)' }}>
@@ -4523,8 +4534,13 @@
       const currentCalTarget = targetActiveAt(calorieTargets, today());
       const suggestedCalTarget = maintenanceCalorieSuggestion(calories, todayMsForMaint);
 
+      // Prefill with the computed suggestion (not the currently-set target) —
+      // "Set manually" is how you see the auto-calc number at all outside the
+      // decrease/increase two-option view (e.g. while settling in or stay),
+      // so it needs to actually start from that number, not just echo back
+      // whatever's already saved.
       const startCalEdit = () => {
-        setCalDraft(String(currentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
+        setCalDraft(String(suggestedCalTarget ?? currentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
       };
       const saveCalTarget = async (n) => {
         if (isNaN(n) || n <= 0) { setCalErr('Enter a valid number'); return; }
@@ -4649,6 +4665,18 @@
                 </div>
               )}
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(0,0,0,.06)' }}>
+                {/* The two-option view above already shows this number
+                    prominently when there's drift to react to — this is the
+                    only place it's visible otherwise (settling-in, stay,
+                    floor/ceiling, contact/monitor), so "Set manually" always
+                    has a real auto-calc number to start from. */}
+                {maintGuidance.action !== 'decrease' && maintGuidance.action !== 'increase' && (
+                  <div style={{ fontSize: 11.5, color: '#8e8e93', marginBottom: 6 }}>
+                    Your measured TDEE on rest days: {suggestedCalTarget != null
+                      ? <strong style={{ color: '#1c1c1e' }}>{suggestedCalTarget} cal/day</strong>
+                      : 'not enough data yet'}
+                  </div>
+                )}
                 {isAdmin && !calEditing && (
                   <button onClick={startCalEdit}
                           style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
@@ -7913,8 +7941,10 @@
       // apply here.
       const maintTwoWeekLoss = rows?.find(r => r.twoWeekLoss != null)?.twoWeekLoss ?? null;
       const maintDaysSinceChange = maintenanceMode ? daysSinceLastDoseChange(injections, todayMs) : null;
+      // Noon-anchored to match maintenanceSince — see DosePanel's identical
+      // comment for why (this component's own todayMs is midnight-anchored).
       const maintDaysSinceStart = maintenanceMode && maintenanceSince
-        ? Math.floor((todayMs - new Date(maintenanceSince + 'T12:00:00').getTime()) / 86400000) : null;
+        ? Math.floor((new Date().setHours(12, 0, 0, 0) - new Date(maintenanceSince + 'T12:00:00').getTime()) / 86400000) : null;
       const maintGuidance = maintenanceMode
         ? maintenanceDoseGuidance(maintTwoWeekLoss, ds.weeklyDose,
             maintDaysSinceChange != null && maintDaysSinceChange < DOSE_MAINTENANCE_HOLD_DAYS, maintDaysSinceChange,

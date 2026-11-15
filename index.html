@@ -1565,7 +1565,7 @@
             <div style={CAL_HEADER}><div style={CAL_TITLE}>Calories: Intake vs Burn</div></div>
             <TdeeChart periodDaily={periodDaily} visStartMs={visStartMs} visEndMs={visEndMs}
                        calorieTargets={calorieTargets} isAdmin={isAdmin} onSaveCalorieTargets={onSaveCalorieTargets}
-                       maintenanceHistory={maintenanceHistory} />
+                       maintenanceHistory={maintenanceHistory} calories={calorieData} intervalsCalories={intervalsCalories} />
           </div>
 
           <div style={CAL_CARD}>
@@ -1586,7 +1586,7 @@
     }
 
     /* ─── Card 1: Calories: Intake vs Burn ───────────────────────────────────── */
-    function TdeeChart({ periodDaily, visStartMs, visEndMs, calorieTargets, isAdmin, onSaveCalorieTargets, maintenanceHistory = [] }) {
+    function TdeeChart({ periodDaily, visStartMs, visEndMs, calorieTargets, isAdmin, onSaveCalorieTargets, maintenanceHistory = [], calories, intervalsCalories }) {
       const [tip, setTip] = useState(null);
       const [editing, setEditing] = useState(false);
       const [draftTarget, setDraftTarget] = useState('');
@@ -1624,6 +1624,19 @@
         : null;
 
       const currentTarget = targetActiveAt(calorieTargets, today());
+      // Maintenance Mode's calorie suggestion, surfaced here too (per user
+      // request) alongside the regular manual target editor below, in
+      // addition to GoalBanner/DosePanel — this is where calorie targets are
+      // otherwise managed, so it has a natural home here as well.
+      const { maintenanceMode } = deriveMaintenanceState(maintenanceHistory, new Date().setHours(12, 0, 0, 0));
+      const maintSuggestedTarget = maintenanceMode
+        ? maintenanceCalorieSuggestion(calories, intervalsCalories, new Date().setHours(12, 0, 0, 0)) : null;
+      const [maintSaving, setMaintSaving] = useState(false);
+      const acceptMaintSuggestion = async () => {
+        setMaintSaving(true);
+        await onSaveCalorieTargets(maintSuggestedTarget);
+        setMaintSaving(false);
+      };
       const startEdit = () => { setDraftTarget(String(currentTarget ?? 1500)); setEditing(true); setSaveErr(''); };
       const saveTarget = async () => {
         const n = parseFloat(draftTarget);
@@ -1773,6 +1786,22 @@
               </>
             )}
           </div>
+          {maintenanceMode && maintSuggestedTarget != null && (
+            <div style={{ margin: '0 14px 12px', padding: '8px 10px', borderRadius: 8,
+                          background: '#eef6ff', border: '1px solid rgba(74,144,217,.25)',
+                          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, color: '#3c3c43' }}>
+                Maintenance suggestion (measured TDEE, less exercise): <strong>{maintSuggestedTarget} cal</strong>
+              </span>
+              {isAdmin && currentTarget !== maintSuggestedTarget && (
+                <button onClick={acceptMaintSuggestion} disabled={maintSaving}
+                        style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                 border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+                  {maintSaving ? 'Updating…' : 'Accept →'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       );
     }
@@ -3797,6 +3826,22 @@
         if (ok) setCalEditing(false); else setCalErr("Couldn't save — try again.");
       };
 
+      // Loss-phase calorie-adjustment alternative — a flat ±100 cal/day step
+      // off the current target, not a measured-TDEE computation like
+      // Maintenance Mode's (that precision doesn't fit mid-titration, where
+      // the target is a deliberate deficit, not an attempt to find true
+      // maintenance). Only offered where it's a genuine alternative to a
+      // dose change: 'increase' (losing too slowly — tightening calories
+      // instead of raising dose) and 'monitor' (losing too fast — easing
+      // calories now instead of waiting two weeks to maybe decrease dose).
+      // Not 'stay' (already on track) or 'contact' (safety escalation, not
+      // a DIY-and-see situation).
+      const LOSS_PHASE_CAL_STEP = 100;
+      const lossCalDirection = g.action === 'increase' ? -1 : g.action === 'monitor' ? 1 : null;
+      const lossCurrentCalTarget = targetActiveAt(calorieTargets, today());
+      const lossSuggestedCalTarget = (!maintenanceMode && lossCalDirection != null && lossCurrentCalTarget != null)
+        ? lossCurrentCalTarget + lossCalDirection * LOSS_PHASE_CAL_STEP : null;
+
       const displayG = maintenanceMode ? maintGuidance
         : doseHoldActive ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
         : g;
@@ -3987,7 +4032,7 @@
                             Your measured TDEE, less exercise
                           </div>
                           <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
-                            The base number that should hold weight on its own — ride calories still get credited back on top on days you log one, same as everywhere else in the app.
+                            The base number that should hold weight on its own — ride calories still get credited back on top on days you log one.
                           </div>
                         </>
                       )}
@@ -4003,6 +4048,71 @@
                       )}
                       {isAdmin && !calEditing && (
                         <button onClick={startMaintCalEdit}
+                                style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                         border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
+                                         textDecoration: 'underline', display: 'block' }}>
+                          Set manually →
+                        </button>
+                      )}
+                      {isAdmin && calEditing && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
+                          <input type="number" value={calDraft} onChange={e => setCalDraft(e.target.value)}
+                                 style={{ width: 70, fontSize: 12, padding: '3px 6px', borderRadius: 6,
+                                          border: '1px solid #c7c7cc' }} />
+                          <button onClick={() => saveMaintCalTarget(parseFloat(calDraft))} disabled={calSaving}
+                                  style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                           border: 'none', cursor: 'pointer' }}>
+                            {calSaving ? 'Saving…' : 'Save'}
+                          </button>
+                          <button onClick={() => { setCalEditing(false); setCalErr(''); }}
+                                  style={{ fontSize: 11, color: '#8e8e93', background: 'none', border: 'none', cursor: 'pointer' }}>
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                      {calErr && <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3 }}>{calErr}</div>}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {/* Loss-phase calorie alternative — same "co-equal lever"
+                  framing as Maintenance Mode's, just a flat step instead of
+                  a measured-TDEE target. */}
+              {lossSuggestedCalTarget != null && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${displayG.color}33` }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
+                                letterSpacing: .4, marginBottom: 6 }}>
+                    Or adjust calories instead
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+                                borderRadius: 10, background: '#fff', border: '1px solid rgba(74,144,217,.3)' }}>
+                    <div style={{ textAlign: 'center', minWidth: 60, flexShrink: 0 }}>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: '#4a90d9', lineHeight: 1,
+                                    fontVariantNumeric: 'tabular-nums' }}>
+                        {lossSuggestedCalTarget}
+                      </div>
+                      <div style={{ fontSize: 9.5, color: '#4a90d9', opacity: .75 }}>cal/day</div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>
+                        {LOSS_PHASE_CAL_STEP} cal/day {lossCalDirection < 0 ? 'less' : 'more'} than your current target
+                      </div>
+                      <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
+                        {lossCalDirection < 0
+                          ? 'An alternative to increasing dose — tightening calories a bit instead.'
+                          : 'An alternative to waiting out the next 2 weeks at this dose — easing calories back a bit now.'}
+                      </div>
+                      {isAdmin && !calEditing && (
+                        <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(lossSuggestedCalTarget); setCalSaving(false); }}
+                                disabled={calSaving}
+                                style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                         border: 'none', padding: 0, marginTop: 5, cursor: 'pointer',
+                                         textDecoration: 'underline', display: 'block' }}>
+                          {calSaving ? 'Updating…' : `Accept — set target to ${lossSuggestedCalTarget} →`}
+                        </button>
+                      )}
+                      {isAdmin && !calEditing && (
+                        <button onClick={() => { setCalDraft(String(lossCurrentCalTarget ?? 1500)); setCalEditing(true); setCalErr(''); }}
                                 style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
                                          border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
                                          textDecoration: 'underline', display: 'block' }}>
@@ -9132,7 +9242,7 @@
                 <CaloriesActivitySection calorieData={calories} rows={rows} calorieTargets={calorieTargets}
                                          proteinTargets={proteinTargets} onSaveProteinTargets={saveProteinTargets}
                                          isAdmin={isAdmin} onSaveCalorieTargets={saveCalorieTargets}
-                                         intervalsCalories={intervalsCalories}
+                                         intervalsCalories={intervalsCalories} maintenanceHistory={maintenanceHistory}
                                          deepLinkParams={deepLink?.tab === 'nutrition' ? deepLink.params : null} />
               )}
               </div>{/* end nutrition tab */}

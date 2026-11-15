@@ -3597,7 +3597,7 @@
     /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
     // Standalone component for the dose recommendation, calculator, and syringe.
     // Extracted from PkChart so it can live in the "Dosing" tab independently.
-    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode }) {
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode, maintenanceSince }) {
       const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
@@ -3723,8 +3723,10 @@
       // hold-and-reassess state for the same lagging-signal problem.
       const maintDaysSinceChange = maintenanceMode ? daysSinceLastDoseChange(injections, todayMs) : null;
       const maintDoseChangeHold = maintDaysSinceChange != null && maintDaysSinceChange < DOSE_MAINTENANCE_HOLD_DAYS;
+      const maintDaysSinceStart = maintenanceMode && maintenanceSince
+        ? Math.floor((todayMs - new Date(maintenanceSince + 'T12:00:00').getTime()) / 86400000) : null;
       const maintGuidance = maintenanceMode
-        ? maintenanceDoseGuidance(recent.twoWeekLoss, weeklyDose, maintDoseChangeHold, maintDaysSinceChange)
+        ? maintenanceDoseGuidance(recent.twoWeekLoss, weeklyDose, maintDoseChangeHold, maintDaysSinceChange, maintDaysSinceStart)
         : null;
 
       const displayG = maintenanceMode ? maintGuidance
@@ -4030,6 +4032,13 @@
     // stepping down and stepping back up are both fine-tuning moves within
     // maintenance, not the coarser loss-phase ladder.
     const MAINTENANCE_DOSE_STEP_MG = 0.25;
+    // How long after Maintenance Mode starts before dose guidance acts on the
+    // trend at all. Same length as GOAL_AVG_WINDOW_DAYS deliberately — the
+    // instant you switch, twoWeekLoss is still measuring the tail end of
+    // active loss-phase momentum, not how the new (held) dose is actually
+    // doing, so there's nothing meaningful to act on until a full trend
+    // window has elapsed since the switch itself.
+    const MAINTENANCE_START_HOLD_DAYS = GOAL_AVG_WINDOW_DAYS;
 
     // Scans sorted-by-date injections for the most recent dose *change* (any
     // direction) and returns how many days ago it was — null if there's no
@@ -4059,7 +4068,19 @@
     // started. The >8 / 5-8 lbs/2wk bands mirror doseGuidance's own safety
     // bands for the loss direction — gaining that fast is just as worth a
     // prescriber call as losing that fast.
-    function maintenanceDoseGuidance(twoWeekLbs, currentDoseMg, doseChangeHold, daysSinceChange) {
+    function maintenanceDoseGuidance(twoWeekLbs, currentDoseMg, doseChangeHold, daysSinceChange, daysSinceMaintenanceStart) {
+      // Checked before doseChangeHold — the instant Maintenance Mode starts,
+      // the 2-week trend is still measuring the tail end of active loss, not
+      // how the held dose is actually doing, regardless of whether a dose
+      // change happens to coincide with the switch.
+      if (daysSinceMaintenanceStart != null && daysSinceMaintenanceStart < MAINTENANCE_START_HOLD_DAYS) {
+        const daysLeft = MAINTENANCE_START_HOLD_DAYS - daysSinceMaintenanceStart;
+        return {
+          action: 'settling-in', color: '#34c759', bg: '#f0fdf4',
+          label: 'Settling in',
+          note: `Maintenance Mode started ${daysSinceMaintenanceStart} day${daysSinceMaintenanceStart === 1 ? '' : 's'} ago — the 2-week trend still reflects active loss, so guidance holds for ${daysLeft} more day${daysLeft === 1 ? '' : 's'}.`,
+        };
+      }
       if (doseChangeHold) {
         return {
           action: 'hold-reassess', color: '#34c759', bg: '#f0fdf4',
@@ -4192,7 +4213,7 @@
     // to say.
     function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT, injections, injSchedule, isAdmin,
                            maintenanceHistory = [], onToggleMaintenanceMode,
-                           calorieTargets, onSaveCalorieTargets }) {
+                           calorieTargets, onSaveCalorieTargets, calories }) {
       const [dismissed, setDismissed] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_GOAL_BANNER_DISMISS_KEY) || 'null'); }
         catch (_) { return null; }
@@ -4351,8 +4372,10 @@
       const startMaintenance = () => currentDoseMg != null && onToggleMaintenanceMode?.('start', currentDoseMg);
       const stopMaintenance  = () => currentDoseMg != null && onToggleMaintenanceMode?.('stop', currentDoseMg);
 
+      const daysSinceMaintenanceStart = maintenanceSince
+        ? Math.floor((todayMsForMaint - new Date(maintenanceSince + 'T12:00:00').getTime()) / 86400000) : null;
       const maintGuidance = maintenanceMode
-        ? maintenanceDoseGuidance(twoWeekLoss, currentDoseMg, doseChangeHold, daysSinceDoseChange)
+        ? maintenanceDoseGuidance(twoWeekLoss, currentDoseMg, doseChangeHold, daysSinceDoseChange, daysSinceMaintenanceStart)
         : null;
 
       let maint;
@@ -4388,13 +4411,26 @@
         };
       }
 
-      // Calorie-target suggestion math: 3500 kcal/lb, same relationship
-      // PkChart's predictedLbsPerWeek already uses (avgNet * 7 / 3500),
-      // inverted to solve for the daily delta that would zero out the trend.
+      // Maintenance calories ≈ what you actually burn — BasalEnergy +
+      // ActiveEnergy (HealthKit), the same fields TdeeChart's own "Avg TDEE"
+      // stat already averages, over the same trailing window as twoWeekLoss.
+      // Deliberately NOT a back-solve from the weight-trend delta (old
+      // approach: currentCalTarget + twoWeekLoss*3500/14) — that compounds
+      // two sources of noise (a deficit target that drifts from real
+      // adherence, and a short-window weight trend easily skewed by water
+      // weight) into a number that can land far from a real BMR/TDEE
+      // estimate. A direct measured-TDEE average is both simpler and more
+      // grounded, and it's self-correcting regardless of drift direction:
+      // if you're still losing, avgIntake is already below this number
+      // (suggesting more); if you're regaining, it's already above
+      // (suggesting less).
       const currentCalTarget = targetActiveAt(calorieTargets, today());
-      const suggestedDeltaCal = twoWeekLoss != null ? Math.round(twoWeekLoss * 3500 / 14) : null;
-      const suggestedCalTarget = currentCalTarget != null && suggestedDeltaCal != null
-        ? Math.round(currentCalTarget + suggestedDeltaCal) : null;
+      const tdeeCutoff = msToLocalDate(todayMsForMaint - GOAL_AVG_WINDOW_DAYS * 86400000);
+      const tdeeDays = (calories || [])
+        .filter(d => d.date >= tdeeCutoff && d.date <= today() && (d.BasalEnergy || d.ActiveEnergy))
+        .map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
+      const avgTdee = tdeeDays.length ? avg(tdeeDays) : null;
+      const suggestedCalTarget = avgTdee != null ? Math.round(avgTdee) : null;
 
       const startCalEdit = () => {
         setCalDraft(String(currentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
@@ -4624,6 +4660,14 @@
               <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(28,28,30,.65)', marginTop: 2 }}>
                 {milestone.tag} — {currentLbs.toFixed(1)} lbs now, goal was {goalLbs}
               </div>
+              {!maintenanceMode && isAdmin && (
+                <button onClick={startMaintenance}
+                        style={{ fontSize: 12.5, fontWeight: 700, color: '#1c1c1e', background: 'rgba(255,255,255,.4)',
+                                 border: '1px solid rgba(28,28,30,.25)', borderRadius: 20, padding: '5px 14px',
+                                 marginTop: 10, cursor: 'pointer' }}>
+                  Start Maintenance Mode →
+                </button>
+              )}
             </div>
           )}
         </>
@@ -5775,7 +5819,16 @@
             {(() => {
               const segs = [];
               let cursor = viewStartMs;
-              for (const p of [...maintenancePeriods].sort((a, b) => a.startMs - b.startMs)) {
+              // deriveMaintenanceState caps an ongoing period's endMs at
+              // "today" (the right cutoff for net-lbs-change math elsewhere,
+              // e.g. the Maintenance history table) — but this chart's own
+              // endMs reaches past today into the future-projection buffer,
+              // and there's no reason for the band to hand back off to a
+              // point-goal line in days that haven't happened yet while
+              // maintenance is still actively ongoing. Extend it to the
+              // chart's domain here only.
+              const chartPeriods = maintenancePeriods.map(p => p.ongoing ? { ...p, endMs } : p);
+              for (const p of [...chartPeriods].sort((a, b) => a.startMs - b.startMs)) {
                 const lineEnd = Math.min(p.startMs, endMs);
                 if (lineEnd > cursor) segs.push({ start: cursor, end: lineEnd, band: false });
                 const bandStart = Math.max(p.startMs, cursor);
@@ -7678,7 +7731,7 @@
 
     /* ─── Injection-day banner ───────────────────────────────────────────────── */
     function InjectionDayBanner({ rows, injections, injSchedule, calories, calorieTargets, intervalsCalories,
-                                   pendingSurvey, onSavePendingSurvey, doseHold, maintenanceMode }) {
+                                   pendingSurvey, onSavePendingSurvey, doseHold, maintenanceMode, maintenanceSince }) {
       const [dismissedDate, setDismissedDate] = useState(
         () => localStorage.getItem(LS_POPOVER_DISMISS_KEY)
       );
@@ -7717,9 +7770,12 @@
       // apply here.
       const maintTwoWeekLoss = rows?.find(r => r.twoWeekLoss != null)?.twoWeekLoss ?? null;
       const maintDaysSinceChange = maintenanceMode ? daysSinceLastDoseChange(injections, todayMs) : null;
+      const maintDaysSinceStart = maintenanceMode && maintenanceSince
+        ? Math.floor((todayMs - new Date(maintenanceSince + 'T12:00:00').getTime()) / 86400000) : null;
       const maintGuidance = maintenanceMode
         ? maintenanceDoseGuidance(maintTwoWeekLoss, ds.weeklyDose,
-            maintDaysSinceChange != null && maintDaysSinceChange < DOSE_MAINTENANCE_HOLD_DAYS, maintDaysSinceChange)
+            maintDaysSinceChange != null && maintDaysSinceChange < DOSE_MAINTENANCE_HOLD_DAYS, maintDaysSinceChange,
+            maintDaysSinceStart)
         : null;
       const displayG = maintenanceMode ? maintGuidance
         : doseHoldActive ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
@@ -8716,7 +8772,7 @@
               <InjectionDayBanner rows={rows} injections={injections} injSchedule={injSchedule}
                                   calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
                                   pendingSurvey={pendingSurvey} onSavePendingSurvey={savePendingSurvey} doseHold={doseHold}
-                                  maintenanceMode={maintState.maintenanceMode} />
+                                  maintenanceMode={maintState.maintenanceMode} maintenanceSince={maintState.maintenanceSince} />
 
               {/* ── TIRZEPATIDE TAB ── */}
               <div style={{ display: activeTab==='tirz' ? undefined : 'none' }}>
@@ -8741,7 +8797,7 @@
               <div style={{ display: activeTab==='weight' ? undefined : 'none' }}>
               <GoalBanner rows={rows} goalLbs={goalLbs} injections={injections} injSchedule={injSchedule} isAdmin={isAdmin}
                           maintenanceHistory={maintenanceHistory} onToggleMaintenanceMode={toggleMaintenanceMode}
-                          calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} />
+                          calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} calories={calories} />
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
@@ -8954,7 +9010,7 @@
                            isAdmin={isAdmin} onSaveSchedule={saveInjSchedule}
                            calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
                            pendingSurvey={pendingSurvey} doseHold={doseHold} setDoseHold={setDoseHold}
-                           maintenanceMode={maintState.maintenanceMode} />
+                           maintenanceMode={maintState.maintenanceMode} maintenanceSince={maintState.maintenanceSince} />
                 <div style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 10px' }}>
                   <CopyLinkButton tab="dosing" params={{}} />
                 </div>

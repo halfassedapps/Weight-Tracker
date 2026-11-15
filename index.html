@@ -4411,24 +4411,29 @@
         };
       }
 
-      // Maintenance calories ≈ what you actually burn — BasalEnergy +
-      // ActiveEnergy (HealthKit), the same fields TdeeChart's own "Avg TDEE"
-      // stat already averages, over the same trailing window as twoWeekLoss.
+      // Maintenance calories ≈ what you actually burn on an ordinary (non-
+      // workout) day — BasalEnergy + ActiveEnergy (HealthKit), same fields
+      // TdeeChart's own "Avg TDEE" stat averages, but restricted to days
+      // without a logged workout. calorieTargets is a *base* number
+      // elsewhere in the app — calorieDeviationFor adds a day's exercise
+      // calories (rides, etc.) back in on top of it separately (see its
+      // `exercise` field) — so baking average cycling burn into this
+      // suggestion would double it on days you actually ride (once in the
+      // averaged-in baseline, again from the real per-day exercise credit)
+      // while overstating rest days. Falls back to all days if there aren't
+      // enough rest days in the window to say anything (e.g. cycling most
+      // days) rather than suggesting a number off 1-2 data points.
       // Deliberately NOT a back-solve from the weight-trend delta (old
       // approach: currentCalTarget + twoWeekLoss*3500/14) — that compounds
       // two sources of noise (a deficit target that drifts from real
       // adherence, and a short-window weight trend easily skewed by water
       // weight) into a number that can land far from a real BMR/TDEE
-      // estimate. A direct measured-TDEE average is both simpler and more
-      // grounded, and it's self-correcting regardless of drift direction:
-      // if you're still losing, avgIntake is already below this number
-      // (suggesting more); if you're regaining, it's already above
-      // (suggesting less).
+      // estimate.
       const currentCalTarget = targetActiveAt(calorieTargets, today());
       const tdeeCutoff = msToLocalDate(todayMsForMaint - GOAL_AVG_WINDOW_DAYS * 86400000);
-      const tdeeDays = (calories || [])
-        .filter(d => d.date >= tdeeCutoff && d.date <= today() && (d.BasalEnergy || d.ActiveEnergy))
-        .map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
+      const tdeeWindow = (calories || []).filter(d => d.date >= tdeeCutoff && d.date <= today() && (d.BasalEnergy || d.ActiveEnergy));
+      const restDayTdee = tdeeWindow.filter(d => !d.HasWorkout).map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
+      const tdeeDays = restDayTdee.length >= 3 ? restDayTdee : tdeeWindow.map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
       const avgTdee = tdeeDays.length ? avg(tdeeDays) : null;
       const suggestedCalTarget = avgTdee != null ? Math.round(avgTdee) : null;
 

@@ -3743,7 +3743,7 @@
       // guidance here rather than only on the Weight tab's GoalBanner, since
       // this Dosing tab is the more natural home for a dosing decision.
       const maintCurrentCalTarget = maintenanceMode ? targetActiveAt(calorieTargets, today()) : null;
-      const maintSuggestedCalTarget = maintenanceMode ? maintenanceCalorieSuggestion(calories, todayMs) : null;
+      const maintSuggestedCalTarget = maintenanceMode ? maintenanceCalorieSuggestion(calories, intervalsCalories, todayMs) : null;
       // Prefill with the computed suggestion, not the currently-set target —
       // same reasoning as GoalBanner's startCalEdit.
       const startMaintCalEdit = () => {
@@ -3933,10 +3933,10 @@
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>
-                        Your measured TDEE on rest days
+                        Your measured TDEE, less exercise
                       </div>
                       <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
-                        The number that should hold weight on its own — no dose change needed.
+                        The base number that should hold weight on its own — ride calories still get credited back on top on days you log one, same as everywhere else in the app.
                       </div>
                       {isAdmin && maintSuggestedCalTarget != null && !calEditing && (
                         <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(maintSuggestedCalTarget); setCalSaving(false); }}
@@ -4231,29 +4231,35 @@
     // burning. Shared by GoalBanner and DosePanel so the two surfaces can
     // never suggest two different numbers.
     //
-    // Restricted to rest days (no logged workout): calorieTargets is a
-    // *base* number elsewhere in the app — calorieDeviationFor adds a day's
-    // exercise calories back in on top of it separately — so averaging in
-    // workout days would bake average exercise burn into the suggested base,
-    // double-counting it on days that actually get a real exercise credit.
+    // calorieTargets is a *base* number elsewhere in the app —
+    // calorieDeviationFor adds a day's real exercise calories back in on top
+    // of it separately (see its own `exercise` field, reused verbatim here:
+    // real intervals.icu ride calories when available, HealthKit ActiveEnergy
+    // on a HasWorkout day otherwise, 0 if neither). This subtracts that same
+    // per-day exercise number from measured TDEE (Basal+Active) on *every*
+    // day in the window, rather than trying to exclude "workout days" by the
+    // HasWorkout flag alone.
     //
-    // Deliberately does NOT fall back to mixing in workout days when there
-    // aren't enough rest days — an earlier version did, and silently
-    // produced a number inflated by cycling while still labeling it "rest
-    // day TDEE," which is actively wrong, not just imprecise. Widens the
-    // lookback window first (up to ~2x, capped at 60 days) to find 3 rest
-    // days from further back instead; returns null (→ "not enough data" in
-    // the UI) rather than ever mixing the two.
-    function maintenanceCalorieSuggestion(calories, todayMs, windowDays = GOAL_AVG_WINDOW_DAYS) {
+    // That flag-only filtering was the earlier approach here, and it's
+    // unreliable in practice: HasWorkout is only set from an explicit
+    // "Workout" row in the Health export, which routinely misses real rides
+    // that intervals.icu has full data for (confirmed against real data —
+    // HasWorkout caught 1 of 14 days while intervals.icu had rides on nearly
+    // every one of them), so the days it called "rest" were still full of
+    // real, uncredited ride energy and the resulting average ran high.
+    // Subtracting the actual per-day ride credit fixes this directly and
+    // uses every day's data instead of discarding most of it.
+    function maintenanceCalorieSuggestion(calories, intervalsCalories, todayMs, windowDays = GOAL_AVG_WINDOW_DAYS) {
       const todayStr = msToLocalDate(todayMs);
-      for (const w of [windowDays, windowDays * 2, 60]) {
-        const cutoff = msToLocalDate(todayMs - w * 86400000);
-        const restDayTdee = (calories || [])
-          .filter(d => d.date >= cutoff && d.date <= todayStr && !d.HasWorkout && (d.BasalEnergy || d.ActiveEnergy))
-          .map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
-        if (restDayTdee.length >= 3) return Math.round(avg(restDayTdee));
-      }
-      return null;
+      const cutoff = msToLocalDate(todayMs - windowDays * 86400000);
+      const baseDays = (calories || [])
+        .filter(d => d.date >= cutoff && d.date <= todayStr && (d.BasalEnergy || d.ActiveEnergy))
+        .map(d => {
+          const rideCal = intervalsCalories ? intervalsCalories[d.date] : null;
+          const exercise = rideCal != null ? rideCal : (d.HasWorkout ? (d.ActiveEnergy || 0) : 0);
+          return (d.BasalEnergy || 0) + (d.ActiveEnergy || 0) - exercise;
+        });
+      return baseDays.length ? Math.round(avg(baseDays)) : null;
     }
 
     // Derives all current/derived Maintenance Mode state from the append-only
@@ -4342,7 +4348,7 @@
     // to say.
     function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT, injections, injSchedule, isAdmin,
                            maintenanceHistory = [], onToggleMaintenanceMode,
-                           calorieTargets, onSaveCalorieTargets, calories }) {
+                           calorieTargets, onSaveCalorieTargets, calories, intervalsCalories }) {
       const [dismissed, setDismissed] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_GOAL_BANNER_DISMISS_KEY) || 'null'); }
         catch (_) { return null; }
@@ -4541,7 +4547,7 @@
       }
 
       const currentCalTarget = targetActiveAt(calorieTargets, today());
-      const suggestedCalTarget = maintenanceCalorieSuggestion(calories, todayMsForMaint);
+      const suggestedCalTarget = maintenanceCalorieSuggestion(calories, intervalsCalories, todayMsForMaint);
 
       // Prefill with the computed suggestion (not the currently-set target) —
       // "Set manually" is how you see the auto-calc number at all outside the
@@ -4637,7 +4643,7 @@
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>Adjust calories instead</div>
                         <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
-                          Your measured TDEE on rest days — the number that should hold weight on its own, no dose change needed.
+                          Your measured TDEE, less exercise — the base number that should hold weight on its own, no dose change needed.
                         </div>
                         {isAdmin && suggestedCalTarget != null && !calEditing && (
                           <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(suggestedCalTarget); setCalSaving(false); }}
@@ -4681,7 +4687,7 @@
                     has a real auto-calc number to start from. */}
                 {maintGuidance.action !== 'decrease' && maintGuidance.action !== 'increase' && (
                   <div style={{ fontSize: 11.5, color: '#8e8e93', marginBottom: 6 }}>
-                    Your measured TDEE on rest days: {suggestedCalTarget != null
+                    Your measured TDEE, less exercise: {suggestedCalTarget != null
                       ? <strong style={{ color: '#1c1c1e' }}>{suggestedCalTarget} cal/day</strong>
                       : 'not enough data yet'}
                   </div>
@@ -8979,7 +8985,8 @@
               <div style={{ display: activeTab==='weight' ? undefined : 'none' }}>
               <GoalBanner rows={rows} goalLbs={goalLbs} injections={injections} injSchedule={injSchedule} isAdmin={isAdmin}
                           maintenanceHistory={maintenanceHistory} onToggleMaintenanceMode={toggleMaintenanceMode}
-                          calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} calories={calories} />
+                          calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} calories={calories}
+                          intervalsCalories={intervalsCalories} />
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>

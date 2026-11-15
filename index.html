@@ -3597,8 +3597,14 @@
     /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
     // Standalone component for the dose recommendation, calculator, and syringe.
     // Extracted from PkChart so it can live in the "Dosing" tab independently.
-    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode, maintenanceSince }) {
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, onSaveCalorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode, maintenanceSince }) {
       const [showCalc,     setShowCalc]     = useState(false);
+      // Maintenance Mode's calorie-adjustment option — same shape as
+      // GoalBanner's own calEditing/calDraft/calSaving/calErr state.
+      const [calEditing, setCalEditing] = useState(false);
+      const [calDraft, setCalDraft] = useState('');
+      const [calSaving, setCalSaving] = useState(false);
+      const [calErr, setCalErr] = useState('');
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
       const [rulesOpen,    setRulesOpen]    = useState(false);
@@ -3728,6 +3734,22 @@
       const maintGuidance = maintenanceMode
         ? maintenanceDoseGuidance(recent.twoWeekLoss, weeklyDose, maintDoseChangeHold, maintDaysSinceChange, maintDaysSinceStart)
         : null;
+      // Calorie intake is the other of Maintenance Mode's two co-equal
+      // levers (see maintenanceCalorieSuggestion) — shown alongside dose
+      // guidance here rather than only on the Weight tab's GoalBanner, since
+      // this Dosing tab is the more natural home for a dosing decision.
+      const maintCurrentCalTarget = maintenanceMode ? targetActiveAt(calorieTargets, today()) : null;
+      const maintSuggestedCalTarget = maintenanceMode ? maintenanceCalorieSuggestion(calories, todayMs) : null;
+      const startMaintCalEdit = () => {
+        setCalDraft(String(maintCurrentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
+      };
+      const saveMaintCalTarget = async (n) => {
+        if (isNaN(n) || n <= 0) { setCalErr('Enter a valid number'); return; }
+        setCalSaving(true); setCalErr('');
+        const ok = await onSaveCalorieTargets?.(n);
+        setCalSaving(false);
+        if (ok) setCalEditing(false); else setCalErr("Couldn't save — try again.");
+      };
 
       const displayG = maintenanceMode ? maintGuidance
         : doseHoldActive ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
@@ -3879,6 +3901,70 @@
                   )}
                 </div>
               </div>
+              {/* Calorie intake — Maintenance Mode's other co-equal lever
+                  (see maintenanceCalorieSuggestion), not just a dose-first
+                  afterthought. Shown as its own row beneath the dose box
+                  rather than reworking that box's loss-phase-shared layout. */}
+              {maintenanceMode && (displayG.action === 'decrease' || displayG.action === 'increase') && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${displayG.color}33` }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
+                                letterSpacing: .4, marginBottom: 6 }}>
+                    Or adjust calories instead
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+                                borderRadius: 10, background: '#fff', border: '1px solid rgba(74,144,217,.3)' }}>
+                    <div style={{ textAlign: 'center', minWidth: 60, flexShrink: 0 }}>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: '#4a90d9', lineHeight: 1,
+                                    fontVariantNumeric: 'tabular-nums' }}>
+                        {maintSuggestedCalTarget ?? '—'}
+                      </div>
+                      <div style={{ fontSize: 9.5, color: '#4a90d9', opacity: .75 }}>cal/day</div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>
+                        Your measured TDEE on rest days
+                      </div>
+                      <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
+                        The number that should hold weight on its own — no dose change needed.
+                      </div>
+                      {isAdmin && maintSuggestedCalTarget != null && !calEditing && (
+                        <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(maintSuggestedCalTarget); setCalSaving(false); }}
+                                disabled={calSaving}
+                                style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                         border: 'none', padding: 0, marginTop: 5, cursor: 'pointer',
+                                         textDecoration: 'underline', display: 'block' }}>
+                          {calSaving ? 'Updating…' : `Accept — set target to ${maintSuggestedCalTarget} →`}
+                        </button>
+                      )}
+                      {isAdmin && !calEditing && (
+                        <button onClick={startMaintCalEdit}
+                                style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                         border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
+                                         textDecoration: 'underline', display: 'block' }}>
+                          Set manually →
+                        </button>
+                      )}
+                      {isAdmin && calEditing && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
+                          <input type="number" value={calDraft} onChange={e => setCalDraft(e.target.value)}
+                                 style={{ width: 70, fontSize: 12, padding: '3px 6px', borderRadius: 6,
+                                          border: '1px solid #c7c7cc' }} />
+                          <button onClick={() => saveMaintCalTarget(parseFloat(calDraft))} disabled={calSaving}
+                                  style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                           border: 'none', cursor: 'pointer' }}>
+                            {calSaving ? 'Saving…' : 'Save'}
+                          </button>
+                          <button onClick={() => { setCalEditing(false); setCalErr(''); }}
+                                  style={{ fontSize: 11, color: '#8e8e93', background: 'none', border: 'none', cursor: 'pointer' }}>
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                      {calErr && <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3 }}>{calErr}</div>}
+                    </div>
+                  </div>
+                </div>
+              )}
               {/* Persistent GI intolerance — informational only, never changes
                   the mechanical action above; visually distinct on purpose. */}
               {gi?.persistent && (
@@ -4125,6 +4211,29 @@
         suggestedDoseMg: Math.min(MAX_DOSE_MG, currentDoseMg + MAINTENANCE_DOSE_STEP_MG),
         label: 'Consider ↑ dose', note: `Trending back up ${Math.abs(twoWeekLbs).toFixed(1)} lbs/2wk`,
       };
+    }
+
+    // The calorie-adjustment half of Maintenance Mode's two co-equal levers
+    // (see maintenanceDoseGuidance) — a flat suggested daily calorie target,
+    // not a step like dose, since intake is both easier to change gradually
+    // on your own and read back more directly from what you're actually
+    // burning. Shared by GoalBanner and DosePanel so the two surfaces can
+    // never suggest two different numbers.
+    //
+    // Restricted to rest days (no logged workout): calorieTargets is a
+    // *base* number elsewhere in the app — calorieDeviationFor adds a day's
+    // exercise calories back in on top of it separately — so averaging in
+    // workout days would bake average exercise burn into the suggested base,
+    // double-counting it on days that actually get a real exercise credit.
+    // Falls back to all days if there aren't enough rest days to say
+    // anything (e.g. a near-daily cycling habit).
+    function maintenanceCalorieSuggestion(calories, todayMs, windowDays = GOAL_AVG_WINDOW_DAYS) {
+      const cutoff = msToLocalDate(todayMs - windowDays * 86400000);
+      const todayStr = msToLocalDate(todayMs);
+      const window = (calories || []).filter(d => d.date >= cutoff && d.date <= todayStr && (d.BasalEnergy || d.ActiveEnergy));
+      const restDayTdee = window.filter(d => !d.HasWorkout).map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
+      const days = restDayTdee.length >= 3 ? restDayTdee : window.map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
+      return days.length ? Math.round(avg(days)) : null;
     }
 
     // Derives all current/derived Maintenance Mode state from the append-only
@@ -4411,31 +4520,8 @@
         };
       }
 
-      // Maintenance calories ≈ what you actually burn on an ordinary (non-
-      // workout) day — BasalEnergy + ActiveEnergy (HealthKit), same fields
-      // TdeeChart's own "Avg TDEE" stat averages, but restricted to days
-      // without a logged workout. calorieTargets is a *base* number
-      // elsewhere in the app — calorieDeviationFor adds a day's exercise
-      // calories (rides, etc.) back in on top of it separately (see its
-      // `exercise` field) — so baking average cycling burn into this
-      // suggestion would double it on days you actually ride (once in the
-      // averaged-in baseline, again from the real per-day exercise credit)
-      // while overstating rest days. Falls back to all days if there aren't
-      // enough rest days in the window to say anything (e.g. cycling most
-      // days) rather than suggesting a number off 1-2 data points.
-      // Deliberately NOT a back-solve from the weight-trend delta (old
-      // approach: currentCalTarget + twoWeekLoss*3500/14) — that compounds
-      // two sources of noise (a deficit target that drifts from real
-      // adherence, and a short-window weight trend easily skewed by water
-      // weight) into a number that can land far from a real BMR/TDEE
-      // estimate.
       const currentCalTarget = targetActiveAt(calorieTargets, today());
-      const tdeeCutoff = msToLocalDate(todayMsForMaint - GOAL_AVG_WINDOW_DAYS * 86400000);
-      const tdeeWindow = (calories || []).filter(d => d.date >= tdeeCutoff && d.date <= today() && (d.BasalEnergy || d.ActiveEnergy));
-      const restDayTdee = tdeeWindow.filter(d => !d.HasWorkout).map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
-      const tdeeDays = restDayTdee.length >= 3 ? restDayTdee : tdeeWindow.map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
-      const avgTdee = tdeeDays.length ? avg(tdeeDays) : null;
-      const suggestedCalTarget = avgTdee != null ? Math.round(avgTdee) : null;
+      const suggestedCalTarget = maintenanceCalorieSuggestion(calories, todayMsForMaint);
 
       const startCalEdit = () => {
         setCalDraft(String(currentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
@@ -4481,69 +4567,121 @@
                   since {fmtShort(maintenanceSince)}
                 </span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <div style={{ textAlign: 'center', minWidth: 72 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: maintGuidance.color, textTransform: 'uppercase',
-                                letterSpacing: .4, marginBottom: 3 }}>
-                    {maintGuidance.action === 'decrease' ? 'Decrease to'
-                      : maintGuidance.action === 'increase' ? 'Increase to' : 'Stay at'}
-                  </div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: maintGuidance.color, lineHeight: 1,
-                                fontVariantNumeric: 'tabular-nums' }}>
-                    {round2(maintGuidance.suggestedDoseMg ?? currentDoseMg)} mg
-                  </div>
-                  <div style={{ fontSize: 11, color: maintGuidance.color, opacity: .75, marginTop: 2 }}>per week</div>
-                </div>
-                <div style={{ width: 1, alignSelf: 'stretch', background: `${maintGuidance.color}33` }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 3 }}>{maintGuidance.label}</div>
-                  <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{maintGuidance.note}</div>
-                  <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
+              {(maintGuidance.action === 'decrease' || maintGuidance.action === 'increase') ? (
+                // Two co-equal levers, not dose-primary/calories-as-an-
+                // afterthought-link — dose and calorie intake are both real
+                // options for holding here, and which one makes sense is a
+                // personal/prescriber call this app shouldn't default for.
+                <>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 2 }}>{maintGuidance.label}</div>
+                  <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4, marginBottom: 4 }}>{maintGuidance.note}</div>
+                  <div style={{ fontSize: 12, color: '#8e8e93', marginBottom: 10 }}>
                     14-day avg: {windowAvgStr} lbs &nbsp;·&nbsp; current: ≈{round1(currentDoseMg)} mg/wk
                   </div>
-                  {isAdmin && (maintGuidance.action === 'decrease' || maintGuidance.action === 'increase') && suggestedCalTarget != null && !calEditing && (
-                    <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(suggestedCalTarget); setCalSaving(false); }}
-                            disabled={calSaving}
-                            style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
-                                     border: 'none', padding: 0, marginTop: 6, cursor: 'pointer',
-                                     textDecoration: 'underline', display: 'block' }}>
-                      {calSaving ? 'Updating…' : `Update calorie target to ${suggestedCalTarget} →`}
-                    </button>
-                  )}
-                  {isAdmin && !calEditing && (
-                    <button onClick={startCalEdit}
-                            style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
-                                     border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
-                                     textDecoration: 'underline', display: 'block' }}>
-                      Set calorie target manually →
-                    </button>
-                  )}
-                  {isAdmin && calEditing && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                      <input type="number" value={calDraft} onChange={e => setCalDraft(e.target.value)}
-                             style={{ width: 70, fontSize: 12, padding: '3px 6px', borderRadius: 6,
-                                      border: '1px solid #c7c7cc' }} />
-                      <button onClick={() => saveCalTarget(parseFloat(calDraft))} disabled={calSaving}
-                              style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
-                                       border: 'none', cursor: 'pointer' }}>
-                        {calSaving ? 'Saving…' : 'Save'}
-                      </button>
-                      <button onClick={() => { setCalEditing(false); setCalErr(''); }}
-                              style={{ fontSize: 11, color: '#8e8e93', background: 'none', border: 'none', cursor: 'pointer' }}>
-                        Cancel
-                      </button>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
+                                letterSpacing: .4, marginBottom: 6 }}>
+                    Two ways to hold here — pick one
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+                                  borderRadius: 10, background: '#fff', border: `1px solid ${maintGuidance.color}33` }}>
+                      <div style={{ textAlign: 'center', minWidth: 60, flexShrink: 0 }}>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: maintGuidance.color, lineHeight: 1,
+                                      fontVariantNumeric: 'tabular-nums' }}>
+                          {round2(maintGuidance.suggestedDoseMg)}
+                        </div>
+                        <div style={{ fontSize: 9.5, color: maintGuidance.color, opacity: .75 }}>mg/wk</div>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>Adjust dose</div>
+                        <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
+                          {maintGuidance.action === 'decrease' ? 'Step down' : 'Step back up'} with your prescriber — purely
+                          advisory, takes effect when you log a new injection at this dose.
+                        </div>
+                      </div>
                     </div>
-                  )}
-                  {calErr && <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3 }}>{calErr}</div>}
-                  {isAdmin && (
-                    <button onClick={stopMaintenance}
-                            style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
-                                     border: 'none', padding: 0, marginTop: 8, cursor: 'pointer',
-                                     textDecoration: 'underline', display: 'block' }}>
-                      Stop Maintenance Mode →
-                    </button>
-                  )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+                                  borderRadius: 10, background: '#fff', border: '1px solid rgba(74,144,217,.3)' }}>
+                      <div style={{ textAlign: 'center', minWidth: 60, flexShrink: 0 }}>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: '#4a90d9', lineHeight: 1,
+                                      fontVariantNumeric: 'tabular-nums' }}>
+                          {suggestedCalTarget ?? '—'}
+                        </div>
+                        <div style={{ fontSize: 9.5, color: '#4a90d9', opacity: .75 }}>cal/day</div>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>Adjust calories instead</div>
+                        <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
+                          Your measured TDEE on rest days — the number that should hold weight on its own, no dose change needed.
+                        </div>
+                        {isAdmin && suggestedCalTarget != null && !calEditing && (
+                          <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(suggestedCalTarget); setCalSaving(false); }}
+                                  disabled={calSaving}
+                                  style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                           border: 'none', padding: 0, marginTop: 5, cursor: 'pointer',
+                                           textDecoration: 'underline', display: 'block' }}>
+                            {calSaving ? 'Updating…' : `Accept — set target to ${suggestedCalTarget} →`}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <div style={{ textAlign: 'center', minWidth: 72 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: maintGuidance.color, textTransform: 'uppercase',
+                                  letterSpacing: .4, marginBottom: 3 }}>Stay at</div>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: maintGuidance.color, lineHeight: 1,
+                                  fontVariantNumeric: 'tabular-nums' }}>
+                      {round2(currentDoseMg)} mg
+                    </div>
+                    <div style={{ fontSize: 11, color: maintGuidance.color, opacity: .75, marginTop: 2 }}>per week</div>
+                  </div>
+                  <div style={{ width: 1, alignSelf: 'stretch', background: `${maintGuidance.color}33` }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 3 }}>{maintGuidance.label}</div>
+                    <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{maintGuidance.note}</div>
+                    <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
+                      14-day avg: {windowAvgStr} lbs &nbsp;·&nbsp; current: ≈{round1(currentDoseMg)} mg/wk
+                    </div>
+                  </div>
                 </div>
+              )}
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(0,0,0,.06)' }}>
+                {isAdmin && !calEditing && (
+                  <button onClick={startCalEdit}
+                          style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                   border: 'none', padding: 0, cursor: 'pointer',
+                                   textDecoration: 'underline', display: 'block' }}>
+                    Set calorie target manually →
+                  </button>
+                )}
+                {isAdmin && calEditing && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input type="number" value={calDraft} onChange={e => setCalDraft(e.target.value)}
+                           style={{ width: 70, fontSize: 12, padding: '3px 6px', borderRadius: 6,
+                                    border: '1px solid #c7c7cc' }} />
+                    <button onClick={() => saveCalTarget(parseFloat(calDraft))} disabled={calSaving}
+                            style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                     border: 'none', cursor: 'pointer' }}>
+                      {calSaving ? 'Saving…' : 'Save'}
+                    </button>
+                    <button onClick={() => { setCalEditing(false); setCalErr(''); }}
+                            style={{ fontSize: 11, color: '#8e8e93', background: 'none', border: 'none', cursor: 'pointer' }}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                {calErr && <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3 }}>{calErr}</div>}
+                {isAdmin && (
+                  <button onClick={stopMaintenance}
+                          style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                   border: 'none', padding: 0, marginTop: 8, cursor: 'pointer',
+                                   textDecoration: 'underline', display: 'block' }}>
+                    Stop Maintenance Mode →
+                  </button>
+                )}
               </div>
             </div>
           ) : (
@@ -9013,7 +9151,7 @@
               <div style={{ display: activeTab==='dosing' ? undefined : 'none' }}>
                 <DosePanel rows={rows} injections={injections} injSchedule={injSchedule}
                            isAdmin={isAdmin} onSaveSchedule={saveInjSchedule}
-                           calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
+                           calories={calories} calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} intervalsCalories={intervalsCalories}
                            pendingSurvey={pendingSurvey} doseHold={doseHold} setDoseHold={setDoseHold}
                            maintenanceMode={maintState.maintenanceMode} maintenanceSince={maintState.maintenanceSince} />
                 <div style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 10px' }}>

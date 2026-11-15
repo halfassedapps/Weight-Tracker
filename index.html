@@ -5,6 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
   <title>Weight Tracker</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>" />
+  <script>
+    // GitHub Pages' CDN caches this document for 10 minutes, and browsers can
+    // reuse that cached copy across a plain reload. version.json is fetched
+    // with cache: 'no-store' (always hits the network) and compared against
+    // the version baked into this page at deploy time; a mismatch means
+    // we're looking at a stale cached copy, so force a real network fetch by
+    // navigating to a URL the cache has never seen. Bumped on every deploy.
+    (function () {
+      var BUILD_VERSION = '2026-11-15T03:17:49Z';
+      try {
+        fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (data) {
+            if (!data || data.v === BUILD_VERSION) return;
+            if (sessionStorage.getItem('wt-cache-bust-for') === data.v) return;
+            sessionStorage.setItem('wt-cache-bust-for', data.v);
+            var params = new URLSearchParams(location.search);
+            params.set('_cb', Date.now().toString());
+            location.replace(location.pathname + '?' + params.toString());
+          })
+          .catch(function () {});
+      } catch (_) {}
+    })();
+  </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone@7.24.0/babel.min.js"></script>

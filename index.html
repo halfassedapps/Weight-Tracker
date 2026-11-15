@@ -1691,14 +1691,10 @@
             <line x1={PAD.l} y1={yBaseline} x2={PAD.l + cW} y2={yBaseline} stroke="rgba(0,0,0,.12)" strokeWidth="0.5" />
 
             {/* Maintenance Mode toggle markers */}
-            {maintenanceHistory.map((h, i) => {
-              const ms = new Date(h.date + 'T12:00:00').getTime();
-              if (ms < visStartMs || ms > visEndMs) return null;
-              return (
-                <line key={i} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={yBaseline}
-                      stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
-              );
-            })}
+            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
+              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={yBaseline}
+                    stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+            ))}
 
             {(() => {
               const step = maxVal > 3000 ? 1000 : 500;
@@ -1836,7 +1832,7 @@
     // fake "way under" reading. Still additive only (never lowers the target
     // below the base MFP number), so it can't reproduce the TDEE-subtraction
     // danger warned about above.
-    function CaloriesVsTargetChart({ periodDaily, visStartMs, visEndMs, todayMs, rows, calorieTargets, intervalsCalories }) {
+    function CaloriesVsTargetChart({ periodDaily, visStartMs, visEndMs, todayMs, rows, calorieTargets, intervalsCalories, maintenanceHistory = [] }) {
       const [tip, setTip] = useState(null);
 
       const VW = 360, VH = 140;
@@ -1894,6 +1890,12 @@
             })}
 
             <line x1={PAD.l} y1={yZero} x2={PAD.l + cW} y2={yZero} stroke="rgba(0,0,0,.2)" strokeWidth="0.7" />
+
+            {/* Maintenance Mode toggle markers */}
+            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
+              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
+                    stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+            ))}
 
             {/* Nudged in from the very top/bottom edge so they don't collide
                 with the x-axis date row directly below the chart. */}
@@ -1958,7 +1960,7 @@
     // Protein is colored by proteinTier (see definition near the top of the
     // file) — a floor, not a two-sided target, so anything at/above the floor
     // is just "good" with no extra credit for going further over.
-    function ProteinChart({ periodDaily, visStartMs, visEndMs, proteinTargets, isAdmin, onSaveProteinTargets }) {
+    function ProteinChart({ periodDaily, visStartMs, visEndMs, proteinTargets, isAdmin, onSaveProteinTargets, maintenanceHistory = [] }) {
       const [tip, setTip] = useState(null);
       const [editing, setEditing] = useState(false);
       const [draftTarget, setDraftTarget] = useState('');
@@ -2019,6 +2021,11 @@
               return <path key={p.date} d={roundedBarPath(x, barW, yBaseline, yOf(p.Protein || 0), rx)} fill={fill} opacity="0.9" />;
             })}
             <line x1={PAD.l} y1={yBaseline} x2={PAD.l + cW} y2={yBaseline} stroke="rgba(0,0,0,.12)" strokeWidth="0.5" />
+            {/* Maintenance Mode toggle markers */}
+            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
+              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={yBaseline}
+                    stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+            ))}
             {/* Floor line — a solid tick per day (not a full-width line) so a
                 changed target mid-window still reads correctly per-day. */}
             {pts.map(p => p.target != null && (
@@ -2444,14 +2451,10 @@
               <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
 
               {/* Maintenance Mode toggle markers */}
-              {maintenanceHistory.map((h, i) => {
-                const ms = new Date(h.date + 'T12:00:00').getTime();
-                if (ms < visStartMs || ms > visEndMs) return null;
-                return (
-                  <line key={i} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
-                        stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
-                );
-              })}
+              {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
+                <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
+                      stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+              ))}
 
               {/* Systolic / diastolic trend lines */}
               <path d={sysPath} fill="none" stroke={BP_SYS_COLOR} strokeWidth="1" />
@@ -2554,7 +2557,7 @@
     }
 
     /* ─── Rides Chart ────────────────────────────────────────────────────────── */
-    function RidesChart({ ridesData, deepLinkParams }) {
+    function RidesChart({ ridesData, deepLinkParams, maintenanceHistory = [] }) {
       const [rangeMode, setRangeMode] = useState(() => deepLinkParams?.range || localStorage.getItem(LS_RIDES_RANGE_MODE_KEY) || '30d');
       useEffect(() => { try { localStorage.setItem(LS_RIDES_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
       const [customDays, setCustomDays] = useState(
@@ -2897,6 +2900,12 @@
             {/* Axes */}
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
             <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+
+            {/* Maintenance Mode toggle markers */}
+            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
+              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
+                    stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+            ))}
 
             {/* Bars */}
             {pts.map(p => {
@@ -3527,25 +3536,18 @@
               );
             })}
 
-            {/* Maintenance Mode toggle markers — same vertical-line-plus-
-                rotated-label treatment as injection markers above, distinct
-                teal color so the two aren't confused at a glance. */}
-            {rangeMode !== 'all' && (maintenanceHistory || []).filter(h => {
-              const ms = new Date(h.date + 'T12:00:00').getTime();
-              return ms >= visStartMs && ms <= visEndMs;
-            }).map(h => {
-              const ms = new Date(h.date + 'T12:00:00').getTime();
-              const x  = xOf(ms);
-              const { mo, day } = fmtDate(h.date);
+            {/* Maintenance Mode toggle markers — line only, no rotated label
+                (unlike injection markers above): this chart is already
+                crowded with dose-change pills/labels, and a toggle can land
+                on the same date as one of those (or, while testing, several
+                toggles on the same date) — the Maintenance history table
+                under GoalBanner has the actual date/detail. Deduped to one
+                line per date for the same reason. */}
+            {rangeMode !== 'all' && maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => {
+              const x = xOf(ms);
               return (
-                <g key={`maint-${h.date}-${h.action}`}>
-                  <line x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
-                        stroke="#00c7be" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.55" />
-                  <text x={x} y={yLabelPivot} textAnchor="end" fontSize="5" fill="#00c7be"
-                        transform={`rotate(-90, ${x}, ${yLabelPivot})`}>
-                    {mo} {day} · Maint. {h.action === 'start' ? 'ON' : 'OFF'}
-                  </text>
-                </g>
+                <line key={ms} x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
+                      stroke="#00c7be" strokeWidth="0.8" strokeDasharray="1,2" opacity="0.5" />
               );
             })}
 
@@ -4036,8 +4038,11 @@
                           </div>
                         </>
                       )}
-                      {isAdmin && maintSuggestedCalTarget != null && !calEditing
-                        && !(maintCurrentCalTarget === maintSuggestedCalTarget) && (
+                      {maintSuggestedCalTarget != null && maintCurrentCalTarget === maintSuggestedCalTarget ? (
+                        <div style={{ fontSize: 11, color: '#34c759', fontWeight: 600, marginTop: 5 }}>
+                          ✓ Already set to this
+                        </div>
+                      ) : isAdmin && maintSuggestedCalTarget != null && !calEditing && (
                         <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(maintSuggestedCalTarget); setCalSaving(false); }}
                                 disabled={calSaving}
                                 style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
@@ -4456,6 +4461,19 @@
         maintenanceEntryDoseMg: maintenanceMode ? last.doseMg : null,
         maintenancePeriods: periods,
       };
+    }
+
+    // One marker ms per unique date in maintenanceHistory — toggling start/
+    // stop/start the same day (easy to do while testing, e.g.) would
+    // otherwise draw several overlapping lines (and, worse, overlapping
+    // rotated labels) at the exact same x position. Chart markers only care
+    // "something changed here," not how many times, so collapsing to one
+    // per date is strictly simpler and never loses a date that matters —
+    // the Maintenance history table is the place for the full blow-by-blow.
+    function maintenanceMarkerDates(maintenanceHistory) {
+      return [...new Set((maintenanceHistory || []).map(h => h.date))]
+        .sort()
+        .map(date => new Date(date + 'T12:00:00').getTime());
     }
 
     // Highest-first so .find() below picks the best-earned tier; "at: 0" always
@@ -6217,16 +6235,14 @@
               });
             })()}
 
-            {/* Maintenance Mode toggle markers — one per history entry, start
-                and stop alike, so a glance at the chart shows when the mode
-                actually changed (the Maintenance history table under
-                GoalBanner has the dates/dose-range detail). */}
-            {maintenanceHistory.map((h, i) => {
-              const ms = new Date(h.date + 'T12:00:00').getTime();
-              if (ms < viewStartMs || ms > endMs) return null;
+            {/* Maintenance Mode toggle markers — one per unique date (the
+                Maintenance history table under GoalBanner has the
+                dates/dose-range detail if several toggles land the same
+                day). */}
+            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= viewStartMs && ms <= endMs).map(ms => {
               const x = xOf(ms);
               return (
-                <line key={i} x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
+                <line key={ms} x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
                       stroke="#4a90d9" strokeWidth="0.8" strokeDasharray="1,2" opacity="0.5" />
               );
             })}
@@ -9255,7 +9271,7 @@
                   <div style={{ padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#1c1c1e' }}>Rides</div>
                   </div>
-                  <RidesChart ridesData={intervalRides}
+                  <RidesChart ridesData={intervalRides} maintenanceHistory={maintenanceHistory}
                               deepLinkParams={deepLink?.tab === 'activity' ? deepLink.params : null} />
                 </div>
               )}

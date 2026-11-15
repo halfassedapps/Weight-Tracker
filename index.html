@@ -1789,7 +1789,9 @@
               <span style={{ fontSize: 11, color: '#3c3c43' }}>
                 Maintenance suggestion (measured TDEE, less exercise): <strong>{maintSuggestedTarget} cal</strong>
               </span>
-              {isAdmin && currentTarget !== maintSuggestedTarget && (
+              {currentTarget === maintSuggestedTarget ? (
+                <span style={{ fontSize: 11, color: '#34c759', fontWeight: 600 }}>✓ Already set to this</span>
+              ) : isAdmin && (
                 <button onClick={acceptMaintSuggestion} disabled={maintSaving}
                         style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
                                  border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
@@ -4827,7 +4829,11 @@
                         <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
                           Your measured TDEE, less exercise — the base number that should hold weight on its own, no dose change needed.
                         </div>
-                        {isAdmin && suggestedCalTarget != null && !calEditing && (
+                        {suggestedCalTarget != null && currentCalTarget === suggestedCalTarget ? (
+                          <div style={{ fontSize: 11, color: '#34c759', fontWeight: 600, marginTop: 5 }}>
+                            ✓ Already set to this
+                          </div>
+                        ) : isAdmin && suggestedCalTarget != null && !calEditing && (
                           <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(suggestedCalTarget); setCalSaving(false); }}
                                   disabled={calSaving}
                                   style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',

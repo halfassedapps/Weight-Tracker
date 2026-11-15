@@ -461,6 +461,21 @@
       try { localStorage.setItem(LS_HEIGHT_IN_KEY, String(n)); } catch (_) {}
     }
 
+    // Append-only log of Maintenance Mode toggles — {date, action: 'start'|'stop', doseMg}.
+    // maintenanceMode/maintenanceSince/maintenanceEntryDoseMg/maintenancePeriods are all
+    // derived from this (see deriveMaintenanceState) rather than stored separately, so
+    // they can never disagree with the log.
+    const LS_MAINTENANCE_HISTORY_KEY = 'weight-tracker-maintenance-history';
+    function lsLoadMaintenanceHistory() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(LS_MAINTENANCE_HISTORY_KEY) || '[]');
+        return Array.isArray(raw) ? raw : [];
+      } catch (_) { return []; }
+    }
+    function lsSaveMaintenanceHistory(history) {
+      try { localStorage.setItem(LS_MAINTENANCE_HISTORY_KEY, JSON.stringify(history)); } catch (_) {}
+    }
+
     // Purely a view preference (not synced) — whether the weight chart/table
     // shows per-dose line coloring, pills, and a Dose column.
     const LS_SHOW_INJ_DATA_KEY = 'weight-tracker-show-inj-data';
@@ -577,7 +592,7 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [], goalLbs, heightIn }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [], goalLbs, heightIn, maintenanceHistory = [] }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -606,6 +621,10 @@
           : [],
         goalLbs: typeof goalLbs === 'number' && goalLbs > 0 ? goalLbs : GOAL_LBS_DEFAULT,
         heightIn: typeof heightIn === 'number' && heightIn > 0 ? heightIn : HEIGHT_IN_DEFAULT,
+        maintenanceHistory: Array.isArray(maintenanceHistory)
+          ? maintenanceHistory.filter(h => h.date && (h.action === 'start' || h.action === 'stop') && h.doseMg != null)
+            .sort((a, b) => a.date.localeCompare(b.date))
+          : [],
       };
     }
 
@@ -661,10 +680,11 @@
     // write, same as calorieTargets/proteinTargets — this is a full-content PATCH
     // of weight-data.json, so any field the caller omits here is deleted from the
     // Gist, not merely left unmodified.
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = [], goalLbs = GOAL_LBS_DEFAULT, heightIn = HEIGHT_IN_DEFAULT) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = [], goalLbs = GOAL_LBS_DEFAULT, heightIn = HEIGHT_IN_DEFAULT, maintenanceHistory = []) {
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule, goalLbs, heightIn,
+        maintenanceHistory: maintenanceHistory.map(({ date, action, doseMg }) => ({ date, action, doseMg })),
         injections: injections.map(serializeInjEntry),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
         calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy, Protein, Carbs, Fat, HasWorkout }) =>
@@ -2940,7 +2960,7 @@
     }
 
     /* ─── PK Chart ───────────────────────────────────────────────────────────── */
-    function PkChart({ injections, rows, isAdmin, injSchedule, onSaveSchedule, deepLinkParams }) {
+    function PkChart({ injections, rows, isAdmin, injSchedule, onSaveSchedule, deepLinkParams, maintenanceHistory = [] }) {
       if (!injections.length) return null;
       const [tip, setTip] = useState(null); // { x, y, level, dateStr, wLbs }
       const [splitManual, setSplitManual] = useState(
@@ -3438,6 +3458,28 @@
               );
             })}
 
+            {/* Maintenance Mode toggle markers — same vertical-line-plus-
+                rotated-label treatment as injection markers above, distinct
+                teal color so the two aren't confused at a glance. */}
+            {rangeMode !== 'all' && (maintenanceHistory || []).filter(h => {
+              const ms = new Date(h.date + 'T12:00:00').getTime();
+              return ms >= visStartMs && ms <= visEndMs;
+            }).map(h => {
+              const ms = new Date(h.date + 'T12:00:00').getTime();
+              const x  = xOf(ms);
+              const { mo, day } = fmtDate(h.date);
+              return (
+                <g key={`maint-${h.date}-${h.action}`}>
+                  <line x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
+                        stroke="#00c7be" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.55" />
+                  <text x={x} y={yLabelPivot} textAnchor="end" fontSize="5" fill="#00c7be"
+                        transform={`rotate(-90, ${x}, ${yLabelPivot})`}>
+                    {mo} {day} · Maint. {h.action === 'start' ? 'ON' : 'OFF'}
+                  </text>
+                </g>
+              );
+            })}
+
             {rangeMode !== 'all' && upcomingInjMs.map(ms => {
               const nx = xOf(ms);
               if (nx < PAD.l || nx > PAD.l + cW) return null;
@@ -3555,7 +3597,7 @@
     /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
     // Standalone component for the dose recommendation, calculator, and syringe.
     // Extracted from PkChart so it can live in the "Dosing" tab independently.
-    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold }) {
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode }) {
       const [showCalc,     setShowCalc]     = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
@@ -3673,12 +3715,27 @@
       const doseHoldExpired = doseHoldAgeDays != null && doseHoldAgeDays >= DOSE_HOLD_EXPIRE_DAYS;
       const doseHoldActive = g.action === 'increase' && doseHold && !doseHoldExpired && doseHold.doseMg === ds.lastDose;
       const doseHoldDaysLeft = doseHoldActive ? DOSE_HOLD_EXPIRE_DAYS - doseHoldAgeDays : null;
-      const displayG = doseHoldActive
-        ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
+
+      // Maintenance Mode swaps the whole recommendation box for its own
+      // guidance (different action vocabulary, finer step size) rather than
+      // layering onto the loss-phase one — doseHold is a loss-phase-only
+      // override and doesn't apply here, maintenanceDoseGuidance has its own
+      // hold-and-reassess state for the same lagging-signal problem.
+      const maintDaysSinceChange = maintenanceMode ? daysSinceLastDoseChange(injections, todayMs) : null;
+      const maintDoseChangeHold = maintDaysSinceChange != null && maintDaysSinceChange < DOSE_MAINTENANCE_HOLD_DAYS;
+      const maintGuidance = maintenanceMode
+        ? maintenanceDoseGuidance(recent.twoWeekLoss, weeklyDose, maintDoseChangeHold, maintDaysSinceChange)
+        : null;
+
+      const displayG = maintenanceMode ? maintGuidance
+        : doseHoldActive ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
         : g;
-      const displayRecWeekly = doseHoldActive ? weeklyDose : recWeekly;
-      const displayPerInjMg  = doseHoldActive ? weeklyDose / injPerWeek : perInjMg;
-      const displaySubtext = doseHoldActive
+      const displayRecWeekly = maintenanceMode ? (maintGuidance.suggestedDoseMg ?? weeklyDose)
+        : doseHoldActive ? weeklyDose : recWeekly;
+      const displayPerInjMg  = maintenanceMode ? displayRecWeekly / injPerWeek
+        : doseHoldActive ? weeklyDose / injPerWeek : perInjMg;
+      const displaySubtext = maintenanceMode ? maintGuidance.note
+        : doseHoldActive
         ? `You chose to hold at ${round1(weeklyDose)} mg/wk on ${new Date(doseHold.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} instead of increasing. This hold auto-expires in ${doseHoldDaysLeft} day${doseHoldDaysLeft === 1 ? '' : 's'}, after which the usual guidance (including anything new from your symptom surveys) resumes automatically.`
         : subtext;
 
@@ -3708,7 +3765,7 @@
             <div ref={rulesRef} style={{ display: 'flex', alignItems: 'center', gap: 5,
                           marginBottom: 6, position: 'relative' }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
-                            letterSpacing: .6 }}>Next Dose Recommendation</div>
+                            letterSpacing: .6 }}>{maintenanceMode ? 'Maintenance Dose Guidance' : 'Next Dose Recommendation'}</div>
               <button onClick={() => setRulesOpen(v => !v)}
                       aria-label="Dosing increment rules"
                       style={{ width: 14, height: 14, borderRadius: '50%', border: '1px solid #c7c7cc',
@@ -3753,15 +3810,20 @@
                 <div style={{ textAlign: 'center', minWidth: 72 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: displayG.color, textTransform: 'uppercase',
                                 letterSpacing: .4, marginBottom: 3 }}>
-                    {displayG.action === 'increase' ? 'Increase to' : displayG.action === 'contact' ? 'Hold at' : 'Stay at'}
+                    {displayG.action === 'increase' ? 'Increase to' : displayG.action === 'decrease' ? 'Decrease to'
+                      : displayG.action === 'contact' ? 'Hold at' : 'Stay at'}
                   </div>
                   <div style={{ fontSize: 22, fontWeight: 800, color: displayG.color, lineHeight: 1,
-                                fontVariantNumeric: 'tabular-nums' }}>{round1(displayRecWeekly)} mg</div>
+                                fontVariantNumeric: 'tabular-nums' }}>
+                    {/* round2 (not round1) in Maintenance Mode — its 0.25mg
+                        steps need two decimal places (3.25, not 3.3). */}
+                    {maintenanceMode ? round2(displayRecWeekly) : round1(displayRecWeekly)} mg
+                  </div>
                   <div style={{ fontSize: 11, color: displayG.color, opacity: .75, marginTop: 2 }}>
                     {intervalActive ? `${round2(displayPerInjMg)} mg every ${injSchedule.everyNDays}d`
                       : injPerWeek > 1 ? `${round2(displayPerInjMg)} mg × ${injPerWeek}/wk` : 'per week'}
                   </div>
-                  {displayG.action === 'increase' && dose == null && (
+                  {!maintenanceMode && displayG.action === 'increase' && dose == null && (
                     <div style={{ fontSize: 11, color: '#aeaeb2', marginTop: 2 }}>max reached</div>
                   )}
                 </div>
@@ -3781,7 +3843,7 @@
                   {/* Only relevant when it actually bore on this recommendation —
                       crossCheck is now computed unconditionally, so this guard
                       keeps it from showing up next to an unrelated band. */}
-                  {!doseHoldActive && (g.overridden || g.crossCheckBypassed) && crossCheck && (
+                  {!maintenanceMode && !doseHoldActive && (g.overridden || g.crossCheckBypassed) && crossCheck && (
                     <div style={{ fontSize: 11.5, color: '#8e8e93', marginTop: 5, fontStyle: 'italic' }}>
                       {crossCheck.type === 'corroborated' ? '✓ ' : '⚠ '}{crossCheck.note}
                     </div>
@@ -3791,7 +3853,7 @@
                       seeing it resurface every time the panel re-renders — it
                       doesn't change the underlying recommendation, just what's
                       displayed, and "Reconsider" always gets the real one back. */}
-                  {isAdmin && g.action === 'increase' && !doseHoldActive && (
+                  {!maintenanceMode && isAdmin && g.action === 'increase' && !doseHoldActive && (
                     // Keyed to ds.lastDose (the per-injection dose) internally
                     // — that's the right granularity for detecting an actual
                     // injection-logged change later — but displayed as the
@@ -3805,7 +3867,7 @@
                       Stay at {round1(weeklyDose)} mg instead →
                     </button>
                   )}
-                  {isAdmin && doseHoldActive && (
+                  {!maintenanceMode && isAdmin && doseHoldActive && (
                     <button onClick={clearDoseHold}
                             style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
                                      border: 'none', padding: 0, marginTop: 6, cursor: 'pointer',
@@ -3921,6 +3983,14 @@
     const lbsAtBmi = (bmi, hIn) => bmi * hIn * hIn / 703;
     const LS_GOAL_BANNER_DISMISS_KEY = 'weight-tracker-goal-banner-dismiss';
     const LS_GOAL_CELEBRATED_KEY = 'weight-tracker-goal-celebrated';
+    // First time `atGoal` was observed true (for the current goalLbs) — lets
+    // the Maintenance Mode entry prompt require goal to have genuinely held
+    // for a while, without re-scanning all historical rows every render.
+    // Resets if atGoal ever goes false (a relapse) or the goal value changes.
+    const LS_AT_GOAL_SINCE_KEY = 'weight-tracker-at-goal-since';
+    // "Not now" on the entry prompt — re-offered after a cooldown rather than
+    // nagging every render or never again.
+    const LS_MAINT_PROMPT_DISMISS_KEY = 'weight-tracker-maint-prompt-dismiss';
     // Daily weight fluctuates — a single weigh-in at/under goal doesn't mean
     // you're actually *at* your goal weight yet, just that today happened to
     // land there. Require the trailing 2-week average to hold there too
@@ -3947,6 +4017,126 @@
     // Maintenance dose changes go either direction, and twoWeekLoss lags
     // any of them the same way.
     const DOSE_MAINTENANCE_HOLD_DAYS = 21;
+    // Lowest dose this app will suggest stepping down to — tirzepatide's lowest
+    // real-world dose. Below this, guidance stops suggesting a number and defers
+    // to the prescriber instead.
+    const MIN_MAINTENANCE_DOSE_MG = 2.5;
+    // Deliberately finer than the loss-phase DOSE_STEP_MG (0.5) — maintenance is
+    // about finding the *minimum* effective dose, so overshooting a step costs
+    // more here (straight back into food noise/hunger) than during active
+    // titration. Also matches the granularity DoseCalculatorModal's units table
+    // already uses (1-15mg in 0.25mg increments), so guidance never suggests a
+    // number finer than what's actually measurable. Used for both directions —
+    // stepping down and stepping back up are both fine-tuning moves within
+    // maintenance, not the coarser loss-phase ladder.
+    const MAINTENANCE_DOSE_STEP_MG = 0.25;
+
+    // Scans sorted-by-date injections for the most recent dose *change* (any
+    // direction) and returns how many days ago it was — null if there's no
+    // change to find. Shared by GoalBanner (maintenance trend narrative) and
+    // maintenanceDoseGuidance's hold-and-reassess gate below, so the scan isn't
+    // duplicated a third time.
+    function daysSinceLastDoseChange(injections, todayMs) {
+      const sorted = [...(injections || [])].sort((a, b) => a.date.localeCompare(b.date));
+      for (let i = sorted.length - 1; i > 0; i--) {
+        if (sorted[i].doseMg !== sorted[i - 1].doseMg) {
+          const changeMs = new Date(sorted[i].date + 'T12:00:00').getTime();
+          return Math.floor((todayMs - changeMs) / 86400000);
+        }
+      }
+      return null;
+    }
+
+    // Maintenance-mode's own dose guidance — parallel to doseGuidance, not an
+    // extension of it (no appetite/GI override logic needed here, since
+    // maintenance isn't chasing a loss target, and it uses the finer
+    // MAINTENANCE_DOSE_STEP_MG rather than DOSE_STEP_MG). Fully symmetric:
+    // regain gets the same treatment as continued loss, both in 0.25mg steps,
+    // bounded only by MIN_MAINTENANCE_DOSE_MG / MAX_DOSE_MG — not by the dose
+    // maintenance started at, which is informational only. If a lower dose
+    // isn't holding weight, the right answer is to keep stepping up, the same
+    // way the loss phase would, not to stop adjusting once back where it
+    // started. The >8 / 5-8 lbs/2wk bands mirror doseGuidance's own safety
+    // bands for the loss direction — gaining that fast is just as worth a
+    // prescriber call as losing that fast.
+    function maintenanceDoseGuidance(twoWeekLbs, currentDoseMg, doseChangeHold, daysSinceChange) {
+      if (doseChangeHold) {
+        return {
+          action: 'hold-reassess', color: '#34c759', bg: '#f0fdf4',
+          label: 'Holding — reassessing soon',
+          note: `Dose changed ${daysSinceChange} day${daysSinceChange === 1 ? '' : 's'} ago — trend guidance resumes once the 2-week average reflects it.`,
+        };
+      }
+      if (twoWeekLbs == null) {
+        return {
+          action: 'insufficient-data', color: '#34c759', bg: '#f0fdf4',
+          label: 'Holding at your dose', note: `Trend guidance kicks in once there's ~3 weeks of history.`,
+        };
+      }
+      if (twoWeekLbs <= -8) {
+        return { action: 'contact', color: '#ff3b30', bg: '#fff1f0', label: 'Contact prescriber', note: `Gaining >8 lbs/2wk` };
+      }
+      if (twoWeekLbs <= -5) {
+        return { action: 'monitor', color: '#ff9500', bg: '#fff8ee', label: 'Hold — monitor closely', note: `Gaining 5–8 lbs/2wk` };
+      }
+      if (Math.abs(twoWeekLbs) < MAINTENANCE_DRIFT_LBS) {
+        return { action: 'stay', color: '#34c759', bg: '#f0fdf4', label: 'Stay at your dose', note: `Holding steady` };
+      }
+      if (twoWeekLbs >= MAINTENANCE_DRIFT_LBS) {
+        if (currentDoseMg <= MIN_MAINTENANCE_DOSE_MG) {
+          return {
+            action: 'floor', color: '#34c759', bg: '#f0fdf4', label: `Stay at ${MIN_MAINTENANCE_DOSE_MG} mg`,
+            note: `Already at the lowest dose this app will suggest — further loss is a conversation for your prescriber.`,
+          };
+        }
+        return {
+          action: 'decrease', color: '#4a90d9', bg: '#eef6ff',
+          suggestedDoseMg: Math.max(MIN_MAINTENANCE_DOSE_MG, currentDoseMg - MAINTENANCE_DOSE_STEP_MG),
+          label: 'Consider ↓ dose', note: `Still trending down ${twoWeekLbs.toFixed(1)} lbs/2wk`,
+        };
+      }
+      // twoWeekLbs <= -MAINTENANCE_DRIFT_LBS (and milder than the -5 monitor band above): gaining
+      if (currentDoseMg >= MAX_DOSE_MG) {
+        return { action: 'ceiling', color: '#ff9500', bg: '#fff8ee', label: `Already at ${MAX_DOSE_MG} mg`, note: `Max dose reached — talk to your prescriber` };
+      }
+      return {
+        action: 'increase', color: '#4a90d9', bg: '#eef6ff',
+        suggestedDoseMg: Math.min(MAX_DOSE_MG, currentDoseMg + MAINTENANCE_DOSE_STEP_MG),
+        label: 'Consider ↑ dose', note: `Trending back up ${Math.abs(twoWeekLbs).toFixed(1)} lbs/2wk`,
+      };
+    }
+
+    // Derives all current/derived Maintenance Mode state from the append-only
+    // maintenanceHistory log — maintenanceMode/maintenanceSince/entryDoseMg are
+    // intentionally not stored fields, just reads of the log's last entry, so
+    // they can never disagree with it. maintenancePeriods pairs each 'start'
+    // with its following 'stop' (or "ongoing" if there isn't one yet) — same
+    // pairing DoseWeightLossChart already uses for dose-change periods.
+    function deriveMaintenanceState(maintenanceHistory, todayMs) {
+      const sorted = [...(maintenanceHistory || [])].sort((a, b) => a.date.localeCompare(b.date));
+      const last = sorted.length ? sorted[sorted.length - 1] : null;
+      const maintenanceMode = !!last && last.action === 'start';
+      const periods = [];
+      let openStart = null;
+      for (const h of sorted) {
+        const ms = new Date(h.date + 'T12:00:00').getTime();
+        if (h.action === 'start') {
+          openStart = { startMs: ms, startDoseMg: h.doseMg };
+        } else if (h.action === 'stop' && openStart) {
+          periods.push({ ...openStart, endMs: ms, endDoseMg: h.doseMg, ongoing: false });
+          openStart = null;
+        }
+      }
+      // endDoseMg left null for an ongoing period — the caller substitutes the
+      // live current dose (not known here) when rendering it.
+      if (openStart) periods.push({ ...openStart, endMs: todayMs, endDoseMg: null, ongoing: true });
+      return {
+        maintenanceMode,
+        maintenanceSince: maintenanceMode ? last.date : null,
+        maintenanceEntryDoseMg: maintenanceMode ? last.doseMg : null,
+        maintenancePeriods: periods,
+      };
+    }
 
     // Highest-first so .find() below picks the best-earned tier; "at: 0" always
     // matches once goal is reached at all, so the list is exhaustive.
@@ -4000,7 +4190,9 @@
     // quiet instead of nagging every day, but still comes back the moment
     // a *better* tier — or a newly-changed goal — gives it something new
     // to say.
-    function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT, injections, isAdmin }) {
+    function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT, injections, injSchedule, isAdmin,
+                           maintenanceHistory = [], onToggleMaintenanceMode,
+                           calorieTargets, onSaveCalorieTargets }) {
       const [dismissed, setDismissed] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_GOAL_BANNER_DISMISS_KEY) || 'null'); }
         catch (_) { return null; }
@@ -4016,6 +4208,18 @@
         catch (_) { return null; }
       });
       const [showConfetti, setShowConfetti] = useState(false);
+      const [atGoalSince, setAtGoalSince] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_AT_GOAL_SINCE_KEY) || 'null'); }
+        catch (_) { return null; }
+      });
+      const [promptDismissed, setPromptDismissed] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LS_MAINT_PROMPT_DISMISS_KEY) || 'null'); }
+        catch (_) { return null; }
+      });
+      const [calEditing, setCalEditing] = useState(false);
+      const [calDraft, setCalDraft] = useState('');
+      const [calSaving, setCalSaving] = useState(false);
+      const [calErr, setCalErr] = useState('');
 
       const hasData   = !!(rows && rows.length > 0);
       const currentLbs = hasData ? rows[0].lbs : null;
@@ -4050,14 +4254,43 @@
         return () => clearTimeout(t);
       }, [showConfetti]);
 
+      // Persists the first moment atGoal was observed true (for this goalLbs)
+      // so the Maintenance Mode entry prompt can require goal to have
+      // genuinely held for GOAL_AVG_WINDOW_DAYS, without re-scanning history.
+      // Resets on relapse (atGoal goes false) or a changed goal.
+      useEffect(() => {
+        if (atGoal) {
+          if (!atGoalSince || atGoalSince.goal !== goalLbs) {
+            const next = { goal: goalLbs, ms: Date.now() };
+            try { localStorage.setItem(LS_AT_GOAL_SINCE_KEY, JSON.stringify(next)); } catch (_) {}
+            setAtGoalSince(next);
+          }
+        } else if (atGoalSince) {
+          try { localStorage.removeItem(LS_AT_GOAL_SINCE_KEY); } catch (_) {}
+          setAtGoalSince(null);
+        }
+      }, [atGoal, goalLbs, atGoalSince]);
+
       if (!hasData) return null;
       const confetti = showConfetti ? <ConfettiBurst /> : null;
-      // Not at goal at all right now — nothing to show. (Not `confetti` —
-      // if a milestone just fired and goalLbs/rows changed again within its
-      // 3.2s window, there'd be nothing left to justify celebrating.)
-      if (!nearGoalToday) return null;
+      const todayMsForMaint = new Date().setHours(12, 0, 0, 0);
+      // Derived before the nearGoalToday/atGoal gates below — once opted in,
+      // Maintenance Mode has to keep showing its card even if weight drifts
+      // well past the strict goal-tolerance window (that drift is exactly
+      // what maintenanceDoseGuidance's gain-direction bands are for), not
+      // fall through to the pre-goal "lock in your goal" copy.
+      const { maintenanceMode, maintenanceSince, maintenancePeriods } =
+        deriveMaintenanceState(maintenanceHistory, todayMsForMaint);
+      const ds = getDoseSchedule(injections, injSchedule);
+      const currentDoseMg = ds ? ds.weeklyDose : null;
 
-      if (!atGoal) {
+      // Not at goal at all right now, and not in Maintenance Mode — nothing
+      // to show. (Not `confetti` — if a milestone just fired and goalLbs/rows
+      // changed again within its 3.2s window, there'd be nothing left to
+      // justify celebrating.)
+      if (!maintenanceMode && !nearGoalToday) return null;
+
+      if (!maintenanceMode && !atGoal) {
         const avgBeyond = Math.round((windowAvg - goalLbs) * 10) / 10;
         return (
           <>
@@ -4075,9 +4308,13 @@
       }
 
       const roundedBeyond = Math.round(beyond * 10) / 10;
-      const tierSilenced = dismissed && dismissed.goal === goalLbs && dismissed.at >= milestone.at;
+      // milestone is null when maintenanceMode has bypassed the atGoal gate
+      // above (drifted away from goal while still in Maintenance Mode) — the
+      // gold milestone tier simply doesn't apply in that case.
+      const tierSilenced = !!milestone && dismissed && dismissed.goal === goalLbs && dismissed.at >= milestone.at;
 
       const silence = () => {
+        if (!milestone) return;
         const next = { goal: goalLbs, at: milestone.at };
         try { localStorage.setItem(LS_GOAL_BANNER_DISMISS_KEY, JSON.stringify(next)); } catch (_) {}
         setDismissed(next);
@@ -4086,18 +4323,9 @@
       // Lagging-signal guard, generalized from the loss-phase justIncreased/
       // lastIncreaseMs pattern (doseGuidance, DOSE_INCREASE_HOLD_DAYS) to any
       // dose *change* — in maintenance a step-down is just as disruptive to
-      // the trend signal as a step-up.
-      const sortedInj = [...(injections || [])].sort((a, b) => a.date.localeCompare(b.date));
-      let lastDoseChangeMs = null;
-      for (let i = sortedInj.length - 1; i > 0; i--) {
-        if (sortedInj[i].doseMg !== sortedInj[i - 1].doseMg) {
-          lastDoseChangeMs = new Date(sortedInj[i].date + 'T12:00:00').getTime();
-          break;
-        }
-      }
-      const todayMsForMaint = new Date().setHours(12, 0, 0, 0);
-      const daysSinceDoseChange = lastDoseChangeMs != null
-        ? Math.floor((todayMsForMaint - lastDoseChangeMs) / 86400000) : null;
+      // the trend signal as a step-up. Shared with maintenanceDoseGuidance's
+      // hold-and-reassess gate below rather than scanning injections twice.
+      const daysSinceDoseChange = daysSinceLastDoseChange(injections, todayMsForMaint);
       const doseChangeHold = daysSinceDoseChange != null && daysSinceDoseChange < DOSE_MAINTENANCE_HOLD_DAYS;
 
       // Same trend signal the loss-phase dose recommendation already uses
@@ -4107,6 +4335,26 @@
       const recentTrend = rows.find(r => r.twoWeekLoss != null);
       const twoWeekLoss = recentTrend ? recentTrend.twoWeekLoss : null;
       const windowAvgStr = windowAvg.toFixed(1);
+
+      const daysAtGoal = (atGoalSince && atGoalSince.goal === goalLbs)
+        ? Math.floor((Date.now() - atGoalSince.ms) / 86400000) : 0;
+      const promptCooldownOk = !promptDismissed || promptDismissed.goal !== goalLbs
+        || (Date.now() - promptDismissed.ms) >= DOSE_MAINTENANCE_HOLD_DAYS * 86400000;
+      const showEntryPrompt = isAdmin && !maintenanceMode && currentDoseMg != null
+        && daysAtGoal >= GOAL_AVG_WINDOW_DAYS && promptCooldownOk;
+
+      const dismissPrompt = () => {
+        const next = { goal: goalLbs, ms: Date.now() };
+        try { localStorage.setItem(LS_MAINT_PROMPT_DISMISS_KEY, JSON.stringify(next)); } catch (_) {}
+        setPromptDismissed(next);
+      };
+      const startMaintenance = () => currentDoseMg != null && onToggleMaintenanceMode?.('start', currentDoseMg);
+      const stopMaintenance  = () => currentDoseMg != null && onToggleMaintenanceMode?.('stop', currentDoseMg);
+
+      const maintGuidance = maintenanceMode
+        ? maintenanceDoseGuidance(twoWeekLoss, currentDoseMg, doseChangeHold, daysSinceDoseChange)
+        : null;
+
       let maint;
       if (doseChangeHold) {
         maint = {
@@ -4140,43 +4388,221 @@
         };
       }
 
+      // Calorie-target suggestion math: 3500 kcal/lb, same relationship
+      // PkChart's predictedLbsPerWeek already uses (avgNet * 7 / 3500),
+      // inverted to solve for the daily delta that would zero out the trend.
+      const currentCalTarget = targetActiveAt(calorieTargets, today());
+      const suggestedDeltaCal = twoWeekLoss != null ? Math.round(twoWeekLoss * 3500 / 14) : null;
+      const suggestedCalTarget = currentCalTarget != null && suggestedDeltaCal != null
+        ? Math.round(currentCalTarget + suggestedDeltaCal) : null;
+
+      const startCalEdit = () => {
+        setCalDraft(String(currentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
+      };
+      const saveCalTarget = async (n) => {
+        if (isNaN(n) || n <= 0) { setCalErr('Enter a valid number'); return; }
+        setCalSaving(true); setCalErr('');
+        const ok = await onSaveCalorieTargets?.(n);
+        setCalSaving(false);
+        if (ok) setCalEditing(false); else setCalErr("Couldn't save — try again.");
+      };
+
+      // Ascending-by-date interpolation, same pattern DoseWeightLossChart
+      // already uses for its "lbs lost per dose period" table.
+      const maintPts = [...rows].reverse().map(r => ({ ms: new Date(r.date + 'T12:00:00').getTime(), lbs: r.lbs }));
+      const lbsAtMaint = ms => {
+        if (!maintPts.length) return null;
+        if (ms <= maintPts[0].ms) return maintPts[0].lbs;
+        if (ms >= maintPts[maintPts.length - 1].ms) return maintPts[maintPts.length - 1].lbs;
+        for (let i = 0; i < maintPts.length - 1; i++) {
+          if (ms >= maintPts[i].ms && ms <= maintPts[i + 1].ms) {
+            const f = (ms - maintPts[i].ms) / (maintPts[i + 1].ms - maintPts[i].ms);
+            return maintPts[i].lbs + (maintPts[i + 1].lbs - maintPts[i].lbs) * f;
+          }
+        }
+        return maintPts[maintPts.length - 1].lbs;
+      };
+
       return (
         <>
           {confetti}
-          {/* Persistent maintenance status — unlike the gold milestone
-              banner below, this never disappears or silences once at goal,
-              so there's always something here to accompany any confetti. */}
-          <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: tierSilenced ? 10 : 6,
-                        padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10,
-                        background: '#eef6ff', border: '1px solid rgba(74,144,217,.25)' }}>
-            <div style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>{maint.emoji}</div>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1c1e' }}>{maint.line1}</div>
-              {maint.line2 && (
-                <div style={{ fontSize: 12, color: '#3c3c43', marginTop: 2 }}>{maint.line2}</div>
-              )}
-              {isAdmin && (
-                <button onClick={() => {
-                          // Scrolling to the stat alone was a dead end — it's
-                          // already near the top of the page most of the time,
-                          // so nothing visibly happened, and even when it did
-                          // scroll, the stat still just *displays* the goal
-                          // until a second click opens the real input. Drive
-                          // that same click programmatically instead of
-                          // duplicating its edit-mode state here.
-                          document.getElementById('weight-goal-stat')
-                            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                          document.getElementById('weight-goal-edit-trigger')?.click();
-                        }}
-                        style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
-                                 border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
-                                 textDecoration: 'underline' }}>
-                  Edit goal →
-                </button>
-              )}
+          {maintenanceMode ? (
+            // Actionable maintenance card — replaces the passive narrative
+            // above once the user has actually opted in, since the card's
+            // suggested mg number already says everything that text would.
+            <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 10, padding: '12px 16px',
+                          background: maintGuidance.bg, border: `1px solid ${maintGuidance.color}33` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: '#4a90d9', background: '#eef6ff',
+                               border: '1px solid rgba(74,144,217,.35)', borderRadius: 20, padding: '2px 8px',
+                               textTransform: 'uppercase', letterSpacing: .4 }}>Maintenance</span>
+                <span style={{ fontSize: 11.5, color: '#8e8e93' }}>
+                  since {fmtShort(maintenanceSince)}
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ textAlign: 'center', minWidth: 72 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: maintGuidance.color, textTransform: 'uppercase',
+                                letterSpacing: .4, marginBottom: 3 }}>
+                    {maintGuidance.action === 'decrease' ? 'Decrease to'
+                      : maintGuidance.action === 'increase' ? 'Increase to' : 'Stay at'}
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: maintGuidance.color, lineHeight: 1,
+                                fontVariantNumeric: 'tabular-nums' }}>
+                    {round2(maintGuidance.suggestedDoseMg ?? currentDoseMg)} mg
+                  </div>
+                  <div style={{ fontSize: 11, color: maintGuidance.color, opacity: .75, marginTop: 2 }}>per week</div>
+                </div>
+                <div style={{ width: 1, alignSelf: 'stretch', background: `${maintGuidance.color}33` }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1c1e', marginBottom: 3 }}>{maintGuidance.label}</div>
+                  <div style={{ fontSize: 13, color: '#3c3c43', lineHeight: 1.4 }}>{maintGuidance.note}</div>
+                  <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 5 }}>
+                    14-day avg: {windowAvgStr} lbs &nbsp;·&nbsp; current: ≈{round1(currentDoseMg)} mg/wk
+                  </div>
+                  {isAdmin && (maintGuidance.action === 'decrease' || maintGuidance.action === 'increase') && suggestedCalTarget != null && !calEditing && (
+                    <button onClick={async () => { setCalSaving(true); const ok = await onSaveCalorieTargets?.(suggestedCalTarget); setCalSaving(false); }}
+                            disabled={calSaving}
+                            style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                     border: 'none', padding: 0, marginTop: 6, cursor: 'pointer',
+                                     textDecoration: 'underline', display: 'block' }}>
+                      {calSaving ? 'Updating…' : `Update calorie target to ${suggestedCalTarget} →`}
+                    </button>
+                  )}
+                  {isAdmin && !calEditing && (
+                    <button onClick={startCalEdit}
+                            style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                     border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
+                                     textDecoration: 'underline', display: 'block' }}>
+                      Set calorie target manually →
+                    </button>
+                  )}
+                  {isAdmin && calEditing && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                      <input type="number" value={calDraft} onChange={e => setCalDraft(e.target.value)}
+                             style={{ width: 70, fontSize: 12, padding: '3px 6px', borderRadius: 6,
+                                      border: '1px solid #c7c7cc' }} />
+                      <button onClick={() => saveCalTarget(parseFloat(calDraft))} disabled={calSaving}
+                              style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                       border: 'none', cursor: 'pointer' }}>
+                        {calSaving ? 'Saving…' : 'Save'}
+                      </button>
+                      <button onClick={() => { setCalEditing(false); setCalErr(''); }}
+                              style={{ fontSize: 11, color: '#8e8e93', background: 'none', border: 'none', cursor: 'pointer' }}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                  {calErr && <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3 }}>{calErr}</div>}
+                  {isAdmin && (
+                    <button onClick={stopMaintenance}
+                            style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                     border: 'none', padding: 0, marginTop: 8, cursor: 'pointer',
+                                     textDecoration: 'underline', display: 'block' }}>
+                      Stop Maintenance Mode →
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-          {!tierSilenced && (
+          ) : (
+            /* Persistent maintenance status — unlike the gold milestone
+               banner below, this never disappears or silences once at goal,
+               so there's always something here to accompany any confetti. */
+            <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: tierSilenced ? 10 : 6,
+                          padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10,
+                          background: '#eef6ff', border: '1px solid rgba(74,144,217,.25)' }}>
+              <div style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>{maint.emoji}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1c1e' }}>{maint.line1}</div>
+                {maint.line2 && (
+                  <div style={{ fontSize: 12, color: '#3c3c43', marginTop: 2 }}>{maint.line2}</div>
+                )}
+                {isAdmin && (
+                  <button onClick={() => {
+                            // Scrolling to the stat alone was a dead end — it's
+                            // already near the top of the page most of the time,
+                            // so nothing visibly happened, and even when it did
+                            // scroll, the stat still just *displays* the goal
+                            // until a second click opens the real input. Drive
+                            // that same click programmatically instead of
+                            // duplicating its edit-mode state here.
+                            document.getElementById('weight-goal-stat')
+                              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            document.getElementById('weight-goal-edit-trigger')?.click();
+                          }}
+                          style={{ fontSize: 11, fontWeight: 600, color: '#4a90d9', background: 'none',
+                                   border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
+                                   textDecoration: 'underline' }}>
+                    Edit goal →
+                  </button>
+                )}
+                {showEntryPrompt && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(74,144,217,.2)' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1c1e' }}>
+                      You've held your goal weight for {daysAtGoal} days — switch to Maintenance Mode?
+                    </div>
+                    <div style={{ display: 'flex', gap: 14, marginTop: 6 }}>
+                      <button onClick={startMaintenance}
+                              style={{ fontSize: 12, fontWeight: 700, color: '#fff', background: '#4a90d9',
+                                       border: 'none', borderRadius: 8, padding: '6px 12px', cursor: 'pointer' }}>
+                        Start Maintenance Mode
+                      </button>
+                      <button onClick={dismissPrompt}
+                              style={{ fontSize: 12, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                       border: 'none', cursor: 'pointer' }}>
+                        Not now
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {maintenancePeriods.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
+                            letterSpacing: .4, marginBottom: 6 }}>
+                Maintenance history
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1.5px solid rgba(0,0,0,.1)' }}>
+                    {['Started', 'Ended', 'Dose', 'Net change'].map((h, i) => (
+                      <th key={h} style={{ textAlign: i >= 2 ? 'right' : 'left', padding: '4px 10px 6px 0',
+                                            fontSize: 10.5, fontWeight: 700, color: '#8e8e93',
+                                            textTransform: 'uppercase', letterSpacing: .3 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {maintenancePeriods.map((p, i) => {
+                    const endMsForCalc = p.ongoing ? todayMsForMaint : p.endMs;
+                    const startW = lbsAtMaint(p.startMs), endW = lbsAtMaint(endMsForCalc);
+                    const net = startW != null && endW != null ? endW - startW : null;
+                    const endDose = p.ongoing ? currentDoseMg : p.endDoseMg;
+                    return (
+                      <tr key={i} style={{ borderBottom: '.5px solid rgba(0,0,0,.06)' }}>
+                        <td style={{ padding: '6px 10px 6px 0' }}>{fmtShort(msToLocalDate(p.startMs))}</td>
+                        <td style={{ padding: '6px 10px 6px 0' }}>
+                          {p.ongoing ? <span style={{ color: '#4a90d9', fontWeight: 600 }}>Ongoing</span> : fmtShort(msToLocalDate(p.endMs))}
+                        </td>
+                        <td style={{ padding: '6px 10px 6px 0', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                          {round2(p.startDoseMg)}{endDose != null && round2(endDose) !== round2(p.startDoseMg) ? ` → ${round2(endDose)}` : ''} mg
+                        </td>
+                        <td style={{ padding: '6px 0', textAlign: 'right', fontWeight: 600,
+                                     color: net != null && net > 0 ? '#ff3b30' : '#1c1c1e',
+                                     fontVariantNumeric: 'tabular-nums' }}>
+                          {net != null ? `${net >= 0 ? '+' : ''}${net.toFixed(1)}` : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {milestone && !tierSilenced && (
             <div style={{ borderRadius: 18, overflow: 'hidden', marginBottom: 10, textAlign: 'center',
                           position: 'relative', padding: '18px 18px 16px',
                           background: 'linear-gradient(135deg, #ffd60a, #ff9500)',
@@ -4206,6 +4632,7 @@
 
     function WeightChart({ rows, injections, injSchedule, annotations = [], isAdmin, onSaveAnnotation, onDeleteAnnotation,
                             goalLbs = GOAL_LBS_DEFAULT, onSaveGoal, heightIn = HEIGHT_IN_DEFAULT, onSaveHeight,
+                            maintenanceHistory = [], onToggleMaintenanceMode,
                             deepLinkParams }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
@@ -4339,6 +4766,12 @@
       // "today" to compute its cutoff before anything else is built.
       const todayD  = new Date(); todayD.setHours(12, 0, 0, 0);
       const todayMs = todayD.getTime();
+
+      // Drives the manual Start/Stop toggle near the Goal stat, the
+      // goal-line-vs-band chart segmentation, and the toggle-date markers.
+      const { maintenanceMode, maintenancePeriods } = deriveMaintenanceState(maintenanceHistory, todayMs);
+      const maintDs = getDoseSchedule(injections, injSchedule);
+      const maintCurrentDoseMg = maintDs ? maintDs.weeklyDose : null;
 
       // oldest-first for regression + charting
       const pts = [...rows].reverse().map(r => ({
@@ -5089,6 +5522,35 @@
             ))}
           </div>
 
+          {/* Manual Maintenance Mode toggle — available any time, not only
+              via the GoalBanner entry prompt (e.g. to start it before goal is
+              hit exactly, or to stop it and resume active loss). */}
+          {isAdmin && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                          padding: '6px 14px 0' }}>
+              {maintenanceMode ? (
+                <>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, color: '#4a90d9', background: '#eef6ff',
+                                 border: '1px solid rgba(74,144,217,.35)', borderRadius: 20, padding: '2px 8px',
+                                 textTransform: 'uppercase', letterSpacing: .4 }}>Maintenance</span>
+                  <button onClick={() => maintCurrentDoseMg != null && onToggleMaintenanceMode?.('stop', maintCurrentDoseMg)}
+                          style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                   border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+                    Stop Maintenance Mode
+                  </button>
+                </>
+              ) : (
+                <button onClick={() => maintCurrentDoseMg != null && onToggleMaintenanceMode?.('start', maintCurrentDoseMg)}
+                        disabled={maintCurrentDoseMg == null}
+                        style={{ fontSize: 11, fontWeight: 600, color: maintCurrentDoseMg == null ? '#c7c7cc' : '#4a90d9',
+                                 background: 'none', border: 'none',
+                                 cursor: maintCurrentDoseMg == null ? 'default' : 'pointer', textDecoration: 'underline' }}>
+                  Start Maintenance Mode
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Weigh-in data display: how much history is shown, and how it's
               bucketed — independent of the Trend period/Trend Lines row
               below, which only controls the fitted trend line. */}
@@ -5304,9 +5766,56 @@
                     stroke="rgba(0,0,0,.05)" strokeWidth="1" />
             ))}
 
-            {/* Goal line */}
-            <line x1={PAD.l} y1={goalY} x2={PAD.l + cW} y2={goalY}
-                  stroke="#34c759" strokeWidth="1.5" strokeDasharray="5,3" opacity="0.55" />
+            {/* Goal line, replaced by a shaded maintenance band for whichever
+                stretches of [viewStartMs, endMs] fall inside a maintenance
+                period — Noom's pattern of swapping a point goal for a range
+                once you're holding rather than still chasing it. Segmented
+                rather than an all-or-nothing choice so a chart spanning a
+                start→stop→restart sequence shows the line resume in between. */}
+            {(() => {
+              const segs = [];
+              let cursor = viewStartMs;
+              for (const p of [...maintenancePeriods].sort((a, b) => a.startMs - b.startMs)) {
+                const lineEnd = Math.min(p.startMs, endMs);
+                if (lineEnd > cursor) segs.push({ start: cursor, end: lineEnd, band: false });
+                const bandStart = Math.max(p.startMs, cursor);
+                const bandEnd = Math.min(p.endMs, endMs);
+                if (bandEnd > bandStart) segs.push({ start: bandStart, end: bandEnd, band: true });
+                cursor = Math.max(cursor, bandEnd, Math.min(p.endMs, endMs));
+              }
+              if (cursor < endMs) segs.push({ start: cursor, end: endMs, band: false });
+              const bandTopY = yOf(goalLbs + MAINTENANCE_DRIFT_LBS);
+              const bandBotY = yOf(goalLbs - MAINTENANCE_DRIFT_LBS);
+              return segs.map((s, i) => {
+                const x1 = xOf(s.start), x2 = xOf(s.end);
+                if (x2 <= x1) return null;
+                return s.band ? (
+                  <g key={i}>
+                    <rect x={x1} y={bandTopY} width={x2 - x1} height={Math.max(0, bandBotY - bandTopY)}
+                          fill="rgba(74,144,217,.12)" stroke="rgba(74,144,217,.3)" strokeWidth="0.5" />
+                    <line x1={x1} y1={goalY} x2={x2} y2={goalY}
+                          stroke="#4a90d9" strokeWidth="1" strokeDasharray="2,2" opacity="0.5" />
+                  </g>
+                ) : (
+                  <line key={i} x1={x1} y1={goalY} x2={x2} y2={goalY}
+                        stroke="#34c759" strokeWidth="1.5" strokeDasharray="5,3" opacity="0.55" />
+                );
+              });
+            })()}
+
+            {/* Maintenance Mode toggle markers — one per history entry, start
+                and stop alike, so a glance at the chart shows when the mode
+                actually changed (the Maintenance history table under
+                GoalBanner has the dates/dose-range detail). */}
+            {maintenanceHistory.map((h, i) => {
+              const ms = new Date(h.date + 'T12:00:00').getTime();
+              if (ms < viewStartMs || ms > endMs) return null;
+              const x = xOf(ms);
+              return (
+                <line key={i} x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
+                      stroke="#4a90d9" strokeWidth="0.8" strokeDasharray="1,2" opacity="0.5" />
+              );
+            })}
 
             {/* Today shading */}
             <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(endMs) - todayX)} height={cH}
@@ -7169,7 +7678,7 @@
 
     /* ─── Injection-day banner ───────────────────────────────────────────────── */
     function InjectionDayBanner({ rows, injections, injSchedule, calories, calorieTargets, intervalsCalories,
-                                   pendingSurvey, onSavePendingSurvey, doseHold }) {
+                                   pendingSurvey, onSavePendingSurvey, doseHold, maintenanceMode }) {
       const [dismissedDate, setDismissedDate] = useState(
         () => localStorage.getItem(LS_POPOVER_DISMISS_KEY)
       );
@@ -7202,10 +7711,22 @@
       // than shared.
       const doseHoldExpired = doseHold && (todayMs - doseHold.at) >= DOSE_HOLD_EXPIRE_DAYS * 86400000;
       const doseHoldActive = g.action === 'increase' && doseHold && !doseHoldExpired && doseHold.doseMg === ds.lastDose;
-      const displayG = doseHoldActive
-        ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
+      // In Maintenance Mode, today's draw-up should reflect maintenance
+      // guidance (its own symmetric decrease/increase), not the loss-phase
+      // recommendation — doseHold is a loss-phase-only concept and doesn't
+      // apply here.
+      const maintTwoWeekLoss = rows?.find(r => r.twoWeekLoss != null)?.twoWeekLoss ?? null;
+      const maintDaysSinceChange = maintenanceMode ? daysSinceLastDoseChange(injections, todayMs) : null;
+      const maintGuidance = maintenanceMode
+        ? maintenanceDoseGuidance(maintTwoWeekLoss, ds.weeklyDose,
+            maintDaysSinceChange != null && maintDaysSinceChange < DOSE_MAINTENANCE_HOLD_DAYS, maintDaysSinceChange)
+        : null;
+      const displayG = maintenanceMode ? maintGuidance
+        : doseHoldActive ? { action: 'stay', label: 'Holding at your dose', color: '#34c759', bg: '#f0fdf4' }
         : g;
-      const displayPerInjMg = doseHoldActive ? currentPerInjMg : perInjMg;
+      const displayPerInjMg = maintenanceMode
+        ? (maintGuidance.suggestedDoseMg ?? ds.weeklyDose) / ds.injPerWeek
+        : doseHoldActive ? currentPerInjMg : perInjMg;
       const changing = round2(displayPerInjMg) !== round2(currentPerInjMg);
 
       const vialConc = Math.max(parseFloat(localStorage.getItem(LS_VIAL_CONC_KEY) || '12.5'), 0.01);
@@ -7326,6 +7847,7 @@
       const [weightAnnotations, setWeightAnnotations] = useState(lsLoadWeightAnnotations);
       const [goalLbs, setGoalLbs] = useState(lsLoadGoalLbs);
       const [heightIn, setHeightIn] = useState(lsLoadHeightIn);
+      const [maintenanceHistory, setMaintenanceHistory] = useState(lsLoadMaintenanceHistory);
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
       const [activeTab,  setActiveTab]   = useState(() => {
@@ -7363,6 +7885,11 @@
       });
       const intervalsCalories = intervalsActivities?.calMap ?? {};
       const intervalRides     = intervalsActivities?.ridesMap ?? {};
+      // Derived once here (pure function of maintenanceHistory) and passed
+      // down to whichever components need it, rather than each one re-deriving
+      // it — GoalBanner still derives its own copy internally since it also
+      // owns the entry-prompt/calorie-suggestion logic built around it.
+      const maintState = deriveMaintenanceState(maintenanceHistory, new Date().setHours(12, 0, 0, 0));
       const inputRef  = useRef();
       const msgTimer  = useRef();
 
@@ -7378,14 +7905,14 @@
       // Returns true/false so callers can commit local state only on a confirmed
       // write — a mutation must never appear to "succeed" locally while silently
       // failing to reach the shared Gist.
-      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations, newGoal = goalLbs, newHeight = heightIn) => {
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations, newGoal = goalLbs, newHeight = heightIn, newMaintHistory = maintenanceHistory) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) {
           setGistOk(false); setGistMsg('Not logged in');
           return false;
         }
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations, newGoal, newHeight);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations, newGoal, newHeight, newMaintHistory);
           setGistOk(true); setGistMsg('');
           return true;
         } catch (e) {
@@ -7404,13 +7931,14 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
               if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
               if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
               if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
               if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
+              if (gistMaintHistory) { setMaintenanceHistory(gistMaintHistory); lsSaveMaintenanceHistory(gistMaintHistory); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
                 const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
@@ -7453,11 +7981,11 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations, goalLbs, heightIn);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations, goalLbs, heightIn, maintenanceHistory);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
@@ -7465,6 +7993,7 @@
             if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
             if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
             if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
+            if (gistMaintHistory) { setMaintenanceHistory(gistMaintHistory); lsSaveMaintenanceHistory(gistMaintHistory); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -7478,7 +8007,7 @@
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn]);
+      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn, maintenanceHistory]);
 
       // Admin login (view-only user entering PAT)
       const adminLogin = useCallback(async (rawPat, setMsg) => {
@@ -7489,7 +8018,7 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             if (gistTargets) setCalorieTargets(gistTargets);
@@ -7497,6 +8026,7 @@
             if (gistAnnotations) { setWeightAnnotations(gistAnnotations); lsSaveWeightAnnotations(gistAnnotations); }
             if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
             if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
+            if (gistMaintHistory) { setMaintenanceHistory(gistMaintHistory); lsSaveMaintenanceHistory(gistMaintHistory); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -7579,6 +8109,21 @@
           setSyncPending(false);
         }
       }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs]);
+
+      // Appends one entry to the append-only maintenanceHistory log — see
+      // deriveMaintenanceState for how maintenanceMode/since/entryDose/periods
+      // all derive from this rather than being stored as separate fields.
+      const toggleMaintenanceMode = useCallback(async (action, doseMg) => {
+        const next = [...maintenanceHistory, { date: today(), action, doseMg }];
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn, next);
+          if (ok) { setMaintenanceHistory(next); lsSaveMaintenanceHistory(next); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn, maintenanceHistory]);
 
       // Upserts by id — used for both add (a fresh crypto.randomUUID() from the
       // modal) and edit (the existing annotation's id).
@@ -8170,7 +8715,8 @@
 
               <InjectionDayBanner rows={rows} injections={injections} injSchedule={injSchedule}
                                   calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
-                                  pendingSurvey={pendingSurvey} onSavePendingSurvey={savePendingSurvey} doseHold={doseHold} />
+                                  pendingSurvey={pendingSurvey} onSavePendingSurvey={savePendingSurvey} doseHold={doseHold}
+                                  maintenanceMode={maintState.maintenanceMode} />
 
               {/* ── TIRZEPATIDE TAB ── */}
               <div style={{ display: activeTab==='tirz' ? undefined : 'none' }}>
@@ -8186,13 +8732,16 @@
                   </div>
                   <PkChart injections={injections} rows={rows} isAdmin={isAdmin}
                            injSchedule={injSchedule} onSaveSchedule={saveInjSchedule}
+                           maintenanceHistory={maintenanceHistory}
                            deepLinkParams={deepLink?.tab === 'tirz' ? deepLink.params : null} />
                 </div>
               </div>
 
               {/* ── WEIGHT TAB ── */}
               <div style={{ display: activeTab==='weight' ? undefined : 'none' }}>
-              <GoalBanner rows={rows} goalLbs={goalLbs} injections={injections} isAdmin={isAdmin} />
+              <GoalBanner rows={rows} goalLbs={goalLbs} injections={injections} injSchedule={injSchedule} isAdmin={isAdmin}
+                          maintenanceHistory={maintenanceHistory} onToggleMaintenanceMode={toggleMaintenanceMode}
+                          calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} />
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
@@ -8204,6 +8753,7 @@
                              onSaveAnnotation={saveWeightAnnotation} onDeleteAnnotation={deleteWeightAnnotation}
                              goalLbs={goalLbs} onSaveGoal={saveGoalLbs}
                              heightIn={heightIn} onSaveHeight={saveHeightIn}
+                             maintenanceHistory={maintenanceHistory} onToggleMaintenanceMode={toggleMaintenanceMode}
                              deepLinkParams={deepLink?.tab === 'weight' ? deepLink.params : null} />
               </div>
 
@@ -8403,7 +8953,8 @@
                 <DosePanel rows={rows} injections={injections} injSchedule={injSchedule}
                            isAdmin={isAdmin} onSaveSchedule={saveInjSchedule}
                            calories={calories} calorieTargets={calorieTargets} intervalsCalories={intervalsCalories}
-                           pendingSurvey={pendingSurvey} doseHold={doseHold} setDoseHold={setDoseHold} />
+                           pendingSurvey={pendingSurvey} doseHold={doseHold} setDoseHold={setDoseHold}
+                           maintenanceMode={maintState.maintenanceMode} />
                 <div style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 10px' }}>
                   <CopyLinkButton tab="dosing" params={{}} />
                 </div>

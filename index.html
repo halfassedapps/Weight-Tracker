@@ -4236,15 +4236,24 @@
     // exercise calories back in on top of it separately — so averaging in
     // workout days would bake average exercise burn into the suggested base,
     // double-counting it on days that actually get a real exercise credit.
-    // Falls back to all days if there aren't enough rest days to say
-    // anything (e.g. a near-daily cycling habit).
+    //
+    // Deliberately does NOT fall back to mixing in workout days when there
+    // aren't enough rest days — an earlier version did, and silently
+    // produced a number inflated by cycling while still labeling it "rest
+    // day TDEE," which is actively wrong, not just imprecise. Widens the
+    // lookback window first (up to ~2x, capped at 60 days) to find 3 rest
+    // days from further back instead; returns null (→ "not enough data" in
+    // the UI) rather than ever mixing the two.
     function maintenanceCalorieSuggestion(calories, todayMs, windowDays = GOAL_AVG_WINDOW_DAYS) {
-      const cutoff = msToLocalDate(todayMs - windowDays * 86400000);
       const todayStr = msToLocalDate(todayMs);
-      const window = (calories || []).filter(d => d.date >= cutoff && d.date <= todayStr && (d.BasalEnergy || d.ActiveEnergy));
-      const restDayTdee = window.filter(d => !d.HasWorkout).map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
-      const days = restDayTdee.length >= 3 ? restDayTdee : window.map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
-      return days.length ? Math.round(avg(days)) : null;
+      for (const w of [windowDays, windowDays * 2, 60]) {
+        const cutoff = msToLocalDate(todayMs - w * 86400000);
+        const restDayTdee = (calories || [])
+          .filter(d => d.date >= cutoff && d.date <= todayStr && !d.HasWorkout && (d.BasalEnergy || d.ActiveEnergy))
+          .map(d => (d.BasalEnergy || 0) + (d.ActiveEnergy || 0));
+        if (restDayTdee.length >= 3) return Math.round(avg(restDayTdee));
+      }
+      return null;
     }
 
     // Derives all current/derived Maintenance Mode state from the append-only

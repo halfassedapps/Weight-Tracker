@@ -1488,7 +1488,11 @@
 
     /* ─── Calories & Nutrition ───────────────────────────────────────────────── */
     // Small shared bits used by all three cards below.
-    const CAL_CARD = { borderRadius: 18, overflow: 'hidden', background: '#fff',
+    // No overflow: hidden — the Maintenance suggestion box's info-dot
+    // popover needs to escape these bounds, and none of the three cards
+    // below have any bleeding full-bleed background content that actually
+    // needs clipping for the rounded corners to render correctly.
+    const CAL_CARD = { borderRadius: 18, background: '#fff',
                         border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 };
     const CAL_HEADER = { padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' };
     const CAL_TITLE = { fontSize: 13, fontWeight: 700, color: '#1c1c1e' };
@@ -4822,7 +4826,12 @@
             // Actionable maintenance card — replaces the passive narrative
             // above once the user has actually opted in, since the card's
             // suggested mg number already says everything that text would.
-            <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 10, padding: '12px 16px',
+            // No overflow: hidden here (unlike the sibling cards below) —
+            // this one has a MeasuredTdeeInfoDot popover that needs to
+            // escape the card's bounds, and a flat-colored box with no
+            // bleeding child content doesn't need clipping for its rounded
+            // corners to render correctly anyway.
+            <div style={{ borderRadius: 14, marginBottom: 10, padding: '12px 16px',
                           background: maintGuidance.bg, border: `1px solid ${maintGuidance.color}33` }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: '#4a90d9', background: '#eef6ff',
@@ -7874,6 +7883,11 @@
             <div style={{ position: 'absolute', top: 20, zIndex: 10, width: 230,
                           ...(align === 'right' ? { right: 0 } : { left: 0 }),
                           background: '#1c1c1e', color: '#fff', fontSize: 11, fontWeight: 400,
+                          // Resets any textTransform/letterSpacing inherited from
+                          // an uppercase label this dot happens to sit inside
+                          // (e.g. "OR ADJUST CALORIES INSTEAD") — the popover's
+                          // own content is normal prose, not a label.
+                          textTransform: 'none', letterSpacing: 'normal',
                           lineHeight: 1.45, borderRadius: 10, padding: '10px 12px',
                           boxShadow: '0 4px 16px rgba(0,0,0,.25)' }}
                  onClick={() => setOpen(false)}>

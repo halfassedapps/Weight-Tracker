@@ -1832,6 +1832,7 @@
                           display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 11, color: '#3c3c43' }}>
                 Maintenance suggestion (measured TDEE, less exercise): <strong>{maintSuggestedTarget} cal</strong>
+                <MeasuredTdeeInfoDot />
               </span>
               {currentTarget === maintSuggestedTarget ? (
                 <span style={{ fontSize: 11, color: '#34c759', fontWeight: 600 }}>✓ Already set to this</span>
@@ -4053,9 +4054,10 @@
               {maintenanceMode && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${displayG.color}33` }}>
                   <div style={{ fontSize: 10.5, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
-                                letterSpacing: .4, marginBottom: 6 }}>
+                                letterSpacing: .4, marginBottom: 6, display: 'flex', alignItems: 'center' }}>
                     {displayG.action === 'decrease' || displayG.action === 'increase'
                       ? 'Or adjust calories instead' : 'Calorie target'}
+                    <MeasuredTdeeInfoDot />
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
                                 borderRadius: 10, background: '#fff', border: '1px solid rgba(74,144,217,.3)' }}>
@@ -4873,7 +4875,10 @@
                         <div style={{ fontSize: 9.5, color: '#4a90d9', opacity: .75 }}>cal/day</div>
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>Adjust calories instead</div>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e', display: 'flex', alignItems: 'center' }}>
+                          Adjust calories instead
+                          <MeasuredTdeeInfoDot align="right" />
+                        </div>
                         <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
                           Your measured TDEE, less exercise — the base number that should hold weight on its own, no dose change needed.
                         </div>
@@ -4931,11 +4936,11 @@
                       <>Your daily base caloric intake goal has been automatically set to{' '}
                         <strong style={{ color: '#1c1c1e' }}>{currentCalTarget} cal/day</strong> — this doesn't include
                         exercise calories burned, which still get credited back on days you log a ride. You can adjust
-                        this manually below.</>
+                        this manually below.<MeasuredTdeeInfoDot /></>
                     ) : (
                       <>Your measured TDEE, less exercise: {suggestedCalTarget != null
                         ? <strong style={{ color: '#1c1c1e' }}>{suggestedCalTarget} cal/day</strong>
-                        : 'not enough data yet'}</>
+                        : 'not enough data yet'}<MeasuredTdeeInfoDot /></>
                     )}
                   </div>
                 )}
@@ -7457,6 +7462,19 @@
       const activityDef = BMR_ACTIVITY_LEVELS.find(a => a.id === activity) ?? BMR_ACTIVITY_LEVELS[0];
       const tdee = bmr != null ? Math.round(bmr * activityDef.mult) : null;
 
+      // Persists age/sex/activity as soon as they settle (debounced), not
+      // only when "Use" is clicked — these are profile inputs you'd expect
+      // to just be remembered, same as any other saved setting, regardless
+      // of whether you end up using a calculated value *this* time. Height/
+      // weight aren't included: those already have their own source of
+      // truth (heightIn, the logbook) and aren't this modal's to persist.
+      useEffect(() => {
+        if (!(ageN > 0)) return;
+        if (bmrProfile && bmrProfile.age === ageN && bmrProfile.sex === sex && bmrProfile.activityLevel === activity) return;
+        const t = setTimeout(() => { onSaveBmrProfile?.({ age: ageN, sex, activityLevel: activity }); }, 600);
+        return () => clearTimeout(t);
+      }, [ageN, sex, activity]);
+
       const labelStyle = { fontSize: 11, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
                             letterSpacing: .4, marginBottom: 6 };
       const inputStyle = { width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
@@ -7863,6 +7881,21 @@
             </div>
           )}
         </span>
+      );
+    }
+
+    // Explains maintenanceCalorieSuggestion's number wherever it's shown —
+    // reused instead of repeating (and risking drift in) the same
+    // explanation text at every one of its 4 display sites.
+    function MeasuredTdeeInfoDot({ align }) {
+      return (
+        <InfoDot align={align}>
+          <strong style={{ display: 'block', marginBottom: 4 }}>Where this number comes from</strong>
+          Your measured Basal + Active energy (HealthKit) averaged over the last 14 days,
+          with each day's real exercise calories (intervals.icu rides, or HealthKit Active
+          Energy on a logged workout day) subtracted out first — not a formula estimate.
+          Shows "not enough data" if there isn't enough logged history yet.
+        </InfoDot>
       );
     }
 

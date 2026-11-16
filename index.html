@@ -476,6 +476,33 @@
       try { localStorage.setItem(LS_MAINTENANCE_HISTORY_KEY, JSON.stringify(history)); } catch (_) {}
     }
 
+    // Inputs for the TDEE Calculator popover — a single current value
+    // (age/sex/activity level), synced via the Gist like goalLbs/heightIn so
+    // it doesn't need re-entering on every device. Height/weight come from
+    // the app's existing heightIn field and current logbook entry instead
+    // of being duplicated here.
+    const LS_BMR_PROFILE_KEY = 'weight-tracker-bmr-profile';
+    function lsLoadBmrProfile() {
+      try { return JSON.parse(localStorage.getItem(LS_BMR_PROFILE_KEY) || 'null'); } catch (_) { return null; }
+    }
+    function lsSaveBmrProfile(profile) {
+      try { localStorage.setItem(LS_BMR_PROFILE_KEY, JSON.stringify(profile)); } catch (_) {}
+    }
+    // Standard Mifflin-St Jeor activity multipliers — same formula/levels as
+    // the linked tdeecalculator.org reference.
+    const BMR_ACTIVITY_LEVELS = [
+      { id: 'sedentary',   label: 'Sedentary — little/no exercise',              mult: 1.2 },
+      { id: 'light',       label: 'Light — exercise 1-3 days/wk',                mult: 1.375 },
+      { id: 'moderate',    label: 'Moderate — exercise 3-5 days/wk',             mult: 1.55 },
+      { id: 'active',      label: 'Active — exercise 6-7 days/wk',               mult: 1.725 },
+      { id: 'veryActive',  label: 'Very active — hard exercise, physical job',   mult: 1.9 },
+    ];
+    // Mifflin-St Jeor equation. weightKg/heightCm, not lbs/in — converted by
+    // the caller so this stays a pure formula.
+    function mifflinStJeorBmr(weightKg, heightCm, age, sex) {
+      return 10 * weightKg + 6.25 * heightCm - 5 * age + (sex === 'female' ? -161 : 5);
+    }
+
     // Purely a view preference (not synced) — whether the weight chart/table
     // shows per-dose line coloring, pills, and a Dose column.
     const LS_SHOW_INJ_DATA_KEY = 'weight-tracker-show-inj-data';
@@ -592,7 +619,7 @@
     }
 
     /* ─── GitHub Gist sync ───────────────────────────────────────────────────── */
-    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [], goalLbs, heightIn, maintenanceHistory = [] }) {
+    function parseGistPayload({ meta, entries = [], injections = [], injSchedule = [], calories = [], intervalsActivities = null, calorieTargets = [], proteinTargets = [], bloodPressure = [], weightAnnotations = [], goalLbs, heightIn, maintenanceHistory = [], bmrProfile = null }) {
       const seen = new Set();
       const daily = entries
         .filter(e => e.date && e.wKg != null)
@@ -625,6 +652,14 @@
           ? maintenanceHistory.filter(h => h.date && (h.action === 'start' || h.action === 'stop') && h.doseMg != null)
             .sort((a, b) => a.date.localeCompare(b.date))
           : [],
+        // Inputs for the TDEE calculator popover (age/sex/activity level) —
+        // a single current value, not dated history, same tier as goalLbs/
+        // heightIn. Height/weight for the calculator come from those
+        // existing fields and the logbook directly, not duplicated here.
+        bmrProfile: bmrProfile && typeof bmrProfile.age === 'number' && bmrProfile.age > 0
+          ? { age: bmrProfile.age, sex: bmrProfile.sex === 'female' ? 'female' : 'male',
+              activityLevel: BMR_ACTIVITY_LEVELS.some(a => a.id === bmrProfile.activityLevel) ? bmrProfile.activityLevel : 'sedentary' }
+          : null,
       };
     }
 
@@ -680,11 +715,12 @@
     // write, same as calorieTargets/proteinTargets — this is a full-content PATCH
     // of weight-data.json, so any field the caller omits here is deleted from the
     // Gist, not merely left unmodified.
-    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = [], goalLbs = GOAL_LBS_DEFAULT, heightIn = HEIGHT_IN_DEFAULT, maintenanceHistory = []) {
+    async function patchGist(gistId, pat, rows, meta, injections, injSchedule = [], calories = [], calorieTargets = [], proteinTargets = [], bloodPressure = [], intervalsActivities = null, weightAnnotations = [], goalLbs = GOAL_LBS_DEFAULT, heightIn = HEIGHT_IN_DEFAULT, maintenanceHistory = [], bmrProfile = null) {
       const payload = {
         version: 1, savedAt: new Date().toISOString(), meta,
         injSchedule, goalLbs, heightIn,
         maintenanceHistory: maintenanceHistory.map(({ date, action, doseMg }) => ({ date, action, doseMg })),
+        bmrProfile: bmrProfile ? { age: bmrProfile.age, sex: bmrProfile.sex, activityLevel: bmrProfile.activityLevel } : null,
         injections: injections.map(serializeInjEntry),
         entries:    rows.map(r => ({ date: r.date, wKg: r.wKg })),
         calories:   calories.map(({ date, Calories, ActiveEnergy, BasalEnergy, Protein, Carbs, Fat, HasWorkout }) =>
@@ -1452,14 +1488,18 @@
 
     /* ─── Calories & Nutrition ───────────────────────────────────────────────── */
     // Small shared bits used by all three cards below.
-    const CAL_CARD = { borderRadius: 18, overflow: 'hidden', background: '#fff',
+    // No overflow: hidden — the Maintenance suggestion box's info-dot
+    // popover needs to escape these bounds, and none of the three cards
+    // below have any bleeding full-bleed background content that actually
+    // needs clipping for the rounded corners to render correctly.
+    const CAL_CARD = { borderRadius: 18, background: '#fff',
                         border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 };
     const CAL_HEADER = { padding: '10px 14px 6px', borderBottom: '.5px solid rgba(0,0,0,.06)' };
     const CAL_TITLE = { fontSize: 13, fontWeight: 700, color: '#1c1c1e' };
     const swatch = (color) => ({ display: 'inline-block', width: 12, height: 12, background: color,
                                   marginRight: 5, verticalAlign: 'middle', borderRadius: 3 });
 
-    function CaloriesActivitySection({ calorieData, rows, calorieTargets, proteinTargets, onSaveProteinTargets, isAdmin, onSaveCalorieTargets, intervalsCalories, deepLinkParams, maintenanceHistory = [] }) {
+    function CaloriesActivitySection({ calorieData, rows, calorieTargets, proteinTargets, onSaveProteinTargets, isAdmin, onSaveCalorieTargets, intervalsCalories, deepLinkParams, maintenanceHistory = [], heightIn, bmrProfile, onSaveBmrProfile }) {
       const [rangeMode, setRangeMode] = useState(() => deepLinkParams?.range || localStorage.getItem(LS_CAL_RANGE_MODE_KEY) || '30d');
       useEffect(() => { try { localStorage.setItem(LS_CAL_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
       const [customDays, setCustomDays] = useState(
@@ -1565,7 +1605,8 @@
             <div style={CAL_HEADER}><div style={CAL_TITLE}>Calories: Intake vs Burn</div></div>
             <TdeeChart periodDaily={periodDaily} visStartMs={visStartMs} visEndMs={visEndMs}
                        calorieTargets={calorieTargets} isAdmin={isAdmin} onSaveCalorieTargets={onSaveCalorieTargets}
-                       maintenanceHistory={maintenanceHistory} calories={calorieData} intervalsCalories={intervalsCalories} />
+                       maintenanceHistory={maintenanceHistory} calories={calorieData} intervalsCalories={intervalsCalories}
+                       heightIn={heightIn} currentWeightLbs={rows?.[0]?.lbs} bmrProfile={bmrProfile} onSaveBmrProfile={onSaveBmrProfile} />
           </div>
 
           <div style={CAL_CARD}>
@@ -1586,12 +1627,13 @@
     }
 
     /* ─── Card 1: Calories: Intake vs Burn ───────────────────────────────────── */
-    function TdeeChart({ periodDaily, visStartMs, visEndMs, calorieTargets, isAdmin, onSaveCalorieTargets, maintenanceHistory = [], calories, intervalsCalories }) {
+    function TdeeChart({ periodDaily, visStartMs, visEndMs, calorieTargets, isAdmin, onSaveCalorieTargets, maintenanceHistory = [], calories, intervalsCalories, heightIn, currentWeightLbs, bmrProfile, onSaveBmrProfile }) {
       const [tip, setTip] = useState(null);
       const [editing, setEditing] = useState(false);
       const [draftTarget, setDraftTarget] = useState('');
       const [saving, setSaving] = useState(false);
       const [saveErr, setSaveErr] = useState('');
+      const [showTdeeCalc, setShowTdeeCalc] = useState(false);
 
       const VW = 360, VH = 150;
       const PAD = { t: 10, r: 8, b: 28, l: 34 };
@@ -1758,9 +1800,15 @@
                   Target: {currentTarget != null ? `${currentTarget} cal` : 'not set'}
                 </span>
                 {isAdmin && (
-                  <button onClick={startEdit}
+                  <button onClick={() => setShowTdeeCalc(true)}
                           style={{ fontSize: 11, color: '#2a78d6', background: 'none', border: 'none',
                                    cursor: 'pointer', fontWeight: 600 }}>Edit</button>
+                )}
+                {showTdeeCalc && (
+                  <TdeeCalculatorModal heightIn={heightIn} currentWeightLbs={currentWeightLbs}
+                                       bmrProfile={bmrProfile} onSaveBmrProfile={onSaveBmrProfile}
+                                       onUse={v => { setDraftTarget(String(v)); setEditing(true); setShowTdeeCalc(false); }}
+                                       onClose={() => setShowTdeeCalc(false)} />
                 )}
               </>
             ) : (
@@ -1788,6 +1836,7 @@
                           display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 11, color: '#3c3c43' }}>
                 Maintenance suggestion (measured TDEE, less exercise): <strong>{maintSuggestedTarget} cal</strong>
+                <MeasuredTdeeInfoDot />
               </span>
               {currentTarget === maintSuggestedTarget ? (
                 <span style={{ fontSize: 11, color: '#34c759', fontWeight: 600 }}>✓ Already set to this</span>
@@ -3670,7 +3719,7 @@
     /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
     // Standalone component for the dose recommendation, calculator, and syringe.
     // Extracted from PkChart so it can live in the "Dosing" tab independently.
-    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, onSaveCalorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode, maintenanceSince }) {
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, onSaveCalorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode, maintenanceSince, heightIn, bmrProfile, onSaveBmrProfile }) {
       const [showCalc,     setShowCalc]     = useState(false);
       // Maintenance Mode's calorie-adjustment option — same shape as
       // GoalBanner's own calEditing/calDraft/calSaving/calErr state.
@@ -3678,6 +3727,7 @@
       const [calDraft, setCalDraft] = useState('');
       const [calSaving, setCalSaving] = useState(false);
       const [calErr, setCalErr] = useState('');
+      const [showTdeeCalc, setShowTdeeCalc] = useState(false);
       const [calcInitDose, setCalcInitDose] = useState(2.25);
       const [showSchedule, setShowSchedule] = useState(false);
       const [rulesOpen,    setRulesOpen]    = useState(false);
@@ -3817,11 +3867,6 @@
       // this Dosing tab is the more natural home for a dosing decision.
       const maintCurrentCalTarget = maintenanceMode ? targetActiveAt(calorieTargets, today()) : null;
       const maintSuggestedCalTarget = maintenanceMode ? maintenanceCalorieSuggestion(calories, intervalsCalories, todayMs) : null;
-      // Prefill with the computed suggestion, not the currently-set target —
-      // same reasoning as GoalBanner's startCalEdit.
-      const startMaintCalEdit = () => {
-        setCalDraft(String(maintSuggestedCalTarget ?? maintCurrentCalTarget ?? 1500)); setCalEditing(true); setCalErr('');
-      };
       const saveMaintCalTarget = async (n) => {
         if (isNaN(n) || n <= 0) { setCalErr('Enter a valid number'); return; }
         setCalSaving(true); setCalErr('');
@@ -3879,6 +3924,12 @@
                                              onClose={() => setShowCalc(false)} />}
           {showSchedule && <InjScheduleModal schedule={injSchedule} isAdmin={isAdmin}
                              onSave={onSaveSchedule} onClose={() => setShowSchedule(false)} />}
+          {showTdeeCalc && (
+            <TdeeCalculatorModal heightIn={heightIn} currentWeightLbs={rows?.[0]?.lbs}
+                                 bmrProfile={bmrProfile} onSaveBmrProfile={onSaveBmrProfile}
+                                 onUse={v => { setCalDraft(String(v)); setCalEditing(true); setShowTdeeCalc(false); }}
+                                 onClose={() => setShowTdeeCalc(false)} />
+          )}
 
           <div style={{ margin: '0 0 12px' }}>
             <div ref={rulesRef} style={{ display: 'flex', alignItems: 'center', gap: 5,
@@ -4007,9 +4058,10 @@
               {maintenanceMode && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${displayG.color}33` }}>
                   <div style={{ fontSize: 10.5, fontWeight: 700, color: '#8e8e93', textTransform: 'uppercase',
-                                letterSpacing: .4, marginBottom: 6 }}>
+                                letterSpacing: .4, marginBottom: 6, display: 'flex', alignItems: 'center' }}>
                     {displayG.action === 'decrease' || displayG.action === 'increase'
                       ? 'Or adjust calories instead' : 'Calorie target'}
+                    <MeasuredTdeeInfoDot />
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
                                 borderRadius: 10, background: '#fff', border: '1px solid rgba(74,144,217,.3)' }}>
@@ -4054,7 +4106,7 @@
                         </button>
                       )}
                       {isAdmin && !calEditing && (
-                        <button onClick={startMaintCalEdit}
+                        <button onClick={() => setShowTdeeCalc(true)}
                                 style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
                                          border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
                                          textDecoration: 'underline', display: 'block' }}>
@@ -4119,7 +4171,7 @@
                         </button>
                       )}
                       {isAdmin && !calEditing && (
-                        <button onClick={() => { setCalDraft(String(lossCurrentCalTarget ?? 1500)); setCalEditing(true); setCalErr(''); }}
+                        <button onClick={() => setShowTdeeCalc(true)}
                                 style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
                                          border: 'none', padding: 0, marginTop: 4, cursor: 'pointer',
                                          textDecoration: 'underline', display: 'block' }}>
@@ -4532,7 +4584,8 @@
     // to say.
     function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT, injections, injSchedule, isAdmin,
                            maintenanceHistory = [], onToggleMaintenanceMode,
-                           calorieTargets, onSaveCalorieTargets, calories, intervalsCalories }) {
+                           calorieTargets, onSaveCalorieTargets, calories, intervalsCalories,
+                           heightIn, bmrProfile, onSaveBmrProfile }) {
       const [dismissed, setDismissed] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_GOAL_BANNER_DISMISS_KEY) || 'null'); }
         catch (_) { return null; }
@@ -4560,6 +4613,7 @@
       const [calDraft, setCalDraft] = useState('');
       const [calSaving, setCalSaving] = useState(false);
       const [calErr, setCalErr] = useState('');
+      const [showTdeeCalc, setShowTdeeCalc] = useState(false);
 
       const hasData   = !!(rows && rows.length > 0);
       const currentLbs = hasData ? rows[0].lbs : null;
@@ -4772,7 +4826,12 @@
             // Actionable maintenance card — replaces the passive narrative
             // above once the user has actually opted in, since the card's
             // suggested mg number already says everything that text would.
-            <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 10, padding: '12px 16px',
+            // No overflow: hidden here (unlike the sibling cards below) —
+            // this one has a MeasuredTdeeInfoDot popover that needs to
+            // escape the card's bounds, and a flat-colored box with no
+            // bleeding child content doesn't need clipping for its rounded
+            // corners to render correctly anyway.
+            <div style={{ borderRadius: 14, marginBottom: 10, padding: '12px 16px',
                           background: maintGuidance.bg, border: `1px solid ${maintGuidance.color}33` }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: '#4a90d9', background: '#eef6ff',
@@ -4825,7 +4884,10 @@
                         <div style={{ fontSize: 9.5, color: '#4a90d9', opacity: .75 }}>cal/day</div>
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>Adjust calories instead</div>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e', display: 'flex', alignItems: 'center' }}>
+                          Adjust calories instead
+                          <MeasuredTdeeInfoDot align="right" />
+                        </div>
                         <div style={{ fontSize: 11, color: '#8e8e93', marginTop: 1 }}>
                           Your measured TDEE, less exercise — the base number that should hold weight on its own, no dose change needed.
                         </div>
@@ -4883,21 +4945,27 @@
                       <>Your daily base caloric intake goal has been automatically set to{' '}
                         <strong style={{ color: '#1c1c1e' }}>{currentCalTarget} cal/day</strong> — this doesn't include
                         exercise calories burned, which still get credited back on days you log a ride. You can adjust
-                        this manually below.</>
+                        this manually below.<MeasuredTdeeInfoDot /></>
                     ) : (
                       <>Your measured TDEE, less exercise: {suggestedCalTarget != null
                         ? <strong style={{ color: '#1c1c1e' }}>{suggestedCalTarget} cal/day</strong>
-                        : 'not enough data yet'}</>
+                        : 'not enough data yet'}<MeasuredTdeeInfoDot /></>
                     )}
                   </div>
                 )}
                 {isAdmin && !calEditing && (
-                  <button onClick={startCalEdit}
+                  <button onClick={() => setShowTdeeCalc(true)}
                           style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
                                    border: 'none', padding: 0, cursor: 'pointer',
                                    textDecoration: 'underline', display: 'block' }}>
                     Set calorie target manually →
                   </button>
+                )}
+                {showTdeeCalc && (
+                  <TdeeCalculatorModal heightIn={heightIn} currentWeightLbs={currentLbs}
+                                       bmrProfile={bmrProfile} onSaveBmrProfile={onSaveBmrProfile}
+                                       onUse={v => { setCalDraft(String(v)); setCalEditing(true); setShowTdeeCalc(false); }}
+                                       onClose={() => setShowTdeeCalc(false)} />
                 )}
                 {isAdmin && calEditing && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -7381,6 +7449,137 @@
     const DOSE_TABLE_MAX_MG  = 15;
     const DOSE_TABLE_STEP_MG = 0.25;
 
+    // Mifflin-St Jeor BMR × activity-level multiplier — a quick formula-based
+    // estimate to help pick a starting calorie target, same idea as the
+    // tdeecalculator.org reference. Deliberately separate from (and never
+    // auto-overrides) maintenanceCalorieSuggestion's measured-TDEE number,
+    // which is the more trustworthy figure once there's enough real logged
+    // data — this is just a reasonable starting point before that, or a
+    // sanity check against it. "Use" only fills the draft in whichever
+    // "Set manually" input opened it; the caller still has to hit Save.
+    function TdeeCalculatorModal({ heightIn, currentWeightLbs, bmrProfile, onSaveBmrProfile, onUse, onClose }) {
+      const [age, setAge] = useState(() => String(bmrProfile?.age ?? ''));
+      const [sex, setSex] = useState(() => bmrProfile?.sex ?? 'male');
+      const [activity, setActivity] = useState(() => bmrProfile?.activityLevel ?? 'sedentary');
+      const [heightDraft, setHeightDraft] = useState(() => String(heightIn ?? ''));
+      const [weightDraft, setWeightDraft] = useState(() => String(currentWeightLbs ?? ''));
+      const [saving, setSaving] = useState(false);
+
+      const ageN = parseFloat(age), heightN = parseFloat(heightDraft), weightN = parseFloat(weightDraft);
+      const valid = ageN > 0 && heightN > 0 && weightN > 0;
+      const bmr = valid ? mifflinStJeorBmr(weightN / 2.20462, heightN * 2.54, ageN, sex) : null;
+      const activityDef = BMR_ACTIVITY_LEVELS.find(a => a.id === activity) ?? BMR_ACTIVITY_LEVELS[0];
+      const tdee = bmr != null ? Math.round(bmr * activityDef.mult) : null;
+
+      // Persists age/sex/activity as soon as they settle (debounced), not
+      // only when "Use" is clicked — these are profile inputs you'd expect
+      // to just be remembered, same as any other saved setting, regardless
+      // of whether you end up using a calculated value *this* time. Height/
+      // weight aren't included: those already have their own source of
+      // truth (heightIn, the logbook) and aren't this modal's to persist.
+      useEffect(() => {
+        if (!(ageN > 0)) return;
+        if (bmrProfile && bmrProfile.age === ageN && bmrProfile.sex === sex && bmrProfile.activityLevel === activity) return;
+        const t = setTimeout(() => { onSaveBmrProfile?.({ age: ageN, sex, activityLevel: activity }); }, 600);
+        return () => clearTimeout(t);
+      }, [ageN, sex, activity]);
+
+      const labelStyle = { fontSize: 11, fontWeight: 600, color: '#8e8e93', textTransform: 'uppercase',
+                            letterSpacing: .4, marginBottom: 6 };
+      const inputStyle = { width: '100%', fontSize: 16, padding: '8px 10px', borderRadius: 10,
+                            border: '1px solid #d1d1d6', background: '#f9f9f9', color: '#1c1c1e', outline: 'none' };
+
+      const useValue = async () => {
+        if (tdee == null) return;
+        setSaving(true);
+        await onSaveBmrProfile?.({ age: ageN, sex, activityLevel: activity });
+        setSaving(false);
+        onUse(tdee);
+      };
+
+      return (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+                      zIndex: 1000, display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', padding: 16 }}
+             onClick={onClose}>
+          <div style={{ background: '#fff', borderRadius: 22, padding: '22px 20px 26px',
+                        width: '100%', maxWidth: 400, maxHeight: '90vh', overflowY: 'auto',
+                        boxShadow: '0 24px 64px rgba(0,0,0,.28)' }}
+               onClick={e => e.stopPropagation()}>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#1c1c1e' }}>🔥 TDEE Calculator</div>
+              <button onClick={onClose}
+                      style={{ fontSize: 18, color: '#8e8e93', background: '#f2f2f7',
+                               border: 'none', cursor: 'pointer', borderRadius: 50,
+                               width: 32, height: 32, display: 'flex', alignItems: 'center',
+                               justifyContent: 'center', lineHeight: 1 }}>✕</button>
+            </div>
+            <div style={{ fontSize: 11.5, color: '#8e8e93', marginBottom: 18, lineHeight: 1.4 }}>
+              Mifflin-St Jeor BMR × activity level — a reasonable starting estimate, not a substitute for
+              this app's own measured-TDEE number once you have a few weeks of logged data.
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+              <div>
+                <div style={labelStyle}>Age</div>
+                <input type="number" min="1" value={age} onChange={e => setAge(e.target.value)} style={inputStyle} />
+              </div>
+              <div>
+                <div style={labelStyle}>Sex</div>
+                <select value={sex} onChange={e => setSex(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                </select>
+              </div>
+              <div>
+                <div style={labelStyle}>Height (in)</div>
+                <input type="number" step="0.5" min="1" value={heightDraft} onChange={e => setHeightDraft(e.target.value)} style={inputStyle} />
+              </div>
+              <div>
+                <div style={labelStyle}>Weight (lbs)</div>
+                <input type="number" step="0.1" min="1" value={weightDraft} onChange={e => setWeightDraft(e.target.value)} style={inputStyle} />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+              <div style={labelStyle}>Activity level</div>
+              <select value={activity} onChange={e => setActivity(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                {BMR_ACTIVITY_LEVELS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+              </select>
+            </div>
+
+            <div style={{ textAlign: 'center', padding: '14px 12px',
+                          background: valid ? '#f0f7ff' : '#f9f9fb', borderRadius: 14 }}>
+              {valid ? (
+                <>
+                  <div>
+                    <span style={{ fontSize: 32, fontWeight: 800, color: '#4a90d9',
+                                   fontVariantNumeric: 'tabular-nums' }}>{tdee}</span>
+                    <span style={{ fontSize: 15, color: '#4a90d9', marginLeft: 6 }}>cal/day</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#8e8e93', marginTop: 4 }}>
+                    BMR {Math.round(bmr)} cal × {activityDef.mult}
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 14, color: '#aeaeb2' }}>Enter age, height, and weight above</div>
+              )}
+            </div>
+
+            <button onClick={useValue} disabled={!valid || saving}
+                    style={{ width: '100%', marginTop: 16, fontSize: 15, fontWeight: 700, padding: '12px',
+                             borderRadius: 12, border: 'none',
+                             cursor: (!valid || saving) ? 'default' : 'pointer',
+                             background: valid ? '#4a90d9' : '#e5e5ea',
+                             color: valid ? '#fff' : '#aeaeb2' }}>
+              {saving ? 'Saving…' : `Use ${tdee ?? '—'} cal/day →`}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     function DoseCalculatorModal({ initialDose = 2.25, initialConc = 12.5, surveyTrend = [], onClose }) {
       const [dose, setDose] = React.useState(String(initialDose));
       const [conc, setConc] = React.useState(() => {
@@ -7684,6 +7883,11 @@
             <div style={{ position: 'absolute', top: 20, zIndex: 10, width: 230,
                           ...(align === 'right' ? { right: 0 } : { left: 0 }),
                           background: '#1c1c1e', color: '#fff', fontSize: 11, fontWeight: 400,
+                          // Resets any textTransform/letterSpacing inherited from
+                          // an uppercase label this dot happens to sit inside
+                          // (e.g. "OR ADJUST CALORIES INSTEAD") — the popover's
+                          // own content is normal prose, not a label.
+                          textTransform: 'none', letterSpacing: 'normal',
                           lineHeight: 1.45, borderRadius: 10, padding: '10px 12px',
                           boxShadow: '0 4px 16px rgba(0,0,0,.25)' }}
                  onClick={() => setOpen(false)}>
@@ -7691,6 +7895,21 @@
             </div>
           )}
         </span>
+      );
+    }
+
+    // Explains maintenanceCalorieSuggestion's number wherever it's shown —
+    // reused instead of repeating (and risking drift in) the same
+    // explanation text at every one of its 4 display sites.
+    function MeasuredTdeeInfoDot({ align }) {
+      return (
+        <InfoDot align={align}>
+          <strong style={{ display: 'block', marginBottom: 4 }}>Where this number comes from</strong>
+          Your measured Basal + Active energy (HealthKit) averaged over the last 14 days,
+          with each day's real exercise calories (intervals.icu rides, or HealthKit Active
+          Energy on a logged workout day) subtracted out first — not a formula estimate.
+          Shows "not enough data" if there isn't enough logged history yet.
+        </InfoDot>
       );
     }
 
@@ -8289,6 +8508,7 @@
       const [goalLbs, setGoalLbs] = useState(lsLoadGoalLbs);
       const [heightIn, setHeightIn] = useState(lsLoadHeightIn);
       const [maintenanceHistory, setMaintenanceHistory] = useState(lsLoadMaintenanceHistory);
+      const [bmrProfile, setBmrProfile] = useState(lsLoadBmrProfile);
       const [videos,      setVideos]      = useState([]);
       const [playingVideo, setPlayingVideo] = useState(null);
       const [activeTab,  setActiveTab]   = useState(() => {
@@ -8346,14 +8566,14 @@
       // Returns true/false so callers can commit local state only on a confirmed
       // write — a mutation must never appear to "succeed" locally while silently
       // failing to reach the shared Gist.
-      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations, newGoal = goalLbs, newHeight = heightIn, newMaintHistory = maintenanceHistory) => {
+      const writeToGist = async (newRows, newMeta, newInj, newCalories = calories, sched = injSchedule, targets = calorieTargets, protTargets = proteinTargets, newBp = bloodPressure, newAnnotations = weightAnnotations, newGoal = goalLbs, newHeight = heightIn, newMaintHistory = maintenanceHistory, newBmrProfile = bmrProfile) => {
         const pat = localStorage.getItem(LS_GIST_PAT_KEY);
         if (!pat) {
           setGistOk(false); setGistMsg('Not logged in');
           return false;
         }
         try {
-          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations, newGoal, newHeight, newMaintHistory);
+          await patchGist(GIST_ID, pat, newRows, newMeta, newInj, sched, newCalories, targets, protTargets, newBp, intervalsActivities, newAnnotations, newGoal, newHeight, newMaintHistory, newBmrProfile);
           setGistOk(true); setGistMsg('');
           return true;
         } catch (e) {
@@ -8372,7 +8592,7 @@
             if (result === null) {
               setGistOk(!!pat);
             } else {
-              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory } = result;
+              const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory, bmrProfile: gistBmrProfile } = result;
               if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
               if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
               if (gistProtTargets) { setProteinTargets(gistProtTargets); lsSaveProteinTargets(gistProtTargets); }
@@ -8380,6 +8600,7 @@
               if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
               if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
               if (gistMaintHistory) { setMaintenanceHistory(gistMaintHistory); lsSaveMaintenanceHistory(gistMaintHistory); }
+              if (gistBmrProfile) { setBmrProfile(gistBmrProfile); lsSaveBmrProfile(gistBmrProfile); }
               if (pat) {
                 // Admin: merge gist with local, gist wins
                 const gistMap = Object.fromEntries(logbook.map(r => [r.date, r.wKg]));
@@ -8422,11 +8643,11 @@
         try {
           const result = await fetchGist(GIST_ID, pat);
           if (result === null) {
-            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations, goalLbs, heightIn, maintenanceHistory);
+            await patchGist(GIST_ID, pat, rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, null, weightAnnotations, goalLbs, heightIn, maintenanceHistory, bmrProfile);
             setGistOk(true); setGistMsg('');
             showMsg('Gist initialized ✓');
           } else {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory, bmrProfile: gistBmrProfile } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) { setInjSchedule(sched); lsSaveSchedule(sched); }
             if (gistTargets) { setCalorieTargets(gistTargets); lsSaveCalorieTargets(gistTargets); }
@@ -8435,6 +8656,7 @@
             if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
             if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
             if (gistMaintHistory) { setMaintenanceHistory(gistMaintHistory); lsSaveMaintenanceHistory(gistMaintHistory); }
+            if (gistBmrProfile) { setBmrProfile(gistBmrProfile); lsSaveBmrProfile(gistBmrProfile); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -8448,7 +8670,7 @@
         } catch (e) {
           setGistOk(false); setGistMsg(e.message);
         }
-      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn, maintenanceHistory]);
+      }, [rows, meta, injections, injSchedule, calories, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn, maintenanceHistory, bmrProfile]);
 
       // Admin login (view-only user entering PAT)
       const adminLogin = useCallback(async (rawPat, setMsg) => {
@@ -8459,7 +8681,7 @@
           localStorage.setItem(LS_GIST_PAT_KEY, pat);
           setIsAdmin(true); setGistOk(true); setGistMsg('');
           if (result !== null) {
-            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory } = result;
+            const { logbook, meta: m, injections: inj, injSchedule: sched, calories: gistCals, intervalsActivities: gistIcuActivities, calorieTargets: gistTargets, proteinTargets: gistProtTargets, bloodPressure: gistBp, weightAnnotations: gistAnnotations, goalLbs: gistGoal, heightIn: gistHeight, maintenanceHistory: gistMaintHistory, bmrProfile: gistBmrProfile } = result;
             setRows(logbook); setMeta(m); setInjections(inj);
             if (sched) setInjSchedule(sched);
             if (gistTargets) setCalorieTargets(gistTargets);
@@ -8468,6 +8690,7 @@
             if (gistGoal) { setGoalLbs(gistGoal); lsSaveGoalLbs(gistGoal); }
             if (gistHeight) { setHeightIn(gistHeight); lsSaveHeightIn(gistHeight); }
             if (gistMaintHistory) { setMaintenanceHistory(gistMaintHistory); lsSaveMaintenanceHistory(gistMaintHistory); }
+            if (gistBmrProfile) { setBmrProfile(gistBmrProfile); lsSaveBmrProfile(gistBmrProfile); }
             lsSave(logbook, m); lsSaveInjections(inj);
             if (gistCals && gistCals.length) setCalories(mergeCaloriesWithStored(gistCals));
             if (gistBp && gistBp.length) setBloodPressure(mergeBpWithStored(gistBp));
@@ -8582,6 +8805,20 @@
           setSyncPending(false);
         }
       }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn, maintenanceHistory, intervalsCalories]);
+
+      // A single current value, not dated history — see lsLoadBmrProfile.
+      // Powers the TDEE Calculator popover (age/sex/activity level), wired
+      // into every "Set manually" calorie-target entry point.
+      const saveBmrProfile = useCallback(async (profile) => {
+        setSyncPending(true);
+        try {
+          const ok = await writeToGist(rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn, maintenanceHistory, profile);
+          if (ok) { setBmrProfile(profile); lsSaveBmrProfile(profile); }
+          return ok;
+        } finally {
+          setSyncPending(false);
+        }
+      }, [rows, meta, injections, calories, injSchedule, calorieTargets, proteinTargets, bloodPressure, weightAnnotations, goalLbs, heightIn, maintenanceHistory]);
 
       // Upserts by id — used for both add (a fresh crypto.randomUUID() from the
       // modal) and edit (the existing annotation's id).
@@ -9200,7 +9437,8 @@
               <GoalBanner rows={rows} goalLbs={goalLbs} injections={injections} injSchedule={injSchedule} isAdmin={isAdmin}
                           maintenanceHistory={maintenanceHistory} onToggleMaintenanceMode={toggleMaintenanceMode}
                           calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} calories={calories}
-                          intervalsCalories={intervalsCalories} />
+                          intervalsCalories={intervalsCalories}
+                          heightIn={heightIn} bmrProfile={bmrProfile} onSaveBmrProfile={saveBmrProfile} />
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
@@ -9265,6 +9503,7 @@
                                          proteinTargets={proteinTargets} onSaveProteinTargets={saveProteinTargets}
                                          isAdmin={isAdmin} onSaveCalorieTargets={saveCalorieTargets}
                                          intervalsCalories={intervalsCalories} maintenanceHistory={maintenanceHistory}
+                                         heightIn={heightIn} bmrProfile={bmrProfile} onSaveBmrProfile={saveBmrProfile}
                                          deepLinkParams={deepLink?.tab === 'nutrition' ? deepLink.params : null} />
               )}
               </div>{/* end nutrition tab */}
@@ -9413,7 +9652,8 @@
                            isAdmin={isAdmin} onSaveSchedule={saveInjSchedule}
                            calories={calories} calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} intervalsCalories={intervalsCalories}
                            pendingSurvey={pendingSurvey} doseHold={doseHold} setDoseHold={setDoseHold}
-                           maintenanceMode={maintState.maintenanceMode} maintenanceSince={maintState.maintenanceSince} />
+                           maintenanceMode={maintState.maintenanceMode} maintenanceSince={maintState.maintenanceSince}
+                           heightIn={heightIn} bmrProfile={bmrProfile} onSaveBmrProfile={saveBmrProfile} />
                 <div style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 10px' }}>
                   <CopyLinkButton tab="dosing" params={{}} />
                 </div>

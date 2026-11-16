@@ -1693,7 +1693,7 @@
             {/* Maintenance Mode toggle markers */}
             {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
               <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={yBaseline}
-                    stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+                    stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
             ))}
 
             {(() => {
@@ -1896,7 +1896,7 @@
             {/* Maintenance Mode toggle markers */}
             {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
               <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
-                    stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+                    stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
             ))}
 
             {/* Nudged in from the very top/bottom edge so they don't collide
@@ -2026,7 +2026,7 @@
             {/* Maintenance Mode toggle markers */}
             {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
               <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={yBaseline}
-                    stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+                    stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
             ))}
             {/* Floor line — a solid tick per day (not a full-width line) so a
                 changed target mid-window still reads correctly per-day. */}
@@ -2455,7 +2455,7 @@
               {/* Maintenance Mode toggle markers */}
               {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
                 <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
-                      stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+                      stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
               ))}
 
               {/* Systolic / diastolic trend lines */}
@@ -2906,7 +2906,7 @@
             {/* Maintenance Mode toggle markers */}
             {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
               <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
-                    stroke="#4a90d9" strokeWidth="0.7" strokeDasharray="1,2" opacity="0.5" />
+                    stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
             ))}
 
             {/* Bars */}
@@ -3549,7 +3549,7 @@
               const x = xOf(ms);
               return (
                 <line key={ms} x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
-                      stroke="#00c7be" strokeWidth="0.8" strokeDasharray="1,2" opacity="0.5" />
+                      stroke="#00c7be" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.8" />
               );
             })}
 
@@ -6249,7 +6249,7 @@
               const x = xOf(ms);
               return (
                 <line key={ms} x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
-                      stroke="#4a90d9" strokeWidth="0.8" strokeDasharray="1,2" opacity="0.5" />
+                      stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.8" />
               );
             })}
 

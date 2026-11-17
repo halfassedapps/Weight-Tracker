@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weight Progress</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #f2f2f7; }
+  iframe { display: block; width: 100%; border: none; }
+</style>
+</head>
+<body>
+<!--
+  Thin wrapper around index.html's own "share mode" (?share=1) rather than a
+  second copy of the app — there's only ever one implementation of the chart
+  to keep in sync, and this page never goes stale when index.html changes.
+  Same-origin, so the resize observer below can read the iframe's real
+  content height directly (no postMessage needed).
+-->
+<iframe id="chart" src="index.html?share=1"></iframe>
+<script>
+  const frame = document.getElementById('chart');
+  function syncHeight() {
+    try {
+      const doc = frame.contentDocument;
+      if (doc && doc.documentElement) {
+        frame.style.height = doc.documentElement.scrollHeight + 'px';
+      }
+    } catch (_) {}
+  }
+  frame.addEventListener('load', () => {
+    syncHeight();
+    try {
+      new ResizeObserver(syncHeight).observe(frame.contentDocument.documentElement);
+    } catch (_) {}
+  });
+  window.addEventListener('resize', syncHeight);
+</script>
+</body>
+</html>

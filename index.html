@@ -5130,7 +5130,7 @@
     function WeightChart({ rows, injections, injSchedule, annotations = [], isAdmin, onSaveAnnotation, onDeleteAnnotation,
                             goalLbs = GOAL_LBS_DEFAULT, onSaveGoal, heightIn = HEIGHT_IN_DEFAULT, onSaveHeight,
                             maintenanceHistory = [], onToggleMaintenanceMode,
-                            deepLinkParams }) {
+                            deepLinkParams, forceHideInjections = false }) {
       if (!rows || rows.length < 2) return null;
       const [goalTip, setGoalTip] = useState(false);
       const [sharing, setSharing] = useState(false);
@@ -5146,9 +5146,15 @@
       const [heightDraft, setHeightDraft] = useState(() => String(heightIn));
       const [viewMode, setViewMode] = useState(() => deepLinkParams?.view || localStorage.getItem(LS_WEIGHT_VIEW_MODE_KEY) || 'graph'); // 'graph' | 'table'
       useEffect(() => { try { localStorage.setItem(LS_WEIGHT_VIEW_MODE_KEY, viewMode); } catch (_) {} }, [viewMode]);
-      const [showInjections, setShowInjections] = useState(
+      const [showInjectionsPref, setShowInjectionsPref] = useState(
         () => deepLinkParams?.inj != null ? deepLinkParams.inj === '1' : lsLoadShowInjData()
       );
+      // forceHideInjections (the share page) overrides the user's own
+      // preference/toggle rather than just defaulting it — the whole point
+      // is that this view never shows tirzepatide data, not that it starts
+      // hidden and could be flipped back on.
+      const showInjections = forceHideInjections ? false : showInjectionsPref;
+      const setShowInjections = setShowInjectionsPref;
       // The pill and its popover aren't touching (popover floats above the
       // row), so a plain onMouseLeave on the pill would close it the instant
       // the cursor crosses that gap while moving toward the popover (e.g. to
@@ -6138,15 +6144,19 @@
 
           {/* Show/hide injection data — affects the line coloring + dose
               pills (graph), the Dose column (table), and whatever gets
-              shared, since Share just captures whichever is on screen. */}
-          <div style={{ padding: '0 14px 4px' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
-                             fontSize: 11, color: '#8e8e93', cursor: 'pointer' }}>
-              <input type="checkbox" checked={showInjections}
-                     onChange={() => setShowInjections(v => { const next = !v; lsSaveShowInjData(next); return next; })} />
-              Show injection data
-            </label>
-          </div>
+              shared, since Share just captures whichever is on screen.
+              Omitted entirely when forceHideInjections is set (the share
+              page) — there's no toggle to flip back on there. */}
+          {!forceHideInjections && (
+            <div style={{ padding: '0 14px 4px' }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+                               fontSize: 11, color: '#8e8e93', cursor: 'pointer' }}>
+                <input type="checkbox" checked={showInjections}
+                       onChange={() => setShowInjections(v => { const next = !v; lsSaveShowInjData(next); return next; })} />
+                Show injection data
+              </label>
+            </div>
+          )}
 
           {/* Chart */}
           {viewMode === 'table' ? (() => {
@@ -6760,11 +6770,18 @@
               </svg>
               {sharing ? 'Preparing…' : 'Share'}
             </button>
-            <CopyLinkButton tab="weight" params={{
-              range: dataRangeDays, view: viewMode, agg: aggregate, inj: showInjections ? 1 : 0,
-              trend: trendModes.join(','), trendDays, ratesToday: ratesFromToday ? 1 : 0,
-              start: customRangeStart, end: customRangeEnd,
-            }} />
+            {/* CopyLinkButton builds its URL from window.location, which
+                inside the share page's iframe is the real index.html —
+                handing that out here would leak the full page more directly
+                than anything a URL-guessing "smart user" could do on their
+                own, so it's simply not offered on this view. */}
+            {!forceHideInjections && (
+              <CopyLinkButton tab="weight" params={{
+                range: dataRangeDays, view: viewMode, agg: aggregate, inj: showInjections ? 1 : 0,
+                trend: trendModes.join(','), trendDays, ratesToday: ratesFromToday ? 1 : 0,
+                start: customRangeStart, end: customRangeEnd,
+              }} />
+            )}
           </div>
         </div>
       );
@@ -8464,6 +8481,11 @@
       // within the app (changing tabs/settings) doesn't re-run this, so it
       // only ever seeds initial state, never fights with normal interaction.
       const [deepLink] = useState(parseDeepLink);
+      // The stripped-down, tirzepatide-free view served to progress.html's
+      // iframe (?share=1) — read once, same as deepLink above. Deliberately
+      // a plain URL check, not routed through parseDeepLink: that function
+      // seeds per-tab view settings, this swaps out the entire page.
+      const [isShareMode] = useState(() => new URLSearchParams(window.location.search).get('share') === '1');
       const saved = lsLoad();
       const [rows,        setRows]        = useState(saved?.logbook ?? []);
       const [meta,        setMeta]        = useState(saved?.meta    ?? null);
@@ -9241,6 +9263,48 @@
       const items       = buildItems(rows, injections);
       const baselineLbs = rows.length ? rows[rows.length - 1].lbs : null;
 
+      // Share view: just the weight chart, nothing tirzepatide-related.
+      // isAdmin is real (same-origin localStorage, so it's true on the
+      // owner's own devices and false for anyone else) — it only gates the
+      // "Full tracker" link here, never admin-editing, which stays off via
+      // the hardcoded isAdmin={false} below regardless of who's viewing.
+      if (isShareMode) {
+        return (
+          <div style={{ minHeight: '100vh', background: '#f2f2f7' }}>
+            <div style={{ maxWidth: 680, margin: '0 auto', padding: '16px 12px 32px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            padding: '0 4px 12px' }}>
+                <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -.3, color: '#1c1c1e' }}>
+                  Weight Progress
+                </div>
+                {isAdmin && (
+                  <a href="index.html" style={{ fontSize: 13, color: '#4a90d9', fontWeight: 600 }}>
+                    Full tracker →
+                  </a>
+                )}
+              </div>
+              {loading ? (
+                <div style={{ padding: '24px 16px', textAlign: 'center', color: '#aeaeb2', fontSize: 13 }}>
+                  Loading…
+                </div>
+              ) : rows.length > 0 ? (
+                <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
+                              border: '.5px solid rgba(0,0,0,.08)' }}>
+                  <WeightChart rows={rows} annotations={weightAnnotations} isAdmin={false}
+                               goalLbs={goalLbs} heightIn={heightIn}
+                               maintenanceHistory={maintenanceHistory}
+                               forceHideInjections />
+                </div>
+              ) : (
+                <div style={{ padding: '24px 16px', textAlign: 'center', color: '#aeaeb2', fontSize: 13 }}>
+                  No weight data yet.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div style={{ minHeight: '100vh', background: '#f2f2f7' }}>
 
@@ -9264,6 +9328,16 @@
                     </>
                   ) : null}
                 </div>
+                {/* progress.html mirrors just the weight chart, with
+                    tirzepatide data hidden/locked off — for sharing weight
+                    loss progress without the rest. Admin-only so a casual
+                    visitor of index.html itself never sees it. */}
+                {isAdmin && (
+                  <a href="progress.html" target="_blank" rel="noopener"
+                     style={{ fontSize: 12, color: '#4a90d9', fontWeight: 600 }}>
+                    Share progress →
+                  </a>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 {isAdmin && needsPerm && exportDir && (

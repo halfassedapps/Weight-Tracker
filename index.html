@@ -13,7 +13,7 @@
     // we're looking at a stale cached copy, so force a real network fetch by
     // navigating to a URL the cache has never seen. Bumped on every deploy.
     (function () {
-      var BUILD_VERSION = '2026-11-17T14:59:13Z';
+      var BUILD_VERSION = '2026-11-17T22:35:55Z';
       try {
         fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
           .then(function (res) { return res.ok ? res.json() : null; })
@@ -9309,7 +9309,11 @@
       if (isShareMode) {
         return (
           <div style={{ minHeight: '100vh', background: '#f2f2f7' }}>
-            <div style={{ maxWidth: 680, margin: '0 auto', padding: '16px 12px 32px' }}>
+            {/* No maxWidth here, deliberately — matches the main app's own
+                content wrapper (same padding, no cap) so this fills the
+                viewport the same way the real Weight tab does, instead of
+                sitting in a narrow column on a wide screen. */}
+            <div style={{ padding: '16px 12px 32px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                             padding: '0 4px 12px' }}>
                 <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -.3, color: '#1c1c1e' }}>

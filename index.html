@@ -488,6 +488,16 @@
     function lsSaveBmrProfile(profile) {
       try { localStorage.setItem(LS_BMR_PROFILE_KEY, JSON.stringify(profile)); } catch (_) {}
     }
+    // The last measured-TDEE value actually shown to the user (see
+    // stickyMeasuredTdee below) — local-only, low-stakes display state, same
+    // tier as the BMR profile above.
+    const LS_MEASURED_TDEE_STICKY_KEY = 'weight-tracker-measured-tdee-sticky';
+    function lsLoadMeasuredTdeeSticky() {
+      try { return JSON.parse(localStorage.getItem(LS_MEASURED_TDEE_STICKY_KEY) || 'null'); } catch (_) { return null; }
+    }
+    function lsSaveMeasuredTdeeSticky(value) {
+      try { localStorage.setItem(LS_MEASURED_TDEE_STICKY_KEY, JSON.stringify(value)); } catch (_) {}
+    }
     // Standard Mifflin-St Jeor activity multipliers — same formula/levels as
     // the linked tdeecalculator.org reference.
     const BMR_ACTIVITY_LEVELS = [
@@ -1499,7 +1509,7 @@
     const swatch = (color) => ({ display: 'inline-block', width: 12, height: 12, background: color,
                                   marginRight: 5, verticalAlign: 'middle', borderRadius: 3 });
 
-    function CaloriesActivitySection({ calorieData, rows, calorieTargets, proteinTargets, onSaveProteinTargets, isAdmin, onSaveCalorieTargets, intervalsCalories, deepLinkParams, maintenanceHistory = [], heightIn, bmrProfile, onSaveBmrProfile }) {
+    function CaloriesActivitySection({ calorieData, rows, calorieTargets, proteinTargets, onSaveProteinTargets, isAdmin, onSaveCalorieTargets, intervalsCalories, deepLinkParams, maintenanceHistory = [], heightIn, bmrProfile, onSaveBmrProfile, measuredTdee }) {
       const [rangeMode, setRangeMode] = useState(() => deepLinkParams?.range || localStorage.getItem(LS_CAL_RANGE_MODE_KEY) || '30d');
       useEffect(() => { try { localStorage.setItem(LS_CAL_RANGE_MODE_KEY, rangeMode); } catch (_) {} }, [rangeMode]);
       const [customDays, setCustomDays] = useState(
@@ -1605,8 +1615,9 @@
             <div style={CAL_HEADER}><div style={CAL_TITLE}>Calories: Intake vs Burn</div></div>
             <TdeeChart periodDaily={periodDaily} visStartMs={visStartMs} visEndMs={visEndMs}
                        calorieTargets={calorieTargets} isAdmin={isAdmin} onSaveCalorieTargets={onSaveCalorieTargets}
-                       maintenanceHistory={maintenanceHistory} calories={calorieData} intervalsCalories={intervalsCalories}
-                       heightIn={heightIn} currentWeightLbs={rows?.[0]?.lbs} bmrProfile={bmrProfile} onSaveBmrProfile={onSaveBmrProfile} />
+                       maintenanceHistory={maintenanceHistory}
+                       heightIn={heightIn} currentWeightLbs={rows?.[0]?.lbs} bmrProfile={bmrProfile} onSaveBmrProfile={onSaveBmrProfile}
+                       measuredTdee={measuredTdee} />
           </div>
 
           <div style={CAL_CARD}>
@@ -1627,7 +1638,7 @@
     }
 
     /* ─── Card 1: Calories: Intake vs Burn ───────────────────────────────────── */
-    function TdeeChart({ periodDaily, visStartMs, visEndMs, calorieTargets, isAdmin, onSaveCalorieTargets, maintenanceHistory = [], calories, intervalsCalories, heightIn, currentWeightLbs, bmrProfile, onSaveBmrProfile }) {
+    function TdeeChart({ periodDaily, visStartMs, visEndMs, calorieTargets, isAdmin, onSaveCalorieTargets, maintenanceHistory = [], heightIn, currentWeightLbs, bmrProfile, onSaveBmrProfile, measuredTdee }) {
       const [tip, setTip] = useState(null);
       const [editing, setEditing] = useState(false);
       const [draftTarget, setDraftTarget] = useState('');
@@ -1671,8 +1682,7 @@
       // addition to GoalBanner/DosePanel — this is where calorie targets are
       // otherwise managed, so it has a natural home here as well.
       const { maintenanceMode } = deriveMaintenanceState(maintenanceHistory, new Date().setHours(12, 0, 0, 0));
-      const maintSuggestedTarget = maintenanceMode
-        ? maintenanceCalorieSuggestion(calories, intervalsCalories, new Date().setHours(12, 0, 0, 0)) : null;
+      const maintSuggestedTarget = maintenanceMode ? measuredTdee : null;
       const [maintSaving, setMaintSaving] = useState(false);
       const acceptMaintSuggestion = async () => {
         setMaintSaving(true);
@@ -3719,7 +3729,7 @@
     /* ─── Dose Panel ──────────────────────────────────────────────────────────── */
     // Standalone component for the dose recommendation, calculator, and syringe.
     // Extracted from PkChart so it can live in the "Dosing" tab independently.
-    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, onSaveCalorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode, maintenanceSince, heightIn, bmrProfile, onSaveBmrProfile }) {
+    function DosePanel({ rows, injections, injSchedule, isAdmin, onSaveSchedule, calories, calorieTargets, onSaveCalorieTargets, intervalsCalories, pendingSurvey, doseHold, setDoseHold, maintenanceMode, maintenanceSince, heightIn, bmrProfile, onSaveBmrProfile, measuredTdee }) {
       const [showCalc,     setShowCalc]     = useState(false);
       // Maintenance Mode's calorie-adjustment option — same shape as
       // GoalBanner's own calEditing/calDraft/calSaving/calErr state.
@@ -3866,7 +3876,7 @@
       // guidance here rather than only on the Weight tab's GoalBanner, since
       // this Dosing tab is the more natural home for a dosing decision.
       const maintCurrentCalTarget = maintenanceMode ? targetActiveAt(calorieTargets, today()) : null;
-      const maintSuggestedCalTarget = maintenanceMode ? maintenanceCalorieSuggestion(calories, intervalsCalories, todayMs) : null;
+      const maintSuggestedCalTarget = maintenanceMode ? measuredTdee : null;
       const saveMaintCalTarget = async (n) => {
         if (isNaN(n) || n <= 0) { setCalErr('Enter a valid number'); return; }
         setCalSaving(true); setCalErr('');
@@ -4334,6 +4344,11 @@
     // 7-day moving averages, so ordinary daily water-weight swings are
     // damped out before this threshold ever sees them.
     const MAINTENANCE_DRIFT_LBS = 2;
+    // How much the raw 14-day measured-TDEE average has to move before the
+    // *displayed* number is allowed to change (see stickyMeasuredTdee) — a
+    // single unusual day sliding into/out of the window is ~1/14 of the
+    // average and shouldn't visibly move it.
+    const MEASURED_TDEE_STICKY_THRESHOLD_CAL = 75;
     // Own constant, not DOSE_INCREASE_HOLD_DAYS — that one's comments are
     // specifically about post-*increase* titration in the loss phase.
     // Maintenance dose changes go either direction, and twoWeekLoss lags
@@ -4485,6 +4500,17 @@
       return baseDays.length ? Math.round(avg(baseDays)) : null;
     }
 
+    // Deadband on top of maintenanceCalorieSuggestion's raw average, so the
+    // *displayed* measured-TDEE only changes when it has genuinely moved,
+    // not every time the 14-day window slides by a day. Insufficient data
+    // (rawValue == null) keeps showing whatever was last displayed rather
+    // than blanking it.
+    function stickyMeasuredTdee(rawValue, lastSticky, threshold = MEASURED_TDEE_STICKY_THRESHOLD_CAL) {
+      if (rawValue == null) return lastSticky;
+      if (lastSticky == null || Math.abs(rawValue - lastSticky) >= threshold) return rawValue;
+      return lastSticky;
+    }
+
     // Derives all current/derived Maintenance Mode state from the append-only
     // maintenanceHistory log — maintenanceMode/maintenanceSince/entryDoseMg are
     // intentionally not stored fields, just reads of the log's last entry, so
@@ -4584,8 +4610,8 @@
     // to say.
     function GoalBanner({ rows, goalLbs = GOAL_LBS_DEFAULT, injections, injSchedule, isAdmin,
                            maintenanceHistory = [], onToggleMaintenanceMode,
-                           calorieTargets, onSaveCalorieTargets, calories, intervalsCalories,
-                           heightIn, bmrProfile, onSaveBmrProfile }) {
+                           calorieTargets, onSaveCalorieTargets,
+                           heightIn, bmrProfile, onSaveBmrProfile, measuredTdee }) {
       const [dismissed, setDismissed] = useState(() => {
         try { return JSON.parse(localStorage.getItem(LS_GOAL_BANNER_DISMISS_KEY) || 'null'); }
         catch (_) { return null; }
@@ -4785,7 +4811,7 @@
       }
 
       const currentCalTarget = targetActiveAt(calorieTargets, today());
-      const suggestedCalTarget = maintenanceCalorieSuggestion(calories, intervalsCalories, todayMsForMaint);
+      const suggestedCalTarget = measuredTdee;
 
       // Prefill with the computed suggestion (not the currently-set target) —
       // "Set manually" is how you see the auto-calc number at all outside the
@@ -7908,7 +7934,9 @@
           Your measured Basal + Active energy (HealthKit) averaged over the last 14 days,
           with each day's real exercise calories (intervals.icu rides, or HealthKit Active
           Energy on a logged workout day) subtracted out first — not a formula estimate.
-          Shows "not enough data" if there isn't enough logged history yet.
+          Only updates here once it shifts by more than ~75 calories, so it doesn't
+          bounce day to day as the 14-day window slides. Shows "not enough data" if
+          there isn't enough logged history yet.
         </InfoDot>
       );
     }
@@ -8551,6 +8579,16 @@
       // it — GoalBanner still derives its own copy internally since it also
       // owns the entry-prompt/calorie-suggestion logic built around it.
       const maintState = deriveMaintenanceState(maintenanceHistory, new Date().setHours(12, 0, 0, 0));
+      // Computed once here and passed down to every display site (GoalBanner,
+      // DosePanel, TdeeChart) so they can't disagree, and smoothed via
+      // stickyMeasuredTdee so the shown number doesn't bounce with every
+      // day's 14-day-window slide — see MEASURED_TDEE_STICKY_THRESHOLD_CAL.
+      const rawMeasuredTdee = maintenanceCalorieSuggestion(calories, intervalsCalories, new Date().setHours(12, 0, 0, 0));
+      const [measuredTdee, setMeasuredTdee] = useState(lsLoadMeasuredTdeeSticky);
+      useEffect(() => {
+        const next = stickyMeasuredTdee(rawMeasuredTdee, measuredTdee);
+        if (next !== measuredTdee) { setMeasuredTdee(next); lsSaveMeasuredTdeeSticky(next); }
+      }, [rawMeasuredTdee]);
       const inputRef  = useRef();
       const msgTimer  = useRef();
 
@@ -9436,9 +9474,9 @@
               <div style={{ display: activeTab==='weight' ? undefined : 'none' }}>
               <GoalBanner rows={rows} goalLbs={goalLbs} injections={injections} injSchedule={injSchedule} isAdmin={isAdmin}
                           maintenanceHistory={maintenanceHistory} onToggleMaintenanceMode={toggleMaintenanceMode}
-                          calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} calories={calories}
-                          intervalsCalories={intervalsCalories}
-                          heightIn={heightIn} bmrProfile={bmrProfile} onSaveBmrProfile={saveBmrProfile} />
+                          calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets}
+                          heightIn={heightIn} bmrProfile={bmrProfile} onSaveBmrProfile={saveBmrProfile}
+                          measuredTdee={measuredTdee} />
               {/* Weight Trend Chart */}
               <div style={{ borderRadius: 18, overflow: 'hidden', background: '#fff',
                             border: '.5px solid rgba(0,0,0,.08)', marginBottom: 10 }}>
@@ -9504,6 +9542,7 @@
                                          isAdmin={isAdmin} onSaveCalorieTargets={saveCalorieTargets}
                                          intervalsCalories={intervalsCalories} maintenanceHistory={maintenanceHistory}
                                          heightIn={heightIn} bmrProfile={bmrProfile} onSaveBmrProfile={saveBmrProfile}
+                                         measuredTdee={measuredTdee}
                                          deepLinkParams={deepLink?.tab === 'nutrition' ? deepLink.params : null} />
               )}
               </div>{/* end nutrition tab */}
@@ -9653,7 +9692,8 @@
                            calories={calories} calorieTargets={calorieTargets} onSaveCalorieTargets={saveCalorieTargets} intervalsCalories={intervalsCalories}
                            pendingSurvey={pendingSurvey} doseHold={doseHold} setDoseHold={setDoseHold}
                            maintenanceMode={maintState.maintenanceMode} maintenanceSince={maintState.maintenanceSince}
-                           heightIn={heightIn} bmrProfile={bmrProfile} onSaveBmrProfile={saveBmrProfile} />
+                           heightIn={heightIn} bmrProfile={bmrProfile} onSaveBmrProfile={saveBmrProfile}
+                           measuredTdee={measuredTdee} />
                 <div style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 10px' }}>
                   <CopyLinkButton tab="dosing" params={{}} />
                 </div>

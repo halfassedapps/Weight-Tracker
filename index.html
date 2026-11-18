@@ -13,7 +13,7 @@
     // we're looking at a stale cached copy, so force a real network fetch by
     // navigating to a URL the cache has never seen. Bumped on every deploy.
     (function () {
-      var BUILD_VERSION = '2026-11-18T16:04:13Z';
+      var BUILD_VERSION = '2026-11-18T16:09:46Z';
       try {
         fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
           .then(function (res) { return res.ok ? res.json() : null; })
@@ -4879,13 +4879,25 @@
             // corners to render correctly anyway.
             <div style={{ borderRadius: 14, marginBottom: 10, padding: '12px 16px',
                           background: maintGuidance.bg, border: `1px solid ${maintGuidance.color}33` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 10.5, fontWeight: 700, color: '#4a90d9', background: '#eef6ff',
-                               border: '1px solid rgba(74,144,217,.35)', borderRadius: 20, padding: '2px 8px',
-                               textTransform: 'uppercase', letterSpacing: .4 }}>Maintenance</span>
-                <span style={{ fontSize: 11.5, color: '#8e8e93' }}>
-                  since {fmtShort(maintenanceSince)}
-                </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, color: '#4a90d9', background: '#eef6ff',
+                                 border: '1px solid rgba(74,144,217,.35)', borderRadius: 20, padding: '2px 8px',
+                                 textTransform: 'uppercase', letterSpacing: .4 }}>Maintenance</span>
+                  <span style={{ fontSize: 11.5, color: '#8e8e93' }}>
+                    since {fmtShort(maintenanceSince)}
+                  </span>
+                </div>
+                {isAdmin && (
+                  // Not a navigation link (no arrow, unlike "Set calorie
+                  // target manually →" below) — this just logs a 'stop' into
+                  // maintenanceHistory in place via stopMaintenance.
+                  <button onClick={stopMaintenance}
+                          style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
+                                   border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline' }}>
+                    Stop Maintenance Mode
+                  </button>
+                )}
               </div>
               {(maintGuidance.action === 'decrease' || maintGuidance.action === 'increase') ? (
                 // Two co-equal levers, not dose-primary/calories-as-an-
@@ -5030,14 +5042,6 @@
                   </div>
                 )}
                 {calErr && <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3 }}>{calErr}</div>}
-                {isAdmin && (
-                  <button onClick={stopMaintenance}
-                          style={{ fontSize: 11, fontWeight: 600, color: '#8e8e93', background: 'none',
-                                   border: 'none', padding: 0, marginTop: 8, cursor: 'pointer',
-                                   textDecoration: 'underline', display: 'block' }}>
-                    Stop Maintenance Mode →
-                  </button>
-                )}
               </div>
             </div>
           ) : (

@@ -13,7 +13,7 @@
     // we're looking at a stale cached copy, so force a real network fetch by
     // navigating to a URL the cache has never seen. Bumped on every deploy.
     (function () {
-      var BUILD_VERSION = '2026-11-18T15:25:22Z';
+      var BUILD_VERSION = '2026-11-18T15:58:24Z';
       try {
         fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
           .then(function (res) { return res.ok ? res.json() : null; })
@@ -324,17 +324,31 @@
         : (deviation > NET_OVEREAT_BAD ? 'bad' : 'ok');
     }
 
+    // Exercise calories to credit back for a given day — real intervals.icu
+    // ride calories when available, HealthKit ActiveEnergy on a HasWorkout day
+    // otherwise, 0 if neither. Clamped to that day's total ActiveEnergy: a
+    // day's total active energy can never be less than any single workout's
+    // calories within it, so rideCal > ActiveEnergy means intervals.icu's
+    // model is running hot relative to Apple Watch's (or there's a sync gap)
+    // for that workout — crediting more than the day actually recorded would
+    // eat into basal, which is never correct. Shared by calorieDeviationFor
+    // and maintenanceCalorieSuggestion so the two can never silently diverge.
+    function exerciseCreditFor(d, intervalsCalories) {
+      const rideCal = intervalsCalories ? intervalsCalories[d.date] : null;
+      const exercise = rideCal != null ? rideCal : (d.HasWorkout ? (d.ActiveEnergy || 0) : 0);
+      return Math.min(exercise, d.ActiveEnergy || 0);
+    }
+
     // Per-day deviation from calorie target, crediting exercise back into the
     // budget (MFP-style Goal + Exercise − Food). Prefers real per-workout
     // calories from intervals.icu, falling back to that day's HealthKit Active
-    // Energy on other logged-workout days — see CaloriesVsTargetChart's own
-    // comment block for the full reasoning. Shared so the Nutrition tab's chart
-    // and the dosing recommendation's appetite-suppression signal are always
-    // looking at the exact same number, never two silently-diverging ones.
+    // Energy on other logged-workout days — see exerciseCreditFor for the full
+    // reasoning. Shared so the Nutrition tab's chart and the dosing
+    // recommendation's appetite-suppression signal are always looking at the
+    // exact same number, never two silently-diverging ones.
     function calorieDeviationFor(d, calorieTargets, intervalsCalories) {
       const baseTarget = targetActiveAt(calorieTargets, d.date);
-      const rideCal = intervalsCalories ? intervalsCalories[d.date] : null;
-      const exercise = rideCal != null ? rideCal : (d.HasWorkout ? (d.ActiveEnergy || 0) : 0);
+      const exercise = exerciseCreditFor(d, intervalsCalories);
       const target = baseTarget != null ? baseTarget + exercise : null;
       const deviation = target != null ? (d.Calories || 0) - target : null;
       return { baseTarget, exercise, target, deviation };
@@ -348,10 +362,14 @@
     // when there's too little data to say anything meaningful (falls back to
     // today's existing weight-only behavior — never a regression).
     function appetiteSuppressionSignal(calories, calorieTargets, intervalsCalories, todayMs, windowDays = 14) {
-      const cutoff = msToLocalDate(todayMs - windowDays * 86400000);
-      const today = msToLocalDate(todayMs);
+      // Ends at the last *complete* day, not today — a calories row is a
+      // HealthKit running total, so today's is always still accumulating and
+      // would drag every average down by whatever fraction of the day has
+      // synced so far (see maintenanceCalorieSuggestion for the same fix).
+      const lastCompleteStr = msToLocalDate(todayMs - 86400000);
+      const cutoff = msToLocalDate(todayMs - (windowDays + 1) * 86400000);
       const deviations = (calories || [])
-        .filter(d => d.date >= cutoff && d.date <= today)
+        .filter(d => d.date >= cutoff && d.date <= lastCompleteStr)
         .map(d => calorieDeviationFor(d, calorieTargets, intervalsCalories).deviation)
         .filter(v => v != null);
       if (deviations.length < 7) return null;
@@ -4470,13 +4488,10 @@
     // never suggest two different numbers.
     //
     // calorieTargets is a *base* number elsewhere in the app —
-    // calorieDeviationFor adds a day's real exercise calories back in on top
-    // of it separately (see its own `exercise` field, reused verbatim here:
-    // real intervals.icu ride calories when available, HealthKit ActiveEnergy
-    // on a HasWorkout day otherwise, 0 if neither). This subtracts that same
-    // per-day exercise number from measured TDEE (Basal+Active) on *every*
-    // day in the window, rather than trying to exclude "workout days" by the
-    // HasWorkout flag alone.
+    // exerciseCreditFor adds a day's real exercise calories back in on top
+    // of it separately. This subtracts that same per-day exercise number from
+    // measured TDEE (Basal+Active) on *every* day in the window, rather than
+    // trying to exclude "workout days" by the HasWorkout flag alone.
     //
     // That flag-only filtering was the earlier approach here, and it's
     // unreliable in practice: HasWorkout is only set from an explicit
@@ -4487,14 +4502,19 @@
     // real, uncredited ride energy and the resulting average ran high.
     // Subtracting the actual per-day ride credit fixes this directly and
     // uses every day's data instead of discarding most of it.
+    //
+    // The window ends at the last *complete* day, not today — a calories row
+    // is a HealthKit running total, so today's is always still accumulating
+    // (confirmed against real data: a day caught mid-sync read ~40% of a
+    // normal day's basal energy) and would drag every single day's average
+    // down by whatever fraction of today has synced so far.
     function maintenanceCalorieSuggestion(calories, intervalsCalories, todayMs, windowDays = GOAL_AVG_WINDOW_DAYS) {
-      const todayStr = msToLocalDate(todayMs);
-      const cutoff = msToLocalDate(todayMs - windowDays * 86400000);
+      const lastCompleteStr = msToLocalDate(todayMs - 86400000);
+      const cutoff = msToLocalDate(todayMs - (windowDays + 1) * 86400000);
       const baseDays = (calories || [])
-        .filter(d => d.date >= cutoff && d.date <= todayStr && (d.BasalEnergy || d.ActiveEnergy))
+        .filter(d => d.date >= cutoff && d.date <= lastCompleteStr && (d.BasalEnergy || d.ActiveEnergy))
         .map(d => {
-          const rideCal = intervalsCalories ? intervalsCalories[d.date] : null;
-          const exercise = rideCal != null ? rideCal : (d.HasWorkout ? (d.ActiveEnergy || 0) : 0);
+          const exercise = exerciseCreditFor(d, intervalsCalories);
           return (d.BasalEnergy || 0) + (d.ActiveEnergy || 0) - exercise;
         });
       return baseDays.length ? Math.round(avg(baseDays)) : null;
@@ -7989,9 +8009,10 @@
       return (
         <InfoDot align={align}>
           <strong style={{ display: 'block', marginBottom: 4 }}>Where this number comes from</strong>
-          Your measured Basal + Active energy (HealthKit) averaged over the last 14 days,
-          with each day's real exercise calories (intervals.icu rides, or HealthKit Active
-          Energy on a logged workout day) subtracted out first — not a formula estimate.
+          Your measured Basal + Active energy (HealthKit) averaged over the last 14 complete
+          days, with each day's real exercise calories (intervals.icu rides, or HealthKit Active
+          Energy on a logged workout day, never more than that day's own Active Energy)
+          subtracted out first — not a formula estimate.
           Only updates here once it shifts by more than ~75 calories, so it doesn't
           bounce day to day as the 14-day window slides. Shows "not enough data" if
           there isn't enough logged history yet.

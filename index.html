@@ -13,7 +13,7 @@
     // we're looking at a stale cached copy, so force a real network fetch by
     // navigating to a URL the cache has never seen. Bumped on every deploy.
     (function () {
-      var BUILD_VERSION = '2026-11-18T15:21:46Z';
+      var BUILD_VERSION = '2026-11-18T15:25:22Z';
       try {
         fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
           .then(function (res) { return res.ok ? res.json() : null; })
@@ -6335,26 +6335,38 @@
               return segs.map((s, i) => {
                 const x1 = xOf(s.start), x2 = xOf(s.end);
                 if (x2 <= x1) return null;
-                // Both labels use a halo (paintOrder stroke-then-fill
-                // stands in for a background box without measuring text
-                // width) matching their own line's color, solid enough to
-                // fully block the dashed line/band behind the glyphs —
-                // otherwise the line shows through and reads as
-                // strikethrough text instead of a label sitting on it.
-                // Weight-loss: same green as its line, white halo (its
-                // line sits on plain white chart background). Maintenance:
-                // a darker blue than the band for the text, haloed in the
-                // band's own blue so the glyphs read as cut into the band
-                // rather than floating over it. This block renders before
-                // the actual weight line below, so both labels stay behind
-                // it in z-order.
+                // Weight-loss label: same green as its line, haloed white
+                // (paintOrder stroke-then-fill stands in for a background
+                // without measuring text width) — its line sits on plain
+                // white chart background, so a white halo blocks the dashed
+                // line behind the glyphs invisibly. That trick doesn't work
+                // for the maintenance label: it sits on the band's blue
+                // tint, not white, so a halo in any solid color shows up as
+                // a lumpy outline around each glyph instead of a clean box.
+                // It gets a real <rect>, filled with that same tint
+                // composited to opaque (the band's rgba(74,144,217,.12)
+                // over white — see bandTopY/bandBotY's rect above), sized
+                // from an estimated text width since SVG can't measure text
+                // without a DOM round-trip. This block renders before the
+                // actual weight line below, so both labels stay behind it
+                // in z-order.
+                const labelStr = s.band ? 'maintenance mode' : 'weight loss mode';
+                const labelFontSize = 6, labelLetterSpacing = 0.2;
+                const labelW = labelStr.length * labelFontSize * 0.62 + (labelStr.length - 1) * labelLetterSpacing;
                 const label = (x2 - x1) >= MIN_LABEL_SEG_W ? (
-                  <text x={(x1 + x2) / 2} y={goalY} textAnchor="middle" dominantBaseline="middle"
-                        fontSize="6" fontWeight="700" letterSpacing="0.2"
-                        stroke={s.band ? '#4a90d9' : '#fff'} strokeWidth="3" paintOrder="stroke"
-                        fill={s.band ? '#2c5682' : '#34c759'} style={{ pointerEvents: 'none' }}>
-                    {s.band ? 'maintenance mode' : 'weight loss mode'}
-                  </text>
+                  <g>
+                    {s.band && (
+                      <rect x={(x1 + x2) / 2 - labelW / 2 - 4} y={goalY - labelFontSize / 2 - 2.5}
+                            width={labelW + 8} height={labelFontSize + 5} rx="2"
+                            fill="#e9f2fa" style={{ pointerEvents: 'none' }} />
+                    )}
+                    <text x={(x1 + x2) / 2} y={goalY} textAnchor="middle" dominantBaseline="middle"
+                          fontSize={labelFontSize} fontWeight="700" letterSpacing={labelLetterSpacing}
+                          stroke={s.band ? 'none' : '#fff'} strokeWidth={s.band ? 0 : 3} paintOrder="stroke"
+                          fill={s.band ? '#2c5682' : '#34c759'} style={{ pointerEvents: 'none' }}>
+                      {labelStr}
+                    </text>
+                  </g>
                 ) : null;
                 return s.band ? (
                   <g key={i}>

@@ -13,7 +13,7 @@
     // we're looking at a stale cached copy, so force a real network fetch by
     // navigating to a URL the cache has never seen. Bumped on every deploy.
     (function () {
-      var BUILD_VERSION = '2026-11-18T14:27:37Z';
+      var BUILD_VERSION = '2026-11-18T15:18:28Z';
       try {
         fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
           .then(function (res) { return res.ok ? res.json() : null; })
@@ -6335,20 +6335,21 @@
               return segs.map((s, i) => {
                 const x1 = xOf(s.start), x2 = xOf(s.end);
                 if (x2 <= x1) return null;
-                // Complementary (RGB-inverted) to the line's own color, so
-                // the label reads as its own thing rather than blending
-                // into the line it's sitting on. The white halo (paintOrder
-                // stroke-then-fill) stands in for a background box without
-                // having to measure text width — it blocks the dashed line
-                // directly behind the glyphs, so the line reads as running
-                // *through* the label, like strikethrough text. This block
-                // renders before the actual weight line below, so the halo
-                // and label stay behind it in z-order.
+                // Weight-loss label: same green as its line, on a white
+                // halo (paintOrder stroke-then-fill stands in for a
+                // background box without measuring text width) — it blocks
+                // the dashed line directly behind the glyphs, so the line
+                // reads as running *through* the label, like strikethrough
+                // text. Maintenance label: a darker blue than the band
+                // (which is light enough that same-shade text wouldn't
+                // read), no halo — the band's own tint already sits behind
+                // it. This block renders before the actual weight line
+                // below, so both labels stay behind it in z-order.
                 const label = (x2 - x1) >= MIN_LABEL_SEG_W ? (
                   <text x={(x1 + x2) / 2} y={goalY} textAnchor="middle" dominantBaseline="middle"
                         fontSize="6" fontWeight="700" letterSpacing="0.2"
-                        stroke="#fff" strokeWidth="3" paintOrder="stroke"
-                        fill={s.band ? '#b56f26' : '#cb38a6'} style={{ pointerEvents: 'none' }}>
+                        stroke={s.band ? 'none' : '#fff'} strokeWidth={s.band ? 0 : 3} paintOrder="stroke"
+                        fill={s.band ? '#2c5682' : '#34c759'} style={{ pointerEvents: 'none' }}>
                     {s.band ? 'maintenance mode' : 'weight loss mode'}
                   </text>
                 ) : null;

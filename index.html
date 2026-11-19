@@ -13,7 +13,7 @@
     // we're looking at a stale cached copy, so force a real network fetch by
     // navigating to a URL the cache has never seen. Bumped on every deploy.
     (function () {
-      var BUILD_VERSION = '2026-11-18T16:09:46Z';
+      var BUILD_VERSION = '2026-11-19T04:12:31Z';
       try {
         fetch('version.json?_=' + Date.now(), { cache: 'no-store' })
           .then(function (res) { return res.ok ? res.json() : null; })
@@ -117,6 +117,11 @@
     const LS_PK_CUSTOM_END_KEY   = 'weight-tracker-pk-custom-end';
     const LS_WEIGHT_CUSTOM_START_KEY = 'weight-tracker-weight-custom-start';
     const LS_WEIGHT_CUSTOM_END_KEY   = 'weight-tracker-weight-custom-end';
+    const LS_INJ_VIEW_MODE_KEY      = 'weight-tracker-inj-view-mode';
+    const LS_DOSE_RANGE_KEY         = 'weight-tracker-dose-chart-range';
+    const LS_DOSE_CUSTOM_START_KEY  = 'weight-tracker-dose-chart-custom-start';
+    const LS_DOSE_CUSTOM_END_KEY    = 'weight-tracker-dose-chart-custom-end';
+    const LS_DOSE_SHOW_WEIGHT_KEY   = 'weight-tracker-dose-chart-show-weight';
 
     /* ─── Deep linking ────────────────────────────────────────────────────────── */
     // Lets a specific tab + its current view settings (range, graph/table,
@@ -1674,6 +1679,7 @@
         tdee: (d.BasalEnergy || 0) + (d.ActiveEnergy || 0),
         target: targetActiveAt(calorieTargets, d.date),
       }));
+      const tdeeMaintMarkers = visibleMaintMarkers(maintenanceHistory, visStartMs, visEndMs);
 
       const maxVal = Math.max(...pts.map(p => Math.max(p.Calories || 0, p.tdee, p.target || 0)), 100) * 1.15;
       const xOf = ms => PAD.l + ((ms - visStartMs) / (visEndMs - visStartMs)) * cW;
@@ -1727,7 +1733,8 @@
                  const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
                  let idx = 0, minDist = Infinity;
                  pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
-                 setTip(pts[idx]);
+                 const nearMarker = tdeeMaintMarkers.find(m => Math.abs(xOf(m.ms) - x) < 3);
+                 setTip({ ...pts[idx], maint: nearMarker ? nearMarker.action : null });
                }}
                onMouseLeave={() => setTip(null)}>
             {pts.map(p => {
@@ -1760,10 +1767,11 @@
 
             <line x1={PAD.l} y1={yBaseline} x2={PAD.l + cW} y2={yBaseline} stroke="rgba(0,0,0,.12)" strokeWidth="0.5" />
 
-            {/* Maintenance Mode toggle markers */}
-            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
-              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={yBaseline}
-                    stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
+            {/* Maintenance Mode toggle markers — labeled in the legend
+                below and on their own hover tooltip. */}
+            {tdeeMaintMarkers.map(m => (
+              <line key={m.ms} x1={xOf(m.ms)} y1={PAD.t} x2={xOf(m.ms)} y2={yBaseline}
+                    stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.7" />
             ))}
 
             {(() => {
@@ -1783,7 +1791,8 @@
             ))}
 
             {tip && (() => {
-              const TW = 86, TH = 32;
+              const maintLabel = maintToggleLabel(tip.maint);
+              const TW = maintLabel ? 110 : 86, TH = 32 + (maintLabel ? 10 : 0);
               const tx = Math.max(PAD.l, Math.min(xOf(tip.ms) - TW / 2, PAD.l + cW - TW));
               const ty = PAD.t + 2;
               return (
@@ -1802,6 +1811,11 @@
                   <text x={tx + TW / 2} y={ty + 29} textAnchor="middle" fontSize="4" fill="#aeaeb2">
                     = {Math.round(tip.tdee)} burned
                   </text>
+                  {maintLabel && (
+                    <text x={tx + TW / 2} y={ty + 38} textAnchor="middle" fontSize="4.5" fontWeight="600" fill="#c7c7cc">
+                      {maintLabel}
+                    </text>
+                  )}
                 </g>
               );
             })()}
@@ -1819,6 +1833,7 @@
             <div><span style={swatch('#2a78d6')}></span>Consumed</div>
             <div><span style={{ display: 'inline-block', width: 12, height: 2, background: '#1c1c1e',
                                  marginRight: 5, verticalAlign: 'middle', opacity: .8 }}></span>Target</div>
+            {tdeeMaintMarkers.length > 0 && <div><MaintToggleIcon />Maintenance toggle</div>}
           </div>
 
           <div style={{ padding: '0 14px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1927,6 +1942,7 @@
         return { ...d, tdee, net, baseTarget, exercise, target, deviation, tier };
       });
       const withDeviation = pts.filter(p => p.deviation != null);
+      const calMaintMarkers = visibleMaintMarkers(maintenanceHistory, visStartMs, visEndMs);
 
       const maxAbs = Math.max(...withDeviation.map(p => Math.abs(p.deviation)), 300) * 1.15;
       const yZero = PAD.t + cH / 2;
@@ -1959,7 +1975,8 @@
                  const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
                  let idx = 0, minDist = Infinity;
                  pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
-                 setTip(pts[idx]);
+                 const nearMarker = calMaintMarkers.find(m => Math.abs(xOf(m.ms) - x) < 3);
+                 setTip({ ...pts[idx], maint: nearMarker ? nearMarker.action : null });
                }}
                onMouseLeave={() => setTip(null)}>
             {withDeviation.map(p => {
@@ -1970,10 +1987,11 @@
 
             <line x1={PAD.l} y1={yZero} x2={PAD.l + cW} y2={yZero} stroke="rgba(0,0,0,.2)" strokeWidth="0.7" />
 
-            {/* Maintenance Mode toggle markers */}
-            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
-              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
-                    stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
+            {/* Maintenance Mode toggle markers — labeled in the legend
+                below and on their own hover tooltip. */}
+            {calMaintMarkers.map(m => (
+              <line key={m.ms} x1={xOf(m.ms)} y1={PAD.t} x2={xOf(m.ms)} y2={PAD.t + cH}
+                    stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.7" />
             ))}
 
             {/* Nudged in from the very top/bottom edge so they don't collide
@@ -1988,7 +2006,8 @@
 
             {tip && tip.deviation != null && (() => {
               const hasExercise = tip.exercise > 0;
-              const TW = 88, TH = hasExercise ? 33 : 27;
+              const maintLabel = maintToggleLabel(tip.maint);
+              const TW = maintLabel ? 108 : 88, TH = (hasExercise ? 33 : 27) + (maintLabel ? 9 : 0);
               const tx = Math.max(PAD.l, Math.min(xOf(tip.ms) - TW / 2, PAD.l + cW - TW));
               const ty = PAD.t + 2;
               return (
@@ -2005,6 +2024,11 @@
                   {hasExercise && (
                     <text x={tx + TW / 2} y={ty + 29} textAnchor="middle" fontSize="4" fill="#aeaeb2">
                       ({tip.baseTarget} + {Math.round(tip.exercise)} workout)
+                    </text>
+                  )}
+                  {maintLabel && (
+                    <text x={tx + TW / 2} y={ty + TH - 5} textAnchor="middle" fontSize="4.5" fontWeight="600" fill="#c7c7cc">
+                      {maintLabel}
                     </text>
                   )}
                 </g>
@@ -2030,6 +2054,7 @@
             <div><span style={swatch(NET_TIER_COLOR.good)}></span>On Plan</div>
             <div><span style={swatch(NET_TIER_COLOR.ok)}></span>Off Plan</div>
             <div><span style={swatch(NET_TIER_COLOR.bad)}></span>Way Off</div>
+            {calMaintMarkers.length > 0 && <div><MaintToggleIcon />Maintenance toggle</div>}
           </div>
         </div>
       );
@@ -2062,6 +2087,7 @@
       const yOf = v => PAD.t + cH - (v / maxVal) * cH;
       const yBaseline = PAD.t + cH;
       const barW = Math.max(0.5, Math.min(10, (cW / pts.length) * 0.55));
+      const proteinMaintMarkers = visibleMaintMarkers(maintenanceHistory, visStartMs, visEndMs);
 
       const avgProtein = avg(pts.map(p => p.Protein || 0));
       const withTarget = pts.filter(p => p.target != null);
@@ -2090,7 +2116,8 @@
                  const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
                  let idx = 0, minDist = Infinity;
                  pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
-                 setTip(pts[idx]);
+                 const nearMarker = proteinMaintMarkers.find(m => Math.abs(xOf(m.ms) - x) < 3);
+                 setTip({ ...pts[idx], maint: nearMarker ? nearMarker.action : null });
                }}
                onMouseLeave={() => setTip(null)}>
             {pts.map(p => {
@@ -2100,10 +2127,11 @@
               return <path key={p.date} d={roundedBarPath(x, barW, yBaseline, yOf(p.Protein || 0), rx)} fill={fill} opacity="0.9" />;
             })}
             <line x1={PAD.l} y1={yBaseline} x2={PAD.l + cW} y2={yBaseline} stroke="rgba(0,0,0,.12)" strokeWidth="0.5" />
-            {/* Maintenance Mode toggle markers */}
-            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
-              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={yBaseline}
-                    stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
+            {/* Maintenance Mode toggle markers — labeled in the legend
+                below and on their own hover tooltip. */}
+            {proteinMaintMarkers.map(m => (
+              <line key={m.ms} x1={xOf(m.ms)} y1={PAD.t} x2={xOf(m.ms)} y2={yBaseline}
+                    stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.7" />
             ))}
             {/* Floor line — a solid tick per day (not a full-width line) so a
                 changed target mid-window still reads correctly per-day. */}
@@ -2116,7 +2144,8 @@
               <text key={p.date} x={xOf(p.ms)} y={yBaseline + 10} textAnchor="middle" fontSize="7" fill="#aeaeb2">{p.date.slice(5)}</text>
             ))}
             {tip && (() => {
-              const TW = 58, TH = 24;
+              const maintLabel = maintToggleLabel(tip.maint);
+              const TW = maintLabel ? 102 : 58, TH = 24 + (maintLabel ? 9 : 0);
               const tx = Math.max(PAD.l, Math.min(xOf(tip.ms) - TW / 2, PAD.l + cW - TW));
               const ty = PAD.t + 2;
               return (
@@ -2133,6 +2162,11 @@
                       of {tip.target}g floor
                     </text>
                   )}
+                  {maintLabel && (
+                    <text x={tx + TW / 2} y={ty + TH - 5} textAnchor="middle" fontSize="4.5" fontWeight="600" fill="#c7c7cc">
+                      {maintLabel}
+                    </text>
+                  )}
                 </g>
               );
             })()}
@@ -2147,6 +2181,7 @@
             <div><span style={swatch(NET_TIER_COLOR.good)}></span>At floor</div>
             <div><span style={swatch(NET_TIER_COLOR.ok)}></span>Close (85–99%)</div>
             <div><span style={swatch(NET_TIER_COLOR.bad)}></span>Short (&lt;85%)</div>
+            {proteinMaintMarkers.length > 0 && <div><MaintToggleIcon />Maintenance toggle</div>}
           </div>
 
           <div style={{ padding: '0 14px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -2269,6 +2304,7 @@
 
       const pts = sorted.filter(s => s.ms >= visStartMs && s.ms < visEndMs);
       const periodRangeStr = `${fmtShort(msToLocalDate(visStartMs))} – ${fmtShort(msToLocalDate(Math.min(todayMs, visEndMs)))}`;
+      const bpMaintMarkers = visibleMaintMarkers(maintenanceHistory, visStartMs, visEndMs);
 
       const avgSys = pts.length ? avg(pts.map(p => p.systolic))  : null;
       const avgDia = pts.length ? avg(pts.map(p => p.diastolic)) : null;
@@ -2507,7 +2543,8 @@
                    const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
                    let idx = 0, minDist = Infinity;
                    pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
-                   setTip({ ...pts[idx], x: xOf(pts[idx].ms) });
+                   const nearMarker = bpMaintMarkers.find(m => Math.abs(xOf(m.ms) - x) < 3);
+                   setTip({ ...pts[idx], x: xOf(pts[idx].ms), maint: nearMarker ? nearMarker.action : null });
                  }}
                  onMouseLeave={() => setTip(null)}>
 
@@ -2529,10 +2566,11 @@
               <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
               <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
 
-              {/* Maintenance Mode toggle markers */}
-              {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
-                <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
-                      stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
+              {/* Maintenance Mode toggle markers — labeled in the legend
+                  below, and on their own hover tooltip. */}
+              {bpMaintMarkers.map(m => (
+                <line key={m.ms} x1={xOf(m.ms)} y1={PAD.t} x2={xOf(m.ms)} y2={PAD.t + cH}
+                      stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.7" />
               ))}
 
               {/* Systolic / diastolic trend lines */}
@@ -2564,10 +2602,11 @@
               {/* Tooltip — date + averaged value, plus every raw reading that
                   went into it (a day can hold more than one sitting). */}
               {tip && (() => {
-                const TW = 96, TR = 3;
+                const maintLabel = maintToggleLabel(tip.maint);
+                const TW = maintLabel ? 118 : 96, TR = 3;
                 const rowH = 6.5;
                 const headH = 21; // date line + big avg line
-                const TH = headH + (tip.readings.length ? 5 + tip.readings.length * rowH : 0) + 4;
+                const TH = headH + (tip.readings.length ? 5 + tip.readings.length * rowH : 0) + (maintLabel ? 9 : 0) + 4;
                 const tx = Math.max(PAD.l, Math.min(tip.x - TW / 2, PAD.l + cW - TW));
                 const ty = PAD.t + 2;
                 const { wd, mo, day } = fmtDate(tip.date);
@@ -2599,6 +2638,9 @@
                         ))}
                       </>
                     )}
+                    {maintLabel && (
+                      <text x={tx + 5} y={ty + TH - 5} fontSize="4.5" fontWeight="600" fill="#c7c7cc">{maintLabel}</text>
+                    )}
                   </g>
                 );
               })()}
@@ -2614,6 +2656,7 @@
                         padding:'4px 14px 10px', fontSize:10, color:'#8e8e93' }}>
             <span><span style={swatch(BP_SYS_COLOR)} />Systolic</span>
             <span><span style={swatch(BP_DIA_COLOR)} />Diastolic</span>
+            {bpMaintMarkers.length > 0 && <span><MaintToggleIcon />Maintenance toggle</span>}
             {viewMode === 'graph' && <span style={{ color:'#c7c7cc' }}>Hover a point for readings</span>}
           </div>
 
@@ -2709,6 +2752,7 @@
       const totalDistMi  = periodData.reduce((s, d) => s + d.totalDistM, 0) / 1609.34;
       const totalCal     = periodData.reduce((s, d) => s + d.totalCal, 0);
       const periodRangeStr = `${fmtShort(msToLocalDate(visStartMs))} – ${fmtShort(msToLocalDate(Math.min(todayMs, visEndMs)))}`;
+      const ridesMaintMarkers = visibleMaintMarkers(maintenanceHistory, visStartMs, visEndMs);
 
       const fmtDur = secs => {
         const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
@@ -2950,7 +2994,8 @@
                  const targetMs = visStartMs + (x - PAD.l) / cW * (visEndMs - visStartMs);
                  let idx = 0, minDist = Infinity;
                  pts.forEach((p, i) => { const d = Math.abs(p.ms - targetMs); if (d < minDist) { minDist = d; idx = i; } });
-                 setTip({ ...pts[idx], x });
+                 const nearMarker = ridesMaintMarkers.find(m => Math.abs(xOf(m.ms) - x) < 3);
+                 setTip({ ...pts[idx], x, maint: nearMarker ? nearMarker.action : null });
                }}
                onMouseLeave={() => setTip(null)}
                onClick={e => {
@@ -2980,10 +3025,11 @@
             <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
             <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
 
-            {/* Maintenance Mode toggle markers */}
-            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => (
-              <line key={ms} x1={xOf(ms)} y1={PAD.t} x2={xOf(ms)} y2={PAD.t + cH}
-                    stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.85" />
+            {/* Maintenance Mode toggle markers — labeled in the legend below
+                and on their own hover tooltip. */}
+            {ridesMaintMarkers.map(m => (
+              <line key={m.ms} x1={xOf(m.ms)} y1={PAD.t} x2={xOf(m.ms)} y2={PAD.t + cH}
+                    stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.7" />
             ))}
 
             {/* Bars */}
@@ -3016,7 +3062,8 @@
 
             {/* Tooltip */}
             {tip && pts.length > 0 && (() => {
-              const TW = 90, TH = 57, TR = 3;
+              const maintLabel = maintToggleLabel(tip.maint);
+              const TW = maintLabel ? 112 : 90, TH = 57 + (maintLabel ? 9 : 0), TR = 3;
               const tx = Math.max(PAD.l, Math.min(tip.x - TW / 2, PAD.l + cW - TW));
               const ty = PAD.t + 2;
               const { wd, mo, day } = fmtDate(tip.date);
@@ -3045,6 +3092,9 @@
                   <text x={tx+5} y={row+=9} fontSize="5" fill="rgba(255,255,255,.4)">
                     {tip.rides.length} {tip.rides.length === 1 ? 'activity' : 'activities'}
                   </text>
+                  {maintLabel && (
+                    <text x={tx+5} y={row+=9} fontSize="5" fontWeight="600" fill="#c7c7cc">{maintLabel}</text>
+                  )}
                 </g>
               );
             })()}
@@ -3095,6 +3145,15 @@
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {viewMode === 'graph' && ridesMaintMarkers.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 14px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', fontSize: 10, fontWeight: 600,
+                            color: '#8e8e93' }}>
+                <MaintToggleIcon />Maintenance toggle
+              </div>
             </div>
           )}
 
@@ -3169,6 +3228,9 @@
         : windowDays ? (windowOffset === 0 ? todayMs + 7 * 86400000 : refEnd) : todayMs + 7 * 86400000;
       const canScrollEarlier = !!windowDays && visStartMs > startMs;
       const canScrollLater   = windowOffset > 0;
+      // rangeMode === 'all' deliberately gets none — same "already crowded"
+      // reasoning as the markers' own line-only rendering below.
+      const pkMaintMarkers = rangeMode !== 'all' ? visibleMaintMarkers(maintenanceHistory, visStartMs, visEndMs) : [];
 
       const STEP = 6 * 3600000;
       const pts  = [];
@@ -3385,7 +3447,8 @@
         const dateStr = new Date(ms).toISOString().slice(0, 10);
         const seg     = intervalAvgs.find(s => ms >= s.startMs && ms <= s.endMs);
         const segAvg  = seg ? seg.mean : null;
-        setTip({ x: svgX, y: yOf(level), level, dateStr, wLbs, segAvg });
+        const nearMarker = pkMaintMarkers.find(m => Math.abs(xOf(m.ms) - svgX) < 3);
+        setTip({ x: svgX, y: yOf(level), level, dateStr, wLbs, segAvg, maint: nearMarker ? nearMarker.action : null });
       };
 
       // Tooltip box dimensions
@@ -3621,14 +3684,12 @@
                 on the same date as one of those (or, while testing, several
                 toggles on the same date) — the Maintenance history table
                 under GoalBanner has the actual date/detail. Deduped to one
-                line per date for the same reason. */}
-            {rangeMode !== 'all' && maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= visStartMs && ms <= visEndMs).map(ms => {
-              const x = xOf(ms);
-              return (
-                <line key={ms} x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
-                      stroke="#00c7be" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.8" />
-              );
-            })}
+                line per date for the same reason. Named instead in the
+                caption below the chart and on its own hover tooltip. */}
+            {pkMaintMarkers.map(m => (
+              <line key={m.ms} x1={xOf(m.ms)} y1={PAD.t} x2={xOf(m.ms)} y2={PAD.t + cH}
+                    stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.7" />
+            ))}
 
             {rangeMode !== 'all' && upcomingInjMs.map(ms => {
               const nx = xOf(ms);
@@ -3680,9 +3741,11 @@
             {tip && (() => {
               const startLbs = rows && rows.length ? rows[rows.length - 1].lbs : null;
               const lostLbs  = (tip.wLbs != null && startLbs != null) ? tip.wLbs - startLbs : null;
-              const TH = 18 + (tip.wLbs != null ? 9 : 0) + (tip.segAvg != null ? 9 : 0);
+              const maintLabel = maintToggleLabel(tip.maint);
+              const tipTW = maintLabel ? 110 : TW;
+              const TH = 18 + (tip.wLbs != null ? 9 : 0) + (tip.segAvg != null ? 9 : 0) + (maintLabel ? 9 : 0);
               const flipLeft = tip.x > PAD.l + cW * 0.65;
-              const tx = flipLeft ? tip.x - TW - 5 : tip.x + 5;
+              const tx = flipLeft ? tip.x - tipTW - 5 : tip.x + 5;
               const ty = Math.max(PAD.t, Math.min(tip.y - TH / 2, PAD.t + cH - TH));
               const { mo, day, wd } = fmtDate(tip.dateStr);
               let row = ty + 6;
@@ -3691,7 +3754,7 @@
                   <line x1={tip.x} y1={PAD.t} x2={tip.x} y2={PAD.t + cH}
                         stroke="rgba(28,28,30,.25)" strokeWidth="1" />
                   <circle cx={tip.x} cy={tip.y} r="3" fill="#4a90d9" stroke="#fff" strokeWidth="1" />
-                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR}
+                  <rect x={tx} y={ty} width={tipTW} height={TH} rx={TR}
                         fill="rgba(28,28,30,.88)" />
                   <text x={tx + 5} y={row} fontSize="5" fill="rgba(255,255,255,.55)">{wd} {mo} {day}</text>
                   <text x={tx + 5} y={row += 8} fontSize="7.5" fontWeight="700" fill="#fff"
@@ -3705,6 +3768,9 @@
                   {tip.segAvg != null && (
                     <text x={tx + 5} y={row += 9} fontSize="6.5" fill="#b06dff"
                           fontVariantNumeric="tabular-nums">{tip.segAvg.toFixed(2)} mg</text>
+                  )}
+                  {maintLabel && (
+                    <text x={tx + 5} y={row += 9} fontSize="5.5" fontWeight="600" fill="#c7c7cc">{maintLabel}</text>
                   )}
                 </g>
               );
@@ -3725,6 +3791,15 @@
                       : '—'}
                     color={periodWeightChange != null && periodWeightChange <= 0 ? '#34c759' : '#ff3b30'} />
           </div>
+
+          {pkMaintMarkers.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 14px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', fontSize: 10, fontWeight: 600,
+                            color: '#8e8e93' }}>
+                <MaintToggleIcon />Maintenance toggle
+              </div>
+            </div>
+          )}
 
           {/* Share */}
           <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap: 8, padding:'6px 14px 10px' }}>
@@ -4574,6 +4649,31 @@
       return [...new Set((maintenanceHistory || []).map(h => h.date))]
         .sort()
         .map(date => new Date(date + 'T12:00:00').getTime());
+    }
+    // Same dedup as maintenanceMarkerDates, but keeping each date's action
+    // (last one wins if a date somehow has more than one) so a chart's own
+    // hover tooltip can say which — "Maintenance started" vs "Maintenance
+    // ended → Weight loss mode" — instead of just an unexplained dashed line.
+    function visibleMaintMarkers(maintenanceHistory, rangeStartMs, rangeEndMs) {
+      const byDate = new Map();
+      (maintenanceHistory || []).forEach(h => byDate.set(h.date, h.action));
+      return [...byDate.entries()]
+        .map(([date, action]) => ({ ms: new Date(date + 'T12:00:00').getTime(), action }))
+        .filter(m => m.ms >= rangeStartMs && m.ms <= rangeEndMs)
+        .sort((a, b) => a.ms - b.ms);
+    }
+    const maintToggleLabel = action => action === 'start' ? 'Maintenance started'
+      : action === 'stop' ? 'Maintenance ended → Weight loss mode' : null;
+    // Small dashed-line icon for a chart's own legend row — paired with
+    // maintToggleLabel's text so every chart explains its maintenance-toggle
+    // marker the same way, in whichever legend idiom that chart already uses
+    // (an HTML <span>/<div> row below the SVG, not inside it).
+    function MaintToggleIcon() {
+      return (
+        <svg width="14" height="8" viewBox="0 0 14 8" style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 5 }}>
+          <line x1="0" y1="4" x2="14" y2="4" stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" />
+        </svg>
+      );
     }
 
     // Highest-first so .find() below picks the best-earned tier; "at: 0" always
@@ -5577,6 +5677,7 @@
           : startMs + 180 * 86400000,
         todayMs + FUTURE_BUFFER_DAYS * 86400000
       );
+      const weightMaintMarkers = visibleMaintMarkers(maintenanceHistory, viewStartMs, endMs);
 
       // Chart width, in the same logical 360-unit coordinate system used
       // everywhere below (xOf/yOf/PAD/font sizes/etc.) regardless of mode —
@@ -6307,8 +6408,14 @@
                  // prevents phantom tooltip when hovering empty future space. The
                  // threshold scales with how far apart aggregated points are.
                  const nearThresholdMs = (aggregate === 'daily' ? 2 : aggregate === 'weekly' ? 4 : 16) * 86400000;
-                 if (minD > nearThresholdMs) { setWeightTip(null); return; }
-                 setWeightTip({ ms: best.ms, lbs: best.lbs, dateStr: msToLocalDate(best.ms), n: best.n });
+                 // Checked independently of the weight-point threshold above
+                 // so the toggle line itself is hoverable even where it
+                 // doesn't line up with the nearest plotted point (e.g. right
+                 // at the edge of a sparse aggregated view).
+                 const nearMarker = weightMaintMarkers.find(m => Math.abs(xOf(m.ms) - svgX) < 3);
+                 if (minD > nearThresholdMs && !nearMarker) { setWeightTip(null); return; }
+                 setWeightTip({ ms: best.ms, lbs: best.lbs, dateStr: msToLocalDate(best.ms), n: best.n,
+                               maint: nearMarker ? nearMarker.action : null });
                }}
                onMouseLeave={() => setWeightTip(null)}>
             <defs>
@@ -6409,14 +6516,13 @@
             {/* Maintenance Mode toggle markers — one per unique date (the
                 Maintenance history table under GoalBanner has the
                 dates/dose-range detail if several toggles land the same
-                day). */}
-            {maintenanceMarkerDates(maintenanceHistory).filter(ms => ms >= viewStartMs && ms <= endMs).map(ms => {
-              const x = xOf(ms);
-              return (
-                <line key={ms} x1={x} y1={PAD.t} x2={x} y2={PAD.t + cH}
-                      stroke="#4a90d9" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.8" />
-              );
-            })}
+                day). Gray rather than the dose palette's blue so it doesn't
+                read as another dose-pill color; labeled in the legend below
+                and on its own hover tooltip. */}
+            {weightMaintMarkers.map(m => (
+              <line key={m.ms} x1={xOf(m.ms)} y1={PAD.t} x2={xOf(m.ms)} y2={PAD.t + cH}
+                    stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.7" />
+            ))}
 
             {/* Today shading */}
             <rect x={todayX} y={PAD.t} width={Math.max(0, xOf(endMs) - todayX)} height={cH}
@@ -6643,7 +6749,13 @@
               const weeksSinceStart = Math.floor(daysSinceStart / 7);
               const wx = xOf(weightTip.ms);
               const wy = yOf(weightTip.lbs);
-              const TW = aggregate === 'daily' ? 68 : 80, TH = 36, TR = 4;
+              const maintLabel = maintToggleLabel(weightTip.maint);
+              // Widened + heightened (with the same +7 bottom-padding
+              // convention as DoseChart's tooltip) only when the maintenance
+              // line is actually present — the long "…→ Weight loss mode"
+              // copy needs real room, but the common case shouldn't pay for it.
+              const TW = maintLabel ? 128 : (aggregate === 'daily' ? 68 : 80);
+              const TH = 30 + (maintLabel ? 11 : 0) + 7, TR = 4;
               const [wVisL, wVisR] = visibleLBound();
               const tx = Math.max(wVisL, Math.min(wx - TW / 2, wVisR - TW));
               const ty = Math.max(PAD.t + 2, wy - TH - 6);
@@ -6666,6 +6778,10 @@
                       ? `Week ${weeksSinceStart} · Day ${daysSinceStart}`
                       : `${weightTip.n} reading${weightTip.n === 1 ? '' : 's'} avg`}
                   </text>
+                  {maintLabel && (
+                    <text x={tx + TW/2} y={ty + 41} textAnchor="middle"
+                          fontSize="4.5" fontWeight="600" fill="#c7c7cc">{maintLabel}</text>
+                  )}
                 </g>
               );
             })()}
@@ -6841,6 +6957,19 @@
                   <span style={{ color: t.color }}>{fmtGoalDate(t.goalMs)}</span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Maintenance toggle key — same "unlabeled dashed line" problem
+              as every other chart that plots these, fixed the same way:
+              name it once here rather than leaving it for the hover
+              tooltip alone to explain. */}
+          {weightMaintMarkers.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 14px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', fontSize: 10, fontWeight: 600,
+                            color: '#8e8e93', background: '#f9f9f9', borderRadius: 10, padding: '3px 8px' }}>
+                <MaintToggleIcon />Maintenance toggle
+              </div>
             </div>
           )}
 
@@ -7293,6 +7422,362 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Dose vs Date Chart ─────────────────────────────────────────────────── */
+    // Weekly-dose step-area chart — this is the "Graph" side of the
+    // Injections card's own graph/table switch (table side is the existing
+    // injection log list, unchanged). Range picker and date+weeks x-axis
+    // intentionally mirror WeightChart's (DATA_RANGE_OPTIONS / xTicks /
+    // weekTicks), so the two charts feel consistent; this one skips
+    // WeightChart's scroll-mode/aggregate/trend-line machinery since a step
+    // function has nothing for those to aggregate or regress.
+    function DoseChart({ injections, injSchedule, rows, maintenanceHistory = [], deepLinkParams }) {
+      const [dataRangeDays, setDataRangeDays] = useState(
+        () => parseInt(deepLinkParams?.drange ?? localStorage.getItem(LS_DOSE_RANGE_KEY), 10) || 0
+      );
+      useEffect(() => { try { localStorage.setItem(LS_DOSE_RANGE_KEY, String(dataRangeDays)); } catch (_) {} }, [dataRangeDays]);
+      const [customRangeStart, setCustomRangeStart] = useState(
+        () => deepLinkParams?.dstart ?? localStorage.getItem(LS_DOSE_CUSTOM_START_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_DOSE_CUSTOM_START_KEY, customRangeStart); } catch (_) {} }, [customRangeStart]);
+      const [customRangeEnd, setCustomRangeEnd] = useState(
+        () => deepLinkParams?.dend ?? localStorage.getItem(LS_DOSE_CUSTOM_END_KEY) ?? ''
+      );
+      useEffect(() => { try { localStorage.setItem(LS_DOSE_CUSTOM_END_KEY, customRangeEnd); } catch (_) {} }, [customRangeEnd]);
+      const [showWeight, setShowWeight] = useState(
+        () => deepLinkParams?.dwt != null ? deepLinkParams.dwt === '1' : localStorage.getItem(LS_DOSE_SHOW_WEIGHT_KEY) !== 'false'
+      );
+      useEffect(() => { try { localStorage.setItem(LS_DOSE_SHOW_WEIGHT_KEY, String(showWeight)); } catch (_) {} }, [showWeight]);
+      const [sharing, setSharing] = useState(false);
+      const [tip, setTip] = useState(null);
+      const svgRef = useRef(null);
+
+      const ds = getDoseSchedule(injections, injSchedule);
+      // Weekly totals, not per-injection amounts — and the in-progress
+      // current week is already projected to a full week's dose here (see
+      // buildWeeklyDoseCycles) even when only one injection day of it has
+      // happened so far, so the chart never under-reports a just-started week.
+      const cycles = buildWeeklyDoseCycles(injections, ds);
+      if (!cycles.length) return null;
+
+      const DOSE_PALETTE = ['#4a90d9','#34c759','#ff9500','#ff3b30','#b06dff','#00c7be','#ff2d55','#5856d6','#ffcc00','#8e8e93'];
+      const doseColorMap = new Map();
+      cycles.forEach((c, i) => doseColorMap.set(c.doseMg, DOSE_PALETTE[i % DOSE_PALETTE.length]));
+      const colorForDose = mg => doseColorMap.get(mg) ?? '#4a90d9';
+
+      const STEP = 86400000;
+      const todayD = new Date(); todayD.setHours(12, 0, 0, 0);
+      const todayMs = todayD.getTime();
+      const startMs = cycles[0].startMs; // lifetime start — weeks-elapsed anchor, same role as WeightChart's
+
+      const DATA_RANGE_OPTIONS = [
+        { days: 14,  label: 'Last 2 weeks' },
+        { days: 30,  label: 'Last month' },
+        { days: 90,  label: 'Last 3 months' },
+        { days: 180, label: 'Last 6 months' },
+        { days: 365, label: 'Last year' },
+        { days: 0,   label: 'All time' },
+        { days: CUSTOM_RANGE_DAYS, label: 'Date range…' },
+      ];
+
+      const customRange = dataRangeDays === CUSTOM_RANGE_DAYS ? customDateRangeMs(customRangeStart, customRangeEnd) : null;
+      const endMs = customRange ? Math.min(customRange.end, todayMs) : todayMs;
+      const rangeCutoffMs = customRange ? customRange.start : (dataRangeDays > 0 ? todayMs - dataRangeDays * STEP : startMs);
+      const viewStartMs = Math.max(rangeCutoffMs, startMs);
+
+      // Step periods — each cycle holds until the next one starts; the
+      // ongoing (most recent) cycle holds through today since there's no
+      // next change yet.
+      const periods = cycles.map((c, i) => ({
+        startMs: c.startMs,
+        endMs: i < cycles.length - 1 ? cycles[i + 1].startMs : todayMs + STEP,
+        doseMg: c.doseMg,
+      }));
+      const visiblePeriods = periods
+        .filter(p => p.endMs > viewStartMs && p.startMs < endMs)
+        .map(p => ({ ...p, startMs: Math.max(p.startMs, viewStartMs), endMs: Math.min(p.endMs, endMs) }))
+        .filter(p => p.endMs > p.startMs);
+      if (!visiblePeriods.length) return null;
+
+      // Weight overlay — same rows the Weight tab's own line plots, clipped
+      // to this chart's visible window.
+      const weightPts = [...rows].reverse()
+        .map(r => ({ ms: new Date(r.date + 'T12:00:00').getTime(), lbs: r.lbs }))
+        .filter(p => p.ms >= viewStartMs && p.ms <= endMs);
+
+      const VW = 360, VH = 200;
+      const PAD = { t: 14, r: showWeight ? 30 : 14, b: 30, l: 30 };
+      const cW = VW - PAD.l - PAD.r;
+      const cH = VH - PAD.t - PAD.b;
+
+      const xOf = ms => PAD.l + (ms - viewStartMs) / (endMs - viewStartMs) * cW;
+
+      const maxDoseMg = Math.max(...visiblePeriods.map(p => p.doseMg));
+      const yMaxDose = Math.max(5, Math.ceil(maxDoseMg * 1.2 / 2.5) * 2.5);
+      const yOfDose = mg => PAD.t + cH - (mg / yMaxDose) * cH;
+
+      const weightMinRaw = weightPts.length ? Math.min(...weightPts.map(p => p.lbs)) : 0;
+      const weightMaxRaw = weightPts.length ? Math.max(...weightPts.map(p => p.lbs)) : 1;
+      const weightMin = Math.floor((weightMinRaw - 2) / 5) * 5;
+      const weightMax = Math.ceil((weightMaxRaw + 2) / 5) * 5;
+      const yOfWeight = lbs => PAD.t + cH - ((lbs - weightMin) / (weightMax - weightMin)) * cH;
+
+      // Solid fill step-area under the weekly dose, closed back down to the
+      // 0mg baseline so it reads as a filled area rather than just a line.
+      let areaD = `M ${xOf(visiblePeriods[0].startMs).toFixed(2)} ${yOfDose(0).toFixed(2)}`;
+      visiblePeriods.forEach(p => {
+        areaD += ` L ${xOf(p.startMs).toFixed(2)} ${yOfDose(p.doseMg).toFixed(2)}`;
+        areaD += ` L ${xOf(p.endMs).toFixed(2)} ${yOfDose(p.doseMg).toFixed(2)}`;
+      });
+      areaD += ` L ${xOf(visiblePeriods[visiblePeriods.length - 1].endMs).toFixed(2)} ${yOfDose(0).toFixed(2)} Z`;
+
+      const weightPath = weightPts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.ms).toFixed(2)} ${yOfWeight(p.lbs).toFixed(2)}`).join(' ');
+
+      const doseStep = yMaxDose <= 10 ? 2.5 : yMaxDose <= 20 ? 5 : 10;
+      const yTicksDose = [];
+      for (let v = 0; v <= yMaxDose; v += doseStep) yTicksDose.push(v);
+
+      const yTicksWeight = [];
+      for (let v = Math.ceil(weightMin / 10) * 10; v <= weightMax; v += 10) yTicksWeight.push(v);
+
+      // Monthly x-axis ticks
+      const xTicks = [];
+      { const td = new Date(viewStartMs); td.setDate(1); td.setMonth(td.getMonth() + 1);
+        while (td.getTime() <= endMs) { xTicks.push(td.getTime()); td.setMonth(td.getMonth() + 1); } }
+
+      // Weekly x-axis ticks — anchored to the lifetime start so week numbers
+      // stay stable as the Data range selector zooms in and out, same
+      // approach as WeightChart's own weekTicks.
+      const weekTicks = [];
+      const firstWeekN = Math.ceil((viewStartMs - startMs) / (7 * STEP));
+      for (let n = firstWeekN; startMs + n * 7 * STEP <= endMs; n++) weekTicks.push({ ms: startMs + n * 7 * STEP, n });
+      const weekPxGap = cW / Math.max(weekTicks.length - 1, 1);
+      const weekLabelStep = Math.max(1, Math.ceil(7 / weekPxGap));
+
+      const doseAtMs = ms => {
+        const p = visiblePeriods.find(p => ms >= p.startMs && ms <= p.endMs);
+        return p ? p.doseMg : null;
+      };
+      const weightAtMs = ms => {
+        if (!weightPts.length) return null;
+        let best = weightPts[0], bestDist = Infinity;
+        for (const p of weightPts) { const d = Math.abs(p.ms - ms); if (d < bestDist) { bestDist = d; best = p; } }
+        return best;
+      };
+
+      const periodRangeStr = `${fmtShort(msToLocalDate(viewStartMs))} – ${fmtShort(msToLocalDate(endMs))}`;
+      const maintMarkers = visibleMaintMarkers(maintenanceHistory, viewStartMs, endMs);
+
+      // Share — same canvas-drawn-header-then-cloned-SVG approach as the
+      // other charts' shareChart().
+      const shareChart = async () => {
+        if (sharing || !svgRef.current) return;
+        setSharing(true);
+        try {
+          const scale = 3, headerH = 54;
+          const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif";
+          const subtitle = `Current: ${round1(visiblePeriods[visiblePeriods.length - 1].doseMg)} mg/wk · ${periodRangeStr}`;
+          const svgClone = svgRef.current.cloneNode(true);
+          svgClone.setAttribute('width', VW * scale);
+          svgClone.setAttribute('height', VH * scale);
+          const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+          styleEl.textContent = `text { font-family: ${FONT}; }`;
+          svgClone.insertBefore(styleEl, svgClone.firstChild);
+          const svgString = new XMLSerializer().serializeToString(svgClone);
+          const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+          const img = new Image();
+          await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = svgUrl; });
+          const canvas = document.createElement('canvas');
+          canvas.width = VW * scale; canvas.height = (VH + headerH) * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(scale, scale);
+          ctx.fillStyle = '#1c1c1e'; ctx.font = `700 13px ${FONT}`;
+          ctx.fillText('Weekly Dose', 14, 18);
+          ctx.fillStyle = '#4a90d9'; ctx.font = `700 10px ${FONT}`;
+          ctx.fillText(subtitle, 14, 34);
+          ctx.drawImage(img, 0, headerH, VW, VH);
+
+          const fileBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+          const file = new File([fileBlob], 'dose-chart.png', { type: 'image/png' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'Weekly Dose', text: subtitle });
+          } else {
+            const url = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'dose-chart.png';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }
+        } catch (e) { if (e.name !== 'AbortError') console.warn('[DoseChart] share failed:', e); }
+        finally { setSharing(false); }
+      };
+
+      return (
+        <div>
+          {/* Controls */}
+          <div style={{ display: 'flex', gap: 6, padding: '8px 14px 4px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <select value={dataRangeDays} onChange={e => setDataRangeDays(Number(e.target.value))}
+                    style={{ fontSize: 10, fontWeight: 600, padding: '5px 8px', borderRadius: 8,
+                             background: '#f2f2f7', color: '#3c3c43', border: 'none', outline: 'none', cursor: 'pointer' }}>
+              {DATA_RANGE_OPTIONS.map(o => <option key={o.days} value={o.days}>{o.label}</option>)}
+            </select>
+            {dataRangeDays === CUSTOM_RANGE_DAYS && (
+              <DateRangeInputs startDate={customRangeStart} endDate={customRangeEnd}
+                                onStartChange={setCustomRangeStart} onEndChange={setCustomRangeEnd}
+                                min={msToLocalDate(startMs)} max={today()} />
+            )}
+            <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4,
+                            fontSize: 10.5, fontWeight: 600, color: '#3c3c43', cursor: 'pointer' }}>
+              <input type="checkbox" checked={showWeight} onChange={e => setShowWeight(e.target.checked)} />
+              Show weight
+            </label>
+          </div>
+
+          {/* Chart */}
+          <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+               onMouseMove={e => {
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const x = (e.clientX - rect.left) / rect.width * VW;
+                 if (x < PAD.l || x > PAD.l + cW) { setTip(null); return; }
+                 const ms = viewStartMs + (x - PAD.l) / cW * (endMs - viewStartMs);
+                 const dose = doseAtMs(ms);
+                 if (dose == null) { setTip(null); return; }
+                 // Snapping to the nearest marker (rather than requiring an
+                 // exact-date match) makes the toggle line itself easy to
+                 // hover — it's only ~1.3 units wide on screen.
+                 const nearMarker = maintMarkers.find(m => Math.abs(xOf(m.ms) - x) < 3);
+                 setTip({ x, ms, dose, weight: showWeight ? weightAtMs(ms) : null,
+                          maint: nearMarker ? nearMarker.action : null });
+               }}
+               onMouseLeave={() => setTip(null)}>
+
+            {/* Y grid (dose) */}
+            {yTicksDose.map(v => (
+              <g key={v}>
+                <line x1={PAD.l} y1={yOfDose(v)} x2={PAD.l + cW} y2={yOfDose(v)} stroke="rgba(0,0,0,.05)" strokeWidth="0.5" />
+                <text x={PAD.l - 3} y={yOfDose(v) + 2} textAnchor="end" fontSize="6" fill="#aeaeb2">{v}</text>
+              </g>
+            ))}
+
+            {/* Axes */}
+            <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+            <line x1={PAD.l} y1={PAD.t + cH} x2={PAD.l + cW} y2={PAD.t + cH} stroke="rgba(0,0,0,.1)" strokeWidth="0.5" />
+
+            {/* Maintenance toggle markers — labeled in the legend below since
+                the line alone (shared styling with the weight overlay's own
+                blue) reads as unexplained otherwise. */}
+            {maintMarkers.map(m => (
+              <line key={m.ms} x1={xOf(m.ms)} y1={PAD.t} x2={xOf(m.ms)} y2={PAD.t + cH}
+                    stroke="#8e8e93" strokeWidth="1.3" strokeDasharray="2,2" opacity="0.6" />
+            ))}
+
+            {/* Solid fill area under the weekly dose, plus the step outline on top */}
+            <path d={areaD} fill="#4a90d9" opacity="0.22" />
+            {visiblePeriods.map((p, i) => (
+              <line key={i} x1={xOf(p.startMs)} y1={yOfDose(p.doseMg)} x2={xOf(p.endMs)} y2={yOfDose(p.doseMg)}
+                    stroke={colorForDose(p.doseMg)} strokeWidth="1.5" />
+            ))}
+            {visiblePeriods.slice(1).map((p, i) => (
+              <line key={'step' + i} x1={xOf(p.startMs)} y1={yOfDose(visiblePeriods[i].doseMg)}
+                    x2={xOf(p.startMs)} y2={yOfDose(p.doseMg)}
+                    stroke={colorForDose(p.doseMg)} strokeWidth="1.5" />
+            ))}
+
+            {/* Weight overlay, on its own right-side axis */}
+            {showWeight && weightPts.length > 1 && (
+              <path d={weightPath} fill="none" stroke="#34c759" strokeWidth="1" />
+            )}
+            {showWeight && yTicksWeight.map(v => (
+              <text key={v} x={PAD.l + cW + 4} y={yOfWeight(v) + 2} textAnchor="start" fontSize="6" fill="#34c759">{v}</text>
+            ))}
+
+            {/* Week count ticks — weeks elapsed since start, same bare-number
+                style as WeightChart's own week row (a numeric label needs far
+                less width than "Wk N" would, which matters once a long range
+                packs in several dozen ticks). */}
+            <text x={PAD.l - 3} y={PAD.t + cH + 10} textAnchor="end" fontSize="3.5" fill="#aeaeb2">Week</text>
+            {weekTicks.map(({ ms, n }) => (
+              <g key={n}>
+                <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 2} stroke="#e5e5ea" strokeWidth="0.75" />
+                {n % weekLabelStep === 0 && (
+                  <text x={xOf(ms)} y={PAD.t + cH + 10} textAnchor="middle" fontSize="3.5" fill="#c7c7cc">{n}</text>
+                )}
+              </g>
+            ))}
+
+            {/* X axis date ticks */}
+            {xTicks.map(ms => (
+              <g key={ms}>
+                <line x1={xOf(ms)} y1={PAD.t + cH} x2={xOf(ms)} y2={PAD.t + cH + 3} stroke="#d1d1d6" strokeWidth="1" />
+                <text x={xOf(ms)} y={PAD.t + cH + 22} textAnchor="middle" fontSize="6" fill="#aeaeb2">
+                  {new Date(ms).toLocaleDateString('en-US', { month: 'short' })}
+                </text>
+              </g>
+            ))}
+
+            {/* Tooltip */}
+            {tip && (() => {
+              const maintLabel = maintToggleLabel(tip.maint);
+              const TW = maintLabel ? 102 : 86;
+              const TR = 4;
+              // Last baseline sits at ty + 19 (+11 per optional line below) —
+              // without the extra +7 here, whichever line ends up last
+              // (weight or the maintenance note) sits flush against the
+              // box's own bottom edge instead of having real padding under it.
+              const TH = 19 + (tip.weight ? 11 : 0) + (maintLabel ? 11 : 0) + 7;
+              const tx = Math.max(PAD.l, Math.min(tip.x - TW / 2, PAD.l + cW - TW));
+              const ty = PAD.t + 2;
+              const { wd, mo, day } = fmtDate(msToLocalDate(tip.ms));
+              let row = ty + 9;
+              return (
+                <g style={{ pointerEvents: 'none' }}>
+                  <line x1={tip.x} y1={PAD.t} x2={tip.x} y2={PAD.t + cH} stroke="rgba(28,28,30,.25)" strokeWidth="1" />
+                  <rect x={tx} y={ty} width={TW} height={TH} rx={TR} fill="rgba(28,28,30,.9)" />
+                  <text x={tx + 5} y={row} fontSize="5" fill="rgba(255,255,255,.5)">{wd} {mo} {day}</text>
+                  <text x={tx + 5} y={row += 10} fontSize="7.5" fontWeight="700" fill={colorForDose(tip.dose)}>
+                    {round1(tip.dose)} mg/wk
+                  </text>
+                  {tip.weight && (
+                    <text x={tx + 5} y={row += 11} fontSize="6" fill="#34c759">{tip.weight.lbs.toFixed(1)} lbs</text>
+                  )}
+                  {maintLabel && (
+                    <text x={tx + 5} y={row += 11} fontSize="6" fontWeight="600" fill="#c7c7cc">{maintLabel}</text>
+                  )}
+                </g>
+              );
+            })()}
+          </svg>
+
+          {/* Legend */}
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', justifyContent: 'center',
+                        padding: '4px 14px 10px', fontSize: 10, color: '#8e8e93' }}>
+            <span><span style={swatch('#4a90d9')} />Weekly dose</span>
+            {showWeight && <span><span style={swatch('#34c759')} />Weight</span>}
+            {maintMarkers.length > 0 && (
+              <span><MaintToggleIcon />Maintenance toggle</span>
+            )}
+            <span style={{ color: '#c7c7cc' }}>Hover for details</span>
+          </div>
+
+          {/* Share */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '6px 14px 10px' }}>
+            <button onClick={shareChart} disabled={sharing}
+                    style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+                             color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,
+                             padding: '4px 10px', cursor: sharing ? 'default' : 'pointer', opacity: sharing ? .6 : 1 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
+                   strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
+              </svg>
+              {sharing ? 'Sharing…' : 'Share'}
+            </button>
+            <CopyLinkButton tab="dosing"
+                            params={{ dview: 'graph', drange: dataRangeDays, dstart: customRangeStart, dend: customRangeEnd, dwt: showWeight ? 1 : 0 }} />
           </div>
         </div>
       );
@@ -8633,6 +9118,10 @@
       const [dragging,   setDragging]   = useState(false);
       const [showInj,    setShowInj]    = useState(false);
       const [sharingInjLog, setSharingInjLog] = useState(false);
+      const [doseViewMode, setDoseViewMode] = useState(
+        () => (deepLink?.tab === 'dosing' && deepLink.params?.dview) || localStorage.getItem(LS_INJ_VIEW_MODE_KEY) || 'table'
+      );
+      useEffect(() => { try { localStorage.setItem(LS_INJ_VIEW_MODE_KEY, doseViewMode); } catch (_) {} }, [doseViewMode]);
       const [injDate,    setInjDate]    = useState(today);
       const [injDose,    setInjDose]    = useState('');
       const [injSite,    setInjSite]    = useState('');
@@ -9846,18 +10335,31 @@
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#4a90d9',
                                 textTransform: 'uppercase', letterSpacing: .6 }}>Injections</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button onClick={shareInjLog} disabled={sharingInjLog || !injections.length}
-                            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
-                                     color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,
-                                     padding: '4px 10px',
-                                     cursor: (sharingInjLog || !injections.length) ? 'default' : 'pointer',
-                                     opacity: (sharingInjLog || !injections.length) ? .6 : 1 }}>
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
-                           strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
-                      </svg>
-                      {sharingInjLog ? 'Preparing…' : 'Share'}
-                    </button>
+                    <div style={{ display: 'flex', background: '#f2f2f7', borderRadius: 8, padding: 2 }}>
+                      {[['table','Table'],['graph','Graph']].map(([id,label]) => (
+                        <button key={id} onClick={() => setDoseViewMode(id)}
+                                style={{ fontSize: 10, fontWeight: 600, padding: '4px 10px', borderRadius: 6, border: 'none',
+                                         cursor: 'pointer', background: doseViewMode===id ? '#fff' : 'transparent',
+                                         color: doseViewMode===id ? '#1c1c1e' : '#8e8e93',
+                                         boxShadow: doseViewMode===id ? '0 1px 2px rgba(0,0,0,.1)' : 'none' }}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    {doseViewMode === 'table' && (
+                      <button onClick={shareInjLog} disabled={sharingInjLog || !injections.length}
+                              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+                                       color: '#4a90d9', background: '#f0f6ff', border: 'none', borderRadius: 12,
+                                       padding: '4px 10px',
+                                       cursor: (sharingInjLog || !injections.length) ? 'default' : 'pointer',
+                                       opacity: (sharingInjLog || !injections.length) ? .6 : 1 }}>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4a90d9" strokeWidth="2.2"
+                             strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 1.74L8.91 9.13a3 3 0 1 0 0 5.74l6.18 3.39A3 3 0 1 0 18 16a3 3 0 0 0-2.6 1.51l-6.19-3.4a3 3 0 0 0 0-.22l6.19-3.4A3 3 0 0 0 18 8z" />
+                        </svg>
+                        {sharingInjLog ? 'Preparing…' : 'Share'}
+                      </button>
+                    )}
                     {isAdmin && (
                       <button onClick={() => {
                                 // Pre-fill from a banner-completed survey for the
@@ -9929,6 +10431,11 @@
                   </div>
                 )}
 
+                {doseViewMode === 'graph' ? (
+                  <DoseChart injections={injections} injSchedule={injSchedule} rows={rows}
+                             maintenanceHistory={maintenanceHistory}
+                             deepLinkParams={deepLink?.tab === 'dosing' ? deepLink.params : null} />
+                ) : (
                 <div style={{ maxHeight: 440, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
                 {[...injections].sort((a, b) => b.date.localeCompare(a.date)).map((inj, i, arr) => {
                   // Newest-first — a maintenance toggle belongs between this
@@ -10042,6 +10549,7 @@
                   }</React.Fragment>;
                 })}
                 </div>
+                )}
               </div>
 
               </div>{/* end dosing tab */}

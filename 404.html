@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Weight Tracker has moved</title>
+    <script>
+      // Catches any old deep link under /Weight-Tracker/ (e.g.
+      // progress.html, body-scans/*) and forwards it to the same sub-path
+      // under /Weight-TrackerV1/, preserving query string and hash. See
+      // index.html for why this repo exists.
+      var rest = location.pathname.replace(/^\/[^/]*\//, '/');
+      location.replace('https://halfassedapps.github.io/Weight-TrackerV1' + rest + location.search + location.hash);
+    </script>
+  </head>
+  <body>
+    Redirecting to <a href="https://halfassedapps.github.io/Weight-TrackerV1/">the new location</a>…
+  </body>
+</html>
